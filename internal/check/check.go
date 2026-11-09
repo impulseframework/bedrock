@@ -1,0 +1,870 @@
+// Package check compares a committed application stack with what the code declares: it
+// renders the stack afresh and reports every owned file whose committed content differs,
+// which is the drift between the code and the infrastructure.
+package check
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/go-playground/errors/v5"
+
+	"github.com/impulseframework/bedrock/internal/derive"
+	"github.com/impulseframework/bedrock/internal/gitcmd"
+	"github.com/impulseframework/bedrock/internal/migration"
+	"github.com/impulseframework/bedrock/internal/render"
+	"github.com/impulseframework/bedrock/internal/secret"
+)
+
+// Finding is one file that is not as the render says it should be.
+type Finding struct {
+	// Path is the file's path relative to the stack directory, or to the application
+	// root when Root is set.
+	Path string
+	// Root is true for a file at the application root (the pipeline files).
+	Root bool
+	// Missing reports a file the render produces that the directory lacks.
+	Missing bool
+	// Line is the first differing line (1-based), 0 when Missing.
+	Line int
+	// Want and Got are that line as rendered and as committed.
+	Want string
+	Got  string
+}
+
+// Authoritative is an authoritative IAM resource (a *_iam_binding or *_iam_policy)
+// declared in one of the stack's files, other than a file store's bucket policy. The
+// stack refuses them: such a resource replaces every member of its role or policy on
+// each apply, so a pull-request stack applying one would remove the environment's
+// members, and two pull requests each other's. A *_iam_member adds one member and
+// removes only that one. The file stores' bucket policies
+// (google_storage_bucket_iam_policy.<store>, as storage.tf declares them) are admitted
+// by address: the stack sets each bucket's whole permission list on purpose, so that
+// Cloud Storage's default grants to the project's basic roles are gone from it, and a
+// pull-request stack makes buckets of its own, so its policies remove nobody else's
+// members. A policy on any other bucket, and a binding on a file store's bucket, stay
+// refused.
+type Authoritative struct {
+	// Path is the file's path relative to the stack directory.
+	Path string
+	// Line is the resource block's line (1-based).
+	Line int
+	// Address is the resource's type.name.
+	Address string
+}
+
+// Report is the outcome of one check.
+type Report struct {
+	// Dir is the stack directory checked, and AppDir the application root its pipeline
+	// files were checked at.
+	Dir    string
+	AppDir string
+	// Checked counts the owned files compared.
+	Checked int
+	// Findings are the owned files that differ or are missing, in path order.
+	Findings []Finding
+	// Unseeded lists the seeded files the directory lacks: not drift, since the tool
+	// writes them once and a person keeps them, but worth a line.
+	Unseeded []string
+	// Authoritative lists the authoritative IAM resources declared anywhere in the
+	// stack, owned files and a person's alike, in path then line order, the file
+	// stores' bucket policies excepted.
+	Authoritative []Authoritative
+	// Undeclared lists the input variables the stack's .tf files read (var.<name>),
+	// owned files and a person's alike, that no variable block among them declares, in
+	// path then line order: tofu refuses the plan at its first step over any one of
+	// them, with nothing else in the stack read.
+	Undeclared []render.UndeclaredVariable
+	// Migrations are the problems with the schema migrations directory: a file that
+	// is not a migration, an index with two up files, a gap in the sequence.
+	// MigrationsFix names their fix when the checkout has no release tag: the renumber
+	// packs the whole sequence until the first release (MigrationsFix).
+	Migrations    []MigrationFinding
+	MigrationsFix string
+	// BuildSecrets are the build secrets the Dockerfile mounts as required that some
+	// environment's placement does not declare.
+	BuildSecrets []BuildSecretFinding
+	// Binaries are the jobs whose command the Dockerfile does not build, and Bundles the
+	// browser bundles whose variable it does not set.
+	Binaries []BinaryFinding
+	Bundles  []BundleFinding
+	// SiteBundles are the sites' bundles in the sites layout, each held to one directory
+	// across development and the stack: a line of the report when the Procfile's
+	// directory is the one the workspace's build writes, refused when the Procfile sets
+	// none or one the build does not write (SiteBundle.Problem). Empty in the flat
+	// layout.
+	SiteBundles []SiteBundle
+	// Start is how the image starts, read from the Dockerfile's ENTRYPOINT and CMD: a
+	// line of the report when it follows the layout's contract, and refused when a
+	// sites-layout image sets an entrypoint or no default command naming a site's
+	// binary (Start.Problem), since each site's service passes its binary as the
+	// container's arguments, which replace only a default command. Nil without a
+	// Dockerfile, and for a flat image that sets neither instruction.
+	Start *ImageStart
+	// Stages are the instructions the Dockerfile's reserved stages hold beyond their
+	// install, which the image build would export to the registry's cache for every
+	// environment; MissingStages are the reserved stages the Dockerfile lacks, whose
+	// downloads the image build then caches nothing of (a warning, not drift).
+	Stages        []StageFinding
+	MissingStages []string
+	// BuildArguments are the build arguments the placement declares (buildArguments) that
+	// no stage of the Dockerfile declares with ARG.
+	BuildArguments []BuildArgumentFinding
+	// Programs are the shipped programs the release files declare when no stage of the
+	// Dockerfile declares the PROGRAMS build argument, under which the image build
+	// compiles none of them; nil when the code ships none, or a stage declares it.
+	Programs *ProgramsFinding
+	// Retired lists the files an earlier bedrock rendered at the application root that
+	// are still committed (render.Retired); bedrock render removes them.
+	Retired []string
+	// ReleaseLines are the release-please settings under which a feature release would
+	// not open a new patch line (a feature on the patch below 1.0).
+	ReleaseLines []ReleaseLineFinding
+	// ReleaseSections are the release-please changelog-sections lists that lack a type
+	// the CI's title check accepts, under which a merge of only such titles would never
+	// release.
+	ReleaseSections []ReleaseSectionFinding
+	// ReleaseFiles are release-please's files the application root lacks (its
+	// configuration, its manifest): seeded files like the Dockerfile, but without them
+	// the release workflow cuts no release and nothing reaches an environment, so their
+	// absence is refused where another seeded file's is a line of the report.
+	ReleaseFiles []string
+	// Maintenance are the warnings about the maintenance windows: production without a
+	// setting, a release file the checkout lacks, a dated slot that has passed. Warnings,
+	// not drift: the check stays clean, so the refusal at run start is never the first
+	// sign.
+	Maintenance []MaintenanceFinding
+	// CloudArmor are the environments whose Cloud Armor entry in terraform.tfvars the
+	// working tree removes while the default branch has the policy on ("preview" or
+	// "enforce"): removing the entry detaches the policy and destroys it in one apply,
+	// which fails while the policy is attached, so the entry goes to "off" first.
+	CloudArmor []CloudArmorFinding
+	// SignInThreshold are the sign-in throttle's variables in terraform.tfvars
+	// (cloud_armor_sign_in_count, cloud_armor_sign_in_interval) whose value is not a
+	// positive whole number: the policy could not take it, and the stack's own
+	// validation refuses the same at plan.
+	SignInThreshold []SignInThresholdFinding
+	// Latest are the secrets an environment's secret_versions in terraform.tfvars lets
+	// track the newest version (the word latest in place of a version number), in
+	// promotion order and then by name. Information, not drift: pinning is the default and
+	// latest the exception a secret with a real need takes, and the check names each one
+	// so the exception stays visible.
+	Latest []LatestSecret
+	// Generated are the entries of secret_versions in terraform.tfvars that disagree with
+	// the code's secret tags, per environment: a generated secret (secret:"generated",
+	// whose version the pipeline derives at each build) with a version number, latest or
+	// no entry, where the word generated belongs; and a secret someone puts in place
+	// carrying the word. Refused: the stack's own precondition refuses the same.
+	Generated []GeneratedFinding
+	// Retirements are the entries of retired in terraform.tfvars, the variables a
+	// release retires: each a line of the report naming what the variable declares (a
+	// secret, a build secret, a file store, the Firestore database), whose protection
+	// against a destroy the release's apply lifts in every environment so that the next
+	// release can remove the declaration; and refused when nothing declares the variable
+	// (Retirement.Problem), since the release that removes a declaration takes its name
+	// out of the list with it.
+	Retirements []Retirement
+}
+
+// Retirement is one entry of retired in terraform.tfvars.
+type Retirement struct {
+	// Variable is the entry, the variable a secret, a build secret, a file store or the
+	// Firestore database is declared by.
+	Variable string
+	// What says what the variable declares, and where; empty when nothing does.
+	What string
+	// Problem says why the entry is refused: nothing declares the variable.
+	Problem string
+}
+
+// GeneratedFinding is one disagreement between a secret's tag in the code and its entry
+// in an environment's secret_versions.
+type GeneratedFinding struct {
+	// Environment is the environment, and Variable the environment variable the secret
+	// feeds, its key in secret_versions.<environment>.
+	Environment string
+	Variable    string
+	// Problem says what the entry is and what to write.
+	Problem string
+}
+
+// LatestSecret is one secret an environment runs at whatever version is added next.
+type LatestSecret struct {
+	// Environment is the environment, and Variable the environment variable the secret
+	// feeds, its key in secret_versions.<environment>.
+	Environment string
+	Variable    string
+}
+
+// MaintenanceFinding is one warning about the maintenance windows.
+type MaintenanceFinding struct {
+	// Problem says what is missing or over, and the fix.
+	Problem string
+}
+
+// Clean reports no drift, no refused resource, every variable read declared, a sound migration sequence, every
+// required build secret declared, every job's binary built, an image that starts as the
+// layout's contract says, reserved stages holding their install alone, every declared
+// build argument declared by the Dockerfile, the shipped programs' build argument
+// declared when the code ships any, release lines that a feature release opens, a
+// changelog section for every accepted title type, release-please's files in place, no
+// Cloud Armor policy removed in one step, and a sign-in throttle threshold the policy
+// can take, and no retired variable that nothing declares.
+func (r *Report) Clean() bool {
+	return len(r.Findings) == 0 && len(r.Authoritative) == 0 && len(r.Undeclared) == 0 && len(r.Migrations) == 0 && len(r.BuildSecrets) == 0 && len(r.Generated) == 0 && len(r.Binaries) == 0 && len(r.Bundles) == 0 && r.startClean() && r.siteBundlesClean() && len(r.Stages) == 0 && len(r.BuildArguments) == 0 && r.Programs == nil && len(r.ReleaseLines) == 0 && len(r.ReleaseSections) == 0 && len(r.ReleaseFiles) == 0 && len(r.CloudArmor) == 0 && len(r.SignInThreshold) == 0 && len(r.Retired) == 0 && r.retirementsClean()
+}
+
+// retirementsClean reports every retired variable declared by something.
+func (r *Report) retirementsClean() bool {
+	for i := range r.Retirements {
+		if r.Retirements[i].Problem != "" {
+			return false
+		}
+	}
+
+	return true
+}
+
+// startClean reports an image whose start follows the layout's contract, or none read.
+func (r *Report) startClean() bool {
+	return r.Start == nil || r.Start.Problem == ""
+}
+
+// Run renders the model and compares the owned files with the directory's, and the
+// owned files at the application root with appDir's. It also reads the schema migrations
+// directory and the seed directory beside it for a sequence the migrate command could not
+// apply in order, and the stack's placement against the default branch's for a Cloud
+// Armor policy removed in one step.
+func Run(ctx context.Context, m *derive.Model, dir, appDir string) (*Report, error) {
+	files, err := render.Render(m)
+	if err != nil {
+		return nil, err
+	}
+	r := &Report{Dir: dir, AppDir: appDir}
+	for _, f := range files {
+		in := dir
+		if f.Root {
+			in = appDir
+		}
+		committed, err := os.ReadFile(filepath.Join(in, filepath.FromSlash(f.Path)))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, errors.Wrapf(err, "os.ReadFile(): %s", f.Path)
+		}
+		if f.Tier == render.Seeded {
+			switch {
+			case err != nil && f.Root && slices.Contains(render.ReleaseFiles, f.Path):
+				r.ReleaseFiles = append(r.ReleaseFiles, f.Path)
+			case err != nil:
+				r.Unseeded = append(r.Unseeded, f.Path)
+			}
+
+			continue
+		}
+		r.Checked++
+		if err != nil {
+			r.Findings = append(r.Findings, Finding{Path: f.Path, Root: f.Root, Missing: true})
+
+			continue
+		}
+		if line, want, got, same := firstDifference(f.Content, committed); !same {
+			r.Findings = append(r.Findings, Finding{Path: f.Path, Root: f.Root, Line: line, Want: want, Got: got})
+		}
+	}
+	for _, name := range render.Retired {
+		if _, err := os.Stat(filepath.Join(appDir, filepath.FromSlash(name))); err == nil {
+			r.Retired = append(r.Retired, name)
+		}
+	}
+	if err := r.scanStack(dir, m); err != nil {
+		return nil, err
+	}
+	migrations, _, err := Migrations(appDir, m)
+	if err != nil {
+		return nil, err
+	}
+	r.Migrations = migrations
+	if len(migrations) > 0 {
+		r.MigrationsFix = MigrationsFix(ctx, appDir)
+	}
+	buildSecrets, err := scanBuildSecrets(appDir, dir, m.Placement.Environments)
+	if err != nil {
+		return nil, err
+	}
+	r.BuildSecrets = buildSecrets
+	if err := r.scanImage(appDir, m); err != nil {
+		return nil, err
+	}
+	if err := r.scanRelease(appDir); err != nil {
+		return nil, err
+	}
+	r.Maintenance = scanMaintenance(m, appDir, time.Now())
+	if err := r.scanPlacement(ctx, m, dir); err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
+// scanStack reads every .tf file of the stack directory, a person's files included, for
+// the authoritative IAM resources the stack refuses and for the input variables the files
+// read that no variable block among them declares.
+func (r *Report) scanStack(dir string, m *derive.Model) error {
+	authoritative, err := scanAuthoritative(dir, fileStorePolicies(m))
+	if err != nil {
+		return err
+	}
+	r.Authoritative = authoritative
+	undeclared, err := scanUndeclared(dir)
+	if err != nil {
+		return err
+	}
+	r.Undeclared = undeclared
+
+	return nil
+}
+
+// scanPlacement reads the stack's terraform.tfvars for a Cloud Armor policy the tree
+// removes in one step (against the default branch's copy), for a sign-in throttle
+// threshold the policy could not take, for the secrets that track latest, for the
+// generated secrets' entries, and for the variables the release retires.
+func (r *Report) scanPlacement(ctx context.Context, m *derive.Model, dir string) error {
+	armor, err := scanCloudArmor(ctx, dir, m.Placement.DefaultBranch)
+	if err != nil {
+		return err
+	}
+	r.CloudArmor = armor
+	threshold, err := scanSignInThreshold(dir)
+	if err != nil {
+		return err
+	}
+	r.SignInThreshold = threshold
+	latest, err := scanLatest(dir, m.Placement.Environments)
+	if err != nil {
+		return err
+	}
+	r.Latest = latest
+	generated, err := scanGenerated(dir, m)
+	if err != nil {
+		return err
+	}
+	r.Generated = generated
+	retirements, err := scanRetired(dir, m)
+	if err != nil {
+		return err
+	}
+	r.Retirements = retirements
+
+	return nil
+}
+
+// scanRetired reads the stack's terraform.tfvars for the variables the release retires
+// (retired), each held against what the code and the placement declare: a secret, a
+// build secret (any environment's build_secrets), a file store or the Firestore
+// database. One nothing declares is refused: the release that removes a declaration
+// takes the name out of the list with it, and a name that is not a protected resource's
+// variable lifts nothing.
+func scanRetired(dir string, m *derive.Model) ([]Retirement, error) {
+	names, err := secret.Retired(dir)
+	if err != nil {
+		return nil, err
+	}
+	if len(names) == 0 {
+		return nil, nil
+	}
+	declared := map[string]string{}
+	for _, s := range m.Secrets {
+		declared[s.Variable.Name] = fmt.Sprintf("a secret (%s:%d)", s.Variable.File, s.Variable.Line)
+	}
+	for i := range m.FileStores {
+		v := m.FileStores[i].Variable
+		declared[v.Name] = fmt.Sprintf("a file store (%s:%d)", v.File, v.Line)
+	}
+	for i := range m.Variables {
+		if v := &m.Variables[i]; v.Role == derive.RoleFirestoreDatabase {
+			declared[v.Name] = fmt.Sprintf("the Firestore database (%s:%d)", v.File, v.Line)
+		}
+	}
+	for _, env := range m.Placement.Environments {
+		build, err := secret.BuildSecretNames(dir, env)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range build {
+			if _, ok := declared[name]; !ok {
+				declared[name] = "a build secret (build_secrets in terraform.tfvars)"
+			}
+		}
+	}
+	found := make([]Retirement, 0, len(names))
+	for _, name := range names {
+		what, ok := declared[name]
+		if !ok {
+			found = append(found, Retirement{Variable: name, Problem: fmt.Sprintf("%s is in retired in terraform.tfvars and nothing declares it (no secret, no build secret, no file store, no Firestore database by that variable): take the name out; the release that removes a declaration takes its name out of retired with it, and a name that declares no protected resource lifts nothing", name)})
+
+			continue
+		}
+		found = append(found, Retirement{Variable: name, What: what})
+	}
+
+	return found, nil
+}
+
+// scanGenerated reads the stack's terraform.tfvars against the code's secret tags,
+// environment by environment in promotion order: a generated secret's entry is the word
+// generated in every environment (its version is derived at each build, so a number or
+// latest there pins nothing and a missing entry leaves the placement silent about it),
+// and no other secret's entry is the word.
+func scanGenerated(dir string, m *derive.Model) ([]GeneratedFinding, error) {
+	var found []GeneratedFinding
+	for _, env := range m.Placement.Environments {
+		values, err := secret.Versions(dir, env)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range m.Secrets {
+			name := s.Variable.Name
+			value, present := values[name]
+			var problem string
+			switch {
+			case s.Generated && !present:
+				problem = fmt.Sprintf("%s is generated (secret:%q at %s:%d) and secret_versions.%s in terraform.tfvars has no entry for it: write %s = %q there; its version is derived at each build", name, secret.Generated, s.Variable.File, s.Variable.Line, env, name, secret.Generated)
+			case s.Generated && value != secret.Generated:
+				problem = fmt.Sprintf("%s is generated (secret:%q at %s:%d) and secret_versions.%s in terraform.tfvars pins %q where the word %s belongs: write %s = %q there; its version is derived at each build, and bedrock secret rotate %s %s adds the next", name, secret.Generated, s.Variable.File, s.Variable.Line, env, value, secret.Generated, name, secret.Generated, env, name)
+			case !s.Generated && value == secret.Generated:
+				problem = fmt.Sprintf("%s carries the word %s in secret_versions.%s in terraform.tfvars, and the code declares it secret:\"true\" (%s:%d): pin a version number (bedrock secret pin %s %s <version>), or declare it secret:%q in the code", name, secret.Generated, env, s.Variable.File, s.Variable.Line, env, name, secret.Generated)
+			default:
+				continue
+			}
+			found = append(found, GeneratedFinding{Environment: env, Variable: name, Problem: problem})
+		}
+	}
+
+	return found, nil
+}
+
+// scanRelease reads release-please's configuration at the application root for the
+// settings under which a release would not happen as the model needs: a feature on the
+// patch below 1.0 (ReleaseLines) and an accepted title type without a changelog section
+// (ReleaseSections).
+func (r *Report) scanRelease(appDir string) error {
+	releaseLines, err := scanReleaseLines(appDir)
+	if err != nil {
+		return err
+	}
+	r.ReleaseLines = releaseLines
+	releaseSections, err := scanReleaseSections(appDir)
+	if err != nil {
+		return err
+	}
+	r.ReleaseSections = releaseSections
+
+	return nil
+}
+
+// scanLatest reads the stack's terraform.tfvars for the secrets each environment's
+// secret_versions lets track latest, environment by environment in promotion order.
+func scanLatest(dir string, envs []string) ([]LatestSecret, error) {
+	var found []LatestSecret
+	for _, env := range envs {
+		names, err := secret.LatestVersions(dir, env)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range names {
+			found = append(found, LatestSecret{Environment: env, Variable: name})
+		}
+	}
+
+	return found, nil
+}
+
+// scanImage reads the Dockerfile against the stack: the binaries its jobs run, the
+// bundles its site serves, the job name it carries, how it starts, its reserved stages,
+// the build arguments the placement declares, and the shipped programs' build argument
+// when the release files ship any.
+func (r *Report) scanImage(appDir string, m *derive.Model) error {
+	binaries, err := scanBinaries(appDir, m)
+	if err != nil {
+		return err
+	}
+	r.Binaries = binaries
+	r.Bundles = scanBundles(m)
+	r.SiteBundles = scanSiteBundles(m)
+	start, err := ScanStart(appDir, m)
+	if err != nil {
+		return err
+	}
+	r.Start = start
+	stages, missing, err := scanReservedStages(appDir)
+	if err != nil {
+		return err
+	}
+	r.Stages, r.MissingStages = stages, missing
+	buildArguments, err := scanBuildArguments(appDir, m.Placement)
+	if err != nil {
+		return err
+	}
+	r.BuildArguments = buildArguments
+	programs, err := scanPrograms(appDir, m)
+	if err != nil {
+		return err
+	}
+	r.Programs = programs
+
+	return nil
+}
+
+// scanMaintenance warns about the maintenance windows at now: production without a
+// setting (a breaking release to it is refused at run start until one is written), when
+// the application is placed there, no release file in the router package (no outlet
+// declares an oldest answered release, so no release is breaking and the window never
+// holds a run), a release file that does not read, and a dated slot that has passed.
+func scanMaintenance(m *derive.Model, appDir string, now time.Time) []MaintenanceFinding {
+	var findings []MaintenanceFinding
+	p := m.Placement
+	if _, ok := p.MaintenanceSetting(p.Production()); !ok && p.InProduction() {
+		findings = append(findings, MaintenanceFinding{Problem: fmt.Sprintf("%s has no maintenance setting (placement.json \"maintenance\": {%q: ...}): a breaking release to %s is refused at the start of its run until one is written; %q is a setting, and so are the client's windows", p.Production(), p.Production(), p.Production(), derive.MaintenanceAnytime)})
+	}
+	for _, env := range p.Environments {
+		setting, ok := p.MaintenanceSetting(env)
+		if !ok {
+			continue
+		}
+		for _, s := range setting.PassedDates(now) {
+			findings = append(findings, MaintenanceFinding{Problem: fmt.Sprintf("maintenance.%s: the dated slot on %s (%s to %s) has passed; remove it", env, s.On, s.From, s.To)})
+		}
+	}
+	switch _, err := derive.ReadReleaseFile(filepath.Join(appDir, filepath.FromSlash(m.RouterDir))); {
+	case m.RouterDir == "":
+		findings = append(findings, MaintenanceFinding{Problem: "the site generator declares no routes directory (GenerateRoutes), so there is no release file to read and no outlet declares an oldest answered release: no release is breaking, and the maintenance window never holds a run"})
+	case errors.Is(err, os.ErrNotExist):
+		findings = append(findings, MaintenanceFinding{Problem: fmt.Sprintf("no release file at %s: no outlet declares an oldest answered release, so no release is breaking and the maintenance window never holds a run; the resource generator writes it beside the generated router (go generate ./...)", path.Join(m.RouterDir, derive.ReleaseFileName))})
+	case err != nil:
+		findings = append(findings, MaintenanceFinding{Problem: fmt.Sprintf("the release file does not read, and the release check will refuse the run: %v", errors.Cause(err))})
+	}
+
+	return findings
+}
+
+// MigrationSpan is what one migration directory holds as the sequence rule reads it: the
+// directory as the application names it, and the count and the lowest and highest index.
+type MigrationSpan struct {
+	Dir string
+	migration.Span
+}
+
+// Migrations reads the application's migration directories, the schema migrations and
+// the seed beside them, by the sequence rule (migration.Sequence) and answers every
+// problem and each directory's span. It is bedrock check's reading of the migrations,
+// which bedrock render applies before the first push and bedrock migration check in the
+// CI migrations job, over the whole directory rather than a pull request's changes.
+func Migrations(appDir string, m *derive.Model) (findings []MigrationFinding, spans []MigrationSpan, err error) {
+	for _, d := range migrationDirs(m) {
+		dirFindings, span, err := scanMigrations(filepath.Join(appDir, filepath.FromSlash(d)), d)
+		if err != nil {
+			return nil, nil, err
+		}
+		findings = append(findings, dirFindings...)
+		spans = append(spans, MigrationSpan{Dir: d, Span: span})
+	}
+
+	return findings, spans, nil
+}
+
+// MigrationsFix is the line that names the fix for the sequence rule's findings while the
+// checkout has no release tag: until the first release a committed migration may still
+// change, and bedrock migration renumber packs the whole sequence from 000001. Empty once
+// a release tag is in the checkout, or outside a git work tree, where git says nothing.
+func MigrationsFix(ctx context.Context, appDir string) string {
+	if !gitcmd.InWorkTree(ctx, appDir) {
+		return ""
+	}
+	released, err := migration.Released(ctx, appDir)
+	if err != nil || released {
+		return ""
+	}
+
+	return "no release tag is in this checkout: until the first release a committed migration may still change, and bedrock migration renumber (go generate ./... runs it) packs the whole sequence from 000001, committed migrations included"
+}
+
+// migrationDirs is the schema migrations directory and the seed directory beside it
+// (schema/devseed, the data migrations the migrate command applies with -seed), both
+// root-relative; none when the application has no schema.
+func migrationDirs(m *derive.Model) []string {
+	if m.Schema.MigrationsDir == "" {
+		return nil
+	}
+
+	return []string{m.Schema.MigrationsDir, path.Join(path.Dir(m.Schema.MigrationsDir), derive.SeedDir)}
+}
+
+// authoritativeResource matches the opening line of an authoritative IAM resource
+// block: resource "<type>_iam_binding" "<name>" or resource "<type>_iam_policy" "<name>".
+var authoritativeResource = regexp.MustCompile(`^\s*resource\s+"([A-Za-z0-9_]+_iam_(?:binding|policy))"\s+"([^"]+)"`)
+
+// fileStorePolicies are the file stores' bucket policies by address: the authoritative
+// IAM resources the stack declares on purpose, which the scan admits.
+func fileStorePolicies(m *derive.Model) []string {
+	policies := make([]string, 0, len(m.FileStores))
+	for i := range m.FileStores {
+		policies = append(policies, m.FileStores[i].PolicyAddress())
+	}
+
+	return policies
+}
+
+// ScanAuthoritative finds the authoritative IAM resources in every .tf file of the
+// directory, a person's files included, other than the ones at the admitted addresses
+// (the file stores' bucket policies): what check refuses, and what the pipeline's test
+// of a stack's plan refuses before the apply.
+func ScanAuthoritative(dir string, admitted []string) ([]Authoritative, error) {
+	return scanAuthoritative(dir, admitted)
+}
+
+// scanAuthoritative finds the authoritative IAM resources in every .tf file of the
+// directory, a person's files included, other than the ones at the admitted addresses.
+func scanAuthoritative(dir string, admitted []string) ([]Authoritative, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, "*.tf"))
+	if err != nil {
+		return nil, errors.Wrap(err, "filepath.Glob()")
+	}
+	var found []Authoritative
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, errors.Wrapf(err, "os.ReadFile(): %s", path)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			m := authoritativeResource.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			address := m[1] + "." + m[2]
+			if slices.Contains(admitted, address) {
+				continue
+			}
+			found = append(found, Authoritative{Path: filepath.Base(path), Line: i + 1, Address: address})
+		}
+	}
+
+	return found, nil
+}
+
+// scanUndeclared finds the input variables the .tf files of the directory read, a
+// person's files included, that no variable block among them declares.
+func scanUndeclared(dir string) ([]render.UndeclaredVariable, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, "*.tf"))
+	if err != nil {
+		return nil, errors.Wrap(err, "filepath.Glob()")
+	}
+	files := make(map[string][]byte, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, errors.Wrapf(err, "os.ReadFile(): %s", path)
+		}
+		files[filepath.Base(path)] = data
+	}
+
+	return render.UndeclaredVariables(files), nil
+}
+
+// firstDifference finds the first line where the two texts part, or reports them the
+// same.
+func firstDifference(want, got []byte) (line int, wantLine, gotLine string, same bool) {
+	if bytes.Equal(want, got) {
+		return 0, "", "", true
+	}
+	wantLines := strings.Split(string(want), "\n")
+	gotLines := strings.Split(string(got), "\n")
+	for i := range max(len(wantLines), len(gotLines)) {
+		var w, g string
+		if i < len(wantLines) {
+			w = wantLines[i]
+		}
+		if i < len(gotLines) {
+			g = gotLines[i]
+		}
+		if w != g || i >= len(wantLines) || i >= len(gotLines) {
+			return i + 1, w, g, false
+		}
+	}
+
+	return len(wantLines), "", "", false
+}
+
+// Write prints the report the way a person reads it: one line per file, the first
+// differing line under each.
+func (r *Report) Write(w io.Writer) {
+	if len(r.Findings) == 0 {
+		fmt.Fprintf(w, "%s (and the pipeline at %s): %d owned file(s) match the code\n", r.Dir, r.AppDir, r.Checked)
+	} else {
+		fmt.Fprintf(w, "%s (and the pipeline at %s): %d of %d owned file(s) differ from the code\n", r.Dir, r.AppDir, len(r.Findings), r.Checked)
+	}
+	for _, f := range r.Findings {
+		where := ""
+		if f.Root {
+			where = " (at the application root)"
+		}
+		if f.Missing {
+			fmt.Fprintf(w, "  missing  %s%s\n", f.Path, where)
+
+			continue
+		}
+		fmt.Fprintf(w, "  differs  %s:%d%s\n", f.Path, f.Line, where)
+		fmt.Fprintf(w, "           code:      %s\n", f.Want)
+		fmt.Fprintf(w, "           committed: %s\n", f.Got)
+	}
+	r.writeInformation(w)
+	if r.Start != nil && r.Start.Problem == "" {
+		fmt.Fprintf(w, "  image    %s\n", r.Start.Passed())
+	}
+	for i := range r.SiteBundles {
+		if b := &r.SiteBundles[i]; b.Problem == "" {
+			fmt.Fprintf(w, "  bundle   %s\n", b.Passed())
+		}
+	}
+	for _, a := range r.Authoritative {
+		fmt.Fprintf(w, "  refused  %s:%d %s: an authoritative IAM resource replaces every member on each apply; declare a *_iam_member per member instead (a file store's bucket policy, storage.tf's, is the one admitted)\n", a.Path, a.Line, a.Address)
+	}
+	for _, u := range r.Undeclared {
+		fmt.Fprintf(w, "  refused  %s:%d reads var.%s, and no variable block in the stack declares it: tofu refuses the plan at its first step. Declare it in a file of yours (variable \"%s\" {}) when the reference is yours; in a file bedrock renders, the declaration is bedrock's to render, and the fix is a bedrock that does (bedrock upgrade)\n", u.Path, u.Line, u.Name, u.Name)
+	}
+	for _, mf := range r.Migrations {
+		fmt.Fprintf(w, "  refused  %s: %s\n", mf.Path, mf.Problem)
+	}
+	if r.MigrationsFix != "" {
+		fmt.Fprintf(w, "           %s\n", r.MigrationsFix)
+	}
+	for _, g := range r.Generated {
+		fmt.Fprintf(w, "  refused  %s\n", g.Problem)
+	}
+	for i := range r.Retirements {
+		if rt := &r.Retirements[i]; rt.Problem != "" {
+			fmt.Fprintf(w, "  refused  %s\n", rt.Problem)
+		}
+	}
+	r.writeImage(w)
+	for _, rl := range r.ReleaseLines {
+		fmt.Fprintf(w, "  refused  %s: %s\n", rl.Path, rl.Problem)
+	}
+	for _, rs := range r.ReleaseSections {
+		fmt.Fprintf(w, "  refused  %s: %s\n", rs.Path, rs.Problem())
+	}
+	for i := range r.CloudArmor {
+		fmt.Fprintf(w, "  refused  %s\n", r.CloudArmor[i].Problem())
+	}
+	for i := range r.SignInThreshold {
+		fmt.Fprintf(w, "  refused  %s\n", r.SignInThreshold[i].Problem())
+	}
+	for _, path := range r.ReleaseFiles {
+		fmt.Fprintf(w, "  refused  %s is missing at the application root: the release workflow reads it, and without it no release is cut and nothing reaches an environment; bedrock render seeds it when absent\n", path)
+	}
+	for _, name := range r.MissingStages {
+		fmt.Fprintf(w, "  warning  Dockerfile has no %s stage: the image build caches nothing for %s, and every environment's build repeats it; the seeded Dockerfile (bedrock render into an empty directory) shows the stage\n", name, reserved[name].what)
+	}
+	for _, mf := range r.Maintenance {
+		fmt.Fprintf(w, "  warning  %s\n", mf.Problem)
+	}
+}
+
+// writeInformation prints the lines that fail nothing: the seeded files the directory
+// lacks, the retired files still committed, the secrets tracking latest, and the
+// variables the release retires.
+func (r *Report) writeInformation(w io.Writer) {
+	for _, path := range r.Unseeded {
+		fmt.Fprintf(w, "  unseeded %s (bedrock render creates it once)\n", path)
+	}
+	for _, path := range r.Retired {
+		fmt.Fprintf(w, "  retired  %s (at the application root): an earlier bedrock rendered it; bedrock render removes it\n", path)
+	}
+	if len(r.Latest) == 0 {
+		fmt.Fprintln(w, "  latest   no secret tracks latest: every entry of secret_versions in terraform.tfvars pins a version number")
+	}
+	for _, l := range r.Latest {
+		fmt.Fprintf(w, "  latest   %s tracks latest in %s (secret_versions.%s in terraform.tfvars): the environment runs whatever version is added next, with no release; pinning a version number is the default, and latest the exception for a secret that has to follow its source\n", l.Variable, l.Environment, l.Environment)
+	}
+	for i := range r.Retirements {
+		if rt := &r.Retirements[i]; rt.Problem == "" {
+			fmt.Fprintf(w, "  retire   %s is retired (retired in terraform.tfvars), %s: this release's apply lifts its protection against a destroy in every environment, and the next release removes the declaration and takes the name out of retired\n", rt.Variable, rt.What)
+		}
+	}
+}
+
+// writeImage prints the refusals the Dockerfile earns: the build secrets no environment
+// declares, the binaries and bundles it does not build or set, a start the stack's
+// services cannot start (its refused line, with the lines to write under it), the
+// reserved stages holding more than their install, the build arguments it does not
+// declare, and the shipped programs it does not compile (the same way, with the lines
+// to add under it).
+func (r *Report) writeImage(w io.Writer) {
+	for _, bs := range r.BuildSecrets {
+		fmt.Fprintf(w, "  refused  Dockerfile mounts build secret %s as required; %s declare%s no such secret (terraform.tfvars build_secrets)\n", bs.ID, joinAnd(bs.Missing), pluralS(len(bs.Missing)))
+	}
+	for _, b := range r.Binaries {
+		fmt.Fprintf(w, "  refused  Dockerfile builds no %s, the command %s: go build -o /build%s ./%s in the Go stage, with /build copied into the runtime image\n", b.Binary, b.Runs, b.Binary, b.Dir)
+	}
+	for _, b := range r.Bundles {
+		fmt.Fprintf(w, "  refused  Dockerfile sets no %s: the bundle %s is built in a browser stage of its workspace, copied under the working directory and named by an ENV %s=<path>, as the seeded Dockerfile does\n", b.Var, b.Path, b.Var)
+	}
+	for i := range r.SiteBundles {
+		if b := &r.SiteBundles[i]; b.Problem != "" {
+			fmt.Fprintf(w, "  refused  %s\n", b.Problem)
+		}
+	}
+	if r.Start != nil && r.Start.Problem != "" {
+		writeRefusal(w, r.Start.Refusal(dockerfileName))
+	}
+	for _, s := range r.Stages {
+		fmt.Fprintf(w, "  refused  Dockerfile:%d stage %s %s (%q): the image build exports this stage's layers to the registry's cache, which every environment's build reads, so the stage holds its install and nothing else\n", s.Line, s.Stage, s.Problem, s.Instruction)
+	}
+	for _, ba := range r.BuildArguments {
+		fmt.Fprintf(w, "  refused  placement.json declares build argument %s (%s), which the Dockerfile does not declare: add the line \"ARG %s\" to the stage that builds with it (a browser build stage, before its build), since a build argument reaches only the stages that declare it\n", ba.Name, ba.Value, ba.Name)
+	}
+	if r.Programs != nil {
+		writeRefusal(w, r.Programs.Refusal(dockerfileName))
+	}
+}
+
+// writeRefusal prints a refusal that runs over several lines: the first under the
+// report's label, the lines to write indented under it.
+func writeRefusal(w io.Writer, lines []string) {
+	for i, line := range lines {
+		label := "           "
+		if i == 0 {
+			label = "  refused  "
+		}
+		fmt.Fprintf(w, "%s%s\n", label, line)
+	}
+}
+
+// joinAnd writes names the way a sentence lists them: "stg", "stg and prd", "tst, stg
+// and prd".
+func joinAnd(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0]
+	default:
+		return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+	}
+}
+
+// pluralS is the verb's ending for one environment ("declares") or several ("declare").
+func pluralS(n int) string {
+	if n == 1 {
+		return "s"
+	}
+
+	return ""
+}

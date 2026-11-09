@@ -1,0 +1,270 @@
+variable "apps_domain" {
+  description = "Domain the applications are served under: app.domain for prd, app-stg.domain, app-tst.domain, and app-pr<N>.domain for pull requests, one label under the domain, served by the wildcard with no entry per pull request. Never the identity domain (decided 2026-09-26); registered by this layer when it is listed in var.registrations."
+  type        = string
+  default     = "apps.imp.example"
+
+  validation {
+    condition     = can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,}$", var.apps_domain))
+    error_message = "apps_domain must be a bare lowercase domain such as example.com, without a trailing dot."
+  }
+}
+
+variable "vanity_domains" {
+  description = <<-EOT
+    The vanity domains beside the apps domain, each a client's own domain an
+    application serves on (its brand domain, in production): this layer holds
+    for each a DNS authorization, a managed certificate for the domain and one
+    label below it, and the certificate map's entries, as for the apps domain,
+    and the host rules come from hosts as for any hostname. A domain not in
+    customer_dns_domains is delegated whole to this project and served by a
+    zone here, as the apps domain is. Rendered from placement.json
+    (vanityDomains): an application declares the hostnames it serves on one in
+    its own placement (hostnames.<site>.vanity, the domain itself or one label
+    under it), and the organization records them with the others. A domain
+    that carries other DNS (mail, a website) is never delegated whole; bedrock
+    domain check refuses it and names the two ways out, a label of it declared
+    instead, or the domain kept at its provider (customer_dns_domains). A
+    delegated vanity domain may be registered here too (registrations), as
+    the apps domain may; the registration then points at the domain's zone.
+  EOT
+  type        = list(string)
+  default     = ["beacon.example", "harborlights.example"]
+
+  validation {
+    condition     = alltrue([for d in var.vanity_domains : can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,}$", d))])
+    error_message = "Every vanity domain must be a bare lowercase domain such as example.com, without a trailing dot."
+  }
+
+  validation {
+    condition     = !contains(var.vanity_domains, var.apps_domain)
+    error_message = "The apps domain has its own zone and certificate; a vanity domain is another domain."
+  }
+}
+
+variable "customer_dns_domains" {
+  description = <<-EOT
+    The vanity domains kept at the customer's DNS provider (vanityDomains
+    entries with dns "customer" in placement.json), each one of vanity_domains:
+    the provider stays authoritative for the domain, its mail and every other
+    record untouched, so this layer renders no zone and no record for it. The
+    customer adds the records bedrock domain check prints, as the provider's
+    form takes them: an A record per hostname the applications declare on the
+    domain (the apex, a label), at the load balancer's address, and the
+    certificate's authorization CNAME; named records, never a wildcard. The
+    check verifies them in the world's DNS instead of a delegation, and the
+    certificate is issued once the CNAME resolves. A kept domain is never
+    registered here (domains.tf).
+  EOT
+  type        = list(string)
+  default     = ["beacon.example"]
+
+  validation {
+    condition     = alltrue([for d in var.customer_dns_domains : contains(var.vanity_domains, d)])
+    error_message = "Every domain kept at the customer's DNS provider is one of the vanity domains."
+  }
+}
+
+variable "extra_records" {
+  description = <<-EOT
+    Further records in the apps domain zone, beyond the load balancer A
+    records and the certificate authorization this layer manages itself.
+    Needed the moment the zone is delegated for a domain that already does
+    something else, above all the identity domain: Google Workspace mail (the
+    MX records), its verification and SPF TXT records at the apex, DKIM under
+    google._domainkey, and DMARC under _dmarc. Delegating without them
+    silently breaks mail to the domain.
+
+    name    the label relative to the zone; "@" for the apex
+    type    the record type: MX, TXT, CNAME, A, AAAA, SRV, ...
+    ttl     seconds; 300 unless given
+    rrdatas the record data, one string per value; TXT values are quoted here
+
+    Example:
+      [
+        { name = "@", type = "MX", ttl = 3600, rrdatas = ["1 smtp.google.com."] },
+        { name = "@", type = "TXT", rrdatas = ["\"v=spf1 include:_spf.google.com ~all\""] },
+      ]
+  EOT
+  type = list(object({
+    name    = string
+    type    = string
+    ttl     = optional(number, 300)
+    rrdatas = list(string)
+  }))
+  default = []
+
+  validation {
+    condition     = length(distinct([for r in var.extra_records : "${r.name}/${r.type}"])) == length(var.extra_records)
+    error_message = "Each name/type pair may appear only once in extra_records; put several values in one entry's rrdatas."
+  }
+}
+
+variable "vanity_extra_records" {
+  description = <<-EOT
+    Further records in a vanity domain's zone, keyed by the domain, beyond the
+    load balancer A records and the certificate authorization this layer
+    manages itself: what a domain delegated whole publishes to prove itself
+    and to say it sends no mail. A null SPF (v=spf1 -all) and a DMARC reject
+    policy for a domain that sends no mail, a site-verification TXT record, a
+    CAA record admitting pki.goog. Never a mail-exchanger record: a zone here
+    carries no customer's mail, and a domain that carries mail is delegated
+    as a label instead (README.md, "Vanity domains").
+
+    Each entry is as in extra_records: name ("@" for the apex), type, ttl
+    (300 unless given), rrdatas (TXT values quoted).
+
+    Example:
+      {
+        "fastcars.app" = [
+          { name = "@", type = "TXT", rrdatas = ["\"v=spf1 -all\""] },
+          { name = "_dmarc", type = "TXT", rrdatas = ["\"v=DMARC1; p=reject\""] },
+        ]
+      }
+  EOT
+  type = map(list(object({
+    name    = string
+    type    = string
+    ttl     = optional(number, 300)
+    rrdatas = list(string)
+  })))
+  default = {}
+
+  validation {
+    condition     = alltrue([for d, rs in var.vanity_extra_records : contains(var.vanity_domains, d) && !contains(var.customer_dns_domains, d)])
+    error_message = "Each key of vanity_extra_records is one of the vanity domains delegated here (vanityDomains in placement.json, without dns customer): a kept domain's records are the customer's."
+  }
+
+  validation {
+    condition     = alltrue([for d, rs in var.vanity_extra_records : alltrue([for r in rs : r.type != "MX"])])
+    error_message = "A vanity domain's zone carries no mail-exchanger record: a domain that carries mail is delegated as a label instead."
+  }
+
+  validation {
+    condition     = alltrue([for d, rs in var.vanity_extra_records : length(distinct([for r in rs : "${r.name}/${r.type}"])) == length(rs)])
+    error_message = "Each name/type pair may appear only once per domain in vanity_extra_records; put several values in one entry's rrdatas."
+  }
+}
+
+variable "serving" {
+  description = <<-EOT
+    Whether the load balancer serves: its listeners (the forwarding rules, the
+    proxies, the URL maps and the sink backend) stand and hosts route. False
+    takes them down while the address, the certificate and its DNS
+    authorization stay, so the IP never changes and no certificate is issued
+    again. Rendered into applications.auto.tfvars from the placement: bedrock
+    org teardown sets it false with hosts empty, and a person flips it back
+    on a pull request once the applications' stacks are applied again.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "hosts" {
+  description = <<-EOT
+    The hostnames the load balancer serves, each with the backend service that
+    serves it, as a full backend service URI:
+    projects/{project}/global/backendServices/{name}. The backend services live
+    in the environment projects, next to the Cloud Run services they front;
+    this map is how the URL map learns about them. Adding a host is adding an
+    entry here and re-running this layer; the backend service must exist
+    already, and its project must have granted this layer's identity
+    roles/compute.loadBalancerServiceUser (see the README and the
+    load_balancer_service_user output).
+
+    A key may start with a wildcard label, *.example.com or *-app.example.com,
+    which matches any string of [a-z0-9-.] in that position.
+
+    Example:
+      {
+        "harbor-tst.apps.imp.example" = "projects/imp-tst-gbl-core-a1b2/global/backendServices/imp-tst-gbl-harbor-site"
+        "harbor.apps.imp.example"     = "projects/imp-prd-gbl-core-a1b2/global/backendServices/imp-prd-gbl-harbor-site"
+      }
+  EOT
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for h, _ in var.hosts : can(regex("^(\\*[-.])?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,}$", h))])
+    error_message = "Every key of hosts must be a lowercase hostname, optionally starting with *. or *-."
+  }
+
+  validation {
+    condition     = alltrue([for h, _ in var.hosts : length(h) <= 63])
+    error_message = "Every key of hosts must be at most 63 characters; it becomes a path matcher name."
+  }
+
+  validation {
+    condition     = alltrue([for _, s in var.hosts : can(regex("^(https://www\\.googleapis\\.com/compute/v1/)?projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/backendServices/[a-z]([a-z0-9-]{0,61}[a-z0-9])?$", s))])
+    error_message = "Every value of hosts must be a global backend service URI: projects/{project}/global/backendServices/{name}, with or without the https://www.googleapis.com/compute/v1/ prefix."
+  }
+}
+
+variable "ssl_policy_profile" {
+  description = "Cipher suite profile of the SSL policy. MODERN drops the legacy suites that COMPATIBLE keeps for old clients; RESTRICTED is narrower still and is where to go when a compliance regime asks."
+  type        = string
+  default     = "MODERN"
+
+  validation {
+    condition     = contains(["COMPATIBLE", "MODERN", "RESTRICTED"], var.ssl_policy_profile)
+    error_message = "ssl_policy_profile must be COMPATIBLE, MODERN, or RESTRICTED."
+  }
+}
+
+variable "registrations" {
+  description = <<-EOT
+    Domains this layer registers through Cloud Domains, keyed by name. Each
+    carries the yearly price Cloud Domains quoted (gcloud domains registrations
+    get-register-parameters <name>) and the notices it asked to acknowledge;
+    the apply refuses a price that no longer matches. The apps domain, when
+    listed, is pointed at the apps zone; any other domain gets a parked zone.
+    Empty means no registration is managed here (the organization's first weeks ran
+    on a delegated subdomain of the identity domain).
+  EOT
+  type = map(object({
+    yearly_price_usd = number
+    notices          = optional(list(string), [])
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for d in keys(var.registrations) : can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,}$", d))])
+    error_message = "Every key of registrations must be a bare lowercase domain."
+  }
+}
+
+variable "registrant_contact" {
+  description = <<-EOT
+    The registrant, administrative and technical contact of every registration
+    (the same person or role for all three). Published redacted unless public
+    is true. The mailbox must be read by a person: the registrar sends a
+    verification mail there and suspends an unverified domain.
+  EOT
+  type = object({
+    organization        = string
+    recipients          = list(string)
+    email               = string
+    phone_number        = string
+    address_lines       = list(string)
+    locality            = string
+    administrative_area = string
+    postal_code         = string
+    region_code         = string
+    public              = optional(bool, false)
+  })
+  default = {
+    organization        = ""
+    recipients          = []
+    email               = ""
+    phone_number        = ""
+    address_lines       = []
+    locality            = ""
+    administrative_area = ""
+    postal_code         = ""
+    region_code         = ""
+  }
+
+  validation {
+    condition     = length(var.registrations) == 0 || (var.registrant_contact.email != "" && var.registrant_contact.phone_number != "" && var.registrant_contact.region_code != "")
+    error_message = "A registration needs a registrant: email, phone_number and region_code at least."
+  }
+}

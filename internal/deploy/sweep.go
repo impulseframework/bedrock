@@ -1,0 +1,239 @@
+// sweep.go is the hourly sweep of closed pull requests' environments.
+
+package deploy
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/go-playground/errors/v5"
+)
+
+// The labels a pull request's services carry.
+const (
+	applicationLabel = "application"
+	pullRequestLabel = "pull_request"
+)
+
+// closedState is a pull request's state on GitHub once it is closed or merged.
+const closedState = "closed"
+
+// sweepRepoSub is the repository as GitHub names it, passed by the sweep trigger as a
+// substitution of its own: Cloud Scheduler starts the sweep's build through the API,
+// which sets none of the built-ins a GitHub event sets (REPO_FULL_NAME among them).
+const sweepRepoSub = "_REPO_FULL_NAME"
+
+// Sweep destroys the environments of closed pull requests. A pull request has an
+// environment while its services stand (the pull_request label on the application's
+// services, in every region of _SERVICES); GitHub says which of those pull requests are
+// closed, asked with the repository's token minted from the Cloud Build connection the
+// way resolve mints it; and each closed one's stack is destroyed from its own state
+// prefix, the way /gcbrun down destroys it, as the apply identity, which the sweep
+// trigger runs as. Closing or merging a pull request starts no build, so this is how an
+// environment nobody took down goes away. An open pull request's environment stays, and
+// so does one GitHub cannot answer for.
+func Sweep(ctx context.Context, clients *Clients, w Workspace, req *BuildRequest, out io.Writer) error {
+	build, builds, err := readBuild(ctx, clients, req)
+	if err != nil {
+		return err
+	}
+	subs := build.Substitutions
+	numbers, err := pullRequestEnvironments(ctx, clients, subs)
+	if err != nil {
+		return err
+	}
+	if len(numbers) == 0 {
+		fmt.Fprintf(out, "No pull-request environment in %s.\n", subs[envSub])
+
+		return nil
+	}
+	fmt.Fprintf(out, "Pull requests with an environment: %s\n", strings.Join(numbers, " "))
+	token, err := repositoryToken(ctx, builds, subs, req.Project, req.Location)
+	if err != nil {
+		return err
+	}
+	owner, repo, err := splitRepo(subs[sweepRepoSub])
+	if err != nil {
+		return err
+	}
+	gh := clients.GitHub(token)
+	p, err := checkoutPlacement(w, "the state bucket is named")
+	if err != nil {
+		return err
+	}
+	s := newStack(clients, w, build, out)
+	for _, number := range numbers {
+		n, _ := strconv.Atoi(number)
+		state, err := gh.PullRequestState(ctx, owner, repo, n)
+		switch {
+		case err != nil:
+			fmt.Fprintf(out, "Notice: GitHub did not answer for pull request %s (%v); its environment stays.\n", number, err)
+
+			continue
+		case state != closedState:
+			fmt.Fprintf(out, "Pull request %s is %s: its environment stays.\n", number, state)
+
+			continue
+		}
+		fmt.Fprintf(out, "Pull request %s is closed: its environment goes.\n", number)
+		// Each pull request's stack is initialized afresh against its own prefix.
+		if err := s.init(ctx, subs, number); err != nil {
+			return err
+		}
+		standing, err := destroyPullRequestStack(ctx, clients, s, subs, number, p.StateBucket, out)
+		if err != nil {
+			return err
+		}
+		removePersonaRegistrations(ctx, clients, subs, number, standing, out)
+	}
+
+	return nil
+}
+
+// destroyPullRequestStack destroys the pull request's stack, initialized at its own
+// prefix: its builds' jobs deleted first, then the stack, then its state object in the
+// bucket, so nothing of the stack is kept and no later run walks an empty state. A state
+// that holds no resources (a stack only initialized, or destroyed already) is skipped
+// before any output is read, and its object goes the same way. It answers the stack's
+// facts as read before the destroy (nil for a stack skipped or whose outputs could not be
+// read), for what is removed after it: the sweep removes the persona registrations the
+// stack named. The sweep does it for a closed pull request, and bedrock teardown --all
+// and destroy --all for every pull request's.
+func destroyPullRequestStack(ctx context.Context, clients *Clients, s *stack, subs map[string]string, number, bucket string, out io.Writer) (map[string]string, error) {
+	listed, err := s.tofuOutput(ctx, "state", "list")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(string(listed)) == "" {
+		fmt.Fprintf(out, "Pull request %s's stack holds nothing (never applied, or destroyed already); skipped.\n", number)
+
+		return nil, deleteStateObject(ctx, clients, bucket, pullRequestPrefix(subs, number), number, out)
+	}
+	standing := standingFacts(ctx, s, number, out)
+	if err := deleteBuildJobs(ctx, clients, subs, number, standing, out); err != nil {
+		return nil, err
+	}
+	if err := s.tofu(ctx, destroyCmd, autoApprove, noInputFlag, noColorFlag, varFlag, "environment="+subs[envSub], varFlag, "pull_request="+number); err != nil {
+		return nil, err
+	}
+
+	return standing, deleteStateObject(ctx, clients, bucket, pullRequestPrefix(subs, number), number, out)
+}
+
+// standingFacts reads a standing pull request stack's facts off its outputs before it is
+// destroyed: the template job its builds copied, and the persona registrations the
+// provider holds for it. A stack whose outputs cannot be read (never applied, or applied
+// by a bedrock before the output) answers nil, with a notice: none of its builds' jobs is
+// deleted, and its registrations are read from the trigger's substitution instead.
+func standingFacts(ctx context.Context, s *stack, number string, out io.Writer) map[string]string {
+	facts, err := s.facts(ctx)
+	if err != nil {
+		fmt.Fprintf(out, "Notice: pull request %s's stack names no jobs (%v); none of its builds' jobs is deleted, and its persona registrations are read from the trigger.\n", number, errors.Cause(err))
+
+		return nil
+	}
+
+	return facts
+}
+
+// deleteStateObject deletes the pull request's state object at its prefix in the state
+// bucket, the last thing of its stack; one already gone is nothing to delete.
+func deleteStateObject(ctx context.Context, clients *Clients, bucket, prefix, number string, out io.Writer) error {
+	store, err := clients.Storage(ctx)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	object := prefix + "/" + stateObjectName
+	switch err := store.Delete(ctx, bucket, object); {
+	case errors.Is(err, os.ErrNotExist):
+		return nil
+	case err != nil:
+		return errors.Wrapf(err, "deleting gs://%s/%s", bucket, object)
+	}
+	fmt.Fprintf(out, "Pull request %s's state object gs://%s/%s is deleted: nothing of its stack is kept.\n", number, bucket, object)
+
+	return nil
+}
+
+// deleteBuildJobs deletes the jobs the pull request's builds made: the copies of its
+// stack's template job for the job process, named under the template's prefix. The
+// template's name comes from the stack's substitutions output (facts, read by
+// standingFacts), where a pull request's build learns it: the trigger's substitutions
+// name the environment's template, which no copy of a pull request's is under. It runs
+// with the stack initialized and before it is destroyed, since the output lives in its
+// state; a stack whose output could not be read (nil facts), one never applied, names no
+// job, and nothing is deleted; an application without a job process made none.
+func deleteBuildJobs(ctx context.Context, clients *Clients, subs map[string]string, number string, facts map[string]string, out io.Writer) error {
+	if facts == nil {
+		return nil
+	}
+	if facts[jobsJobFact] == "" {
+		fmt.Fprintf(out, "Pull request %s's stack names no template for a job process; its builds made no job.\n", number)
+
+		return nil
+	}
+	project := subs[projectSub]
+	region, template, err := target(jobsJobFact, facts[jobsJobFact])
+	if err != nil {
+		return err
+	}
+	run, err := clients.Run(ctx)
+	if err != nil {
+		return err
+	}
+
+	return deletePullRequestJobs(ctx, run, project, region, []string{jobPrefix(project, region, template)}, subs[appSub], number, out)
+}
+
+// pullRequestEnvironments are the numbers of the pull requests whose services stand, in
+// every region the application's services run in, sorted.
+func pullRequestEnvironments(ctx context.Context, clients *Clients, subs map[string]string) ([]string, error) {
+	run, err := clients.Run(ctx)
+	if err != nil {
+		return nil, err
+	}
+	found := map[string]bool{}
+	regions := map[string]bool{}
+	for _, pair := range strings.Split(subs["_SERVICES"], ",") {
+		region, _, err := target("_SERVICES", pair)
+		if err != nil {
+			return nil, err
+		}
+		// A sites-layout stack names a service per site in each region; a region is
+		// listed once.
+		if regions[region] {
+			continue
+		}
+		regions[region] = true
+		list, err := run.Services(ctx, subs["_PROJECT"], region)
+		if err != nil {
+			return nil, err
+		}
+		for _, svc := range list {
+			labels, _ := svc["labels"].(map[string]any)
+			app, _ := labels[applicationLabel].(string)
+			number, _ := labels[pullRequestLabel].(string)
+			if app == subs[appSub] && number != "" {
+				found[number] = true
+			}
+		}
+	}
+	numbers := make([]string, 0, len(found))
+	for n := range found {
+		numbers = append(numbers, n)
+	}
+	sort.Slice(numbers, func(i, j int) bool {
+		a, _ := strconv.Atoi(numbers[i])
+		b, _ := strconv.Atoi(numbers[j])
+
+		return a < b
+	})
+
+	return numbers, nil
+}

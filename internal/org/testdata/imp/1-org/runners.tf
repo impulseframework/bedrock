@@ -1,0 +1,240 @@
+# ---------------------------------------------------------------------------
+# The triggers' reach, and the boot layers' plan identities
+#
+# Every layer is planned on a pull request as its plan identity and applied on
+# a push to master as its apply identity by the two Cloud
+# Build triggers 0-bootstrap renders (0-bootstrap/cloud-build.tf): the plan
+# trigger's run impersonates the plan identity for that layer's tofu, the
+# apply trigger's run the apply identity. This layer creates the identities of
+# the six project layers (service-accounts.tf); the two boot layers' plan
+# identities are 0-bootstrap's, with their reads on the organization's folder
+# (0-bootstrap/bootstrap.tf): a binding at the organization node is
+# 0-bootstrap's to make, since this layer's identity holds no role there that
+# sets the organization's policy.
+#
+# For every identity it creates, this layer lets the runner of its kind
+# impersonate it (roles/iam.serviceAccountTokenCreator: the planner on a plan
+# identity, the applier on an apply identity) and makes the state bucket's
+# grants: the layer's own prefix, the upstream prefixes it reads, and the
+# list. 0-bootstrap makes the same for the four identities it owns. IAM refuses
+# a binding for a service account that does not exist, which is why each
+# layer grants for the identities it creates, and why the environment layer
+# identities receive the bucket's policy authority here: 2-env grants the
+# application identities it creates their slots (2-env/identities.tf). The
+# environment layer identities also receive the policy administration of the
+# deployer and release GitHub Apps' key secrets here, which live in the root
+# organization's root project, so 2-env can grant the applications' identities
+# their read.
+# ---------------------------------------------------------------------------
+
+locals {
+  boot = data.terraform_remote_state.boot.outputs
+
+  # The GitHub Apps' keys live in the root organization imr's root
+  # project (placement.json, keys), one secret per app, read by alias; this
+  # layer hands their policy administration down with the role of that
+  # project 0-bootstrap holds (0-bootstrap/github.tf).
+  keys_project           = "imr-root-gbl-core-c3d4"
+  key_secrets            = { deployer = "imr-root-gbl-github-deployer-key", release = "imr-root-gbl-github-release-key" }
+  keys_policy_admin_role = "projects/imr-root-gbl-core-c3d4/roles/secretPolicyAdmin"
+
+  state_bucket_objects = "projects/_/buckets/${var.state_bucket}/objects"
+
+  # Each project layer's own state prefix: a shared layer's is its directory,
+  # an environment's is 2-env/<env>; and the upstream prefixes it reads: a
+  # shared layer reads this layer's, an environment reads this layer's, the
+  # shared layers' and every environment's (the next environment's identities
+  # for the record gate, tst's deploy identities for the pull-request builds).
+  layer_state_prefixes    = { for k, v in local.layers : k => v.folder == "shared" ? "2-${k}" : "2-env/${k}" }
+  layer_upstream_prefixes = { for k, v in local.layers : k => v.folder == "shared" ? ["1-org"] : ["1-org", "2-shr", "2-spn", "2-net", "2-env"] }
+  environment_layers      = { for k, v in local.layers : k => v if v.folder != "shared" }
+}
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Who may become each identity: the trigger runners of its kind
+# ---------------------------------------------------------------------------
+
+resource "google_service_account_iam_member" "tofu_applier" {
+  for_each = local.layers
+
+  service_account_id = google_service_account.tofu[each.key].name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = local.boot.applier_member
+}
+
+resource "google_service_account_iam_member" "plan_planner" {
+  for_each = local.layers
+
+  service_account_id = google_service_account.plan[each.key].name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = local.boot.planner_member
+}
+
+
+
+# ---------------------------------------------------------------------------
+# The deployer GitHub App's key
+#
+# The environment layer identities administer the secret's policy
+# (secretPolicyAdmin, the root organization's role: the policy and nothing
+# else, never a version's payload), so 2-env can grant each application's
+# identities the read of the alias its output names.
+# ---------------------------------------------------------------------------
+
+resource "google_secret_manager_secret_iam_member" "environment_tofu_deployer_key" {
+  for_each = local.environment_layers
+
+  project   = local.keys_project
+  secret_id = local.key_secrets.deployer
+  role      = local.keys_policy_admin_role
+  member    = google_service_account.tofu[each.key].member
+}
+
+# The environment layers' plan identities refresh those grants on a pull
+# request, which reads the secret's policy: the secret lives in another
+# organization's project, where no role of this organization's reaches. The
+# viewer role reads the secret and its versions' metadata, never a version's
+# payload.
+resource "google_secret_manager_secret_iam_member" "environment_plan_deployer_key" {
+  for_each = local.environment_layers
+
+  project   = local.keys_project
+  secret_id = local.key_secrets.deployer
+  role      = "roles/secretmanager.viewer"
+  member    = google_service_account.plan[each.key].member
+}
+
+# ---------------------------------------------------------------------------
+# The release GitHub App's key
+#
+# The same for the release app's key, which each application's release
+# trigger mints its token from (release-please, in tst's Cloud Build as the
+# application's release identity): the environment layer identities
+# administer the secret's policy, so tst's 2-env can grant each release
+# identity the read, and the plan identities read the policy on a pull
+# request.
+# ---------------------------------------------------------------------------
+
+resource "google_secret_manager_secret_iam_member" "environment_tofu_release_key" {
+  for_each = local.environment_layers
+
+  project   = local.keys_project
+  secret_id = local.key_secrets.release
+  role      = local.keys_policy_admin_role
+  member    = google_service_account.tofu[each.key].member
+}
+
+resource "google_secret_manager_secret_iam_member" "environment_plan_release_key" {
+  for_each = local.environment_layers
+
+  project   = local.keys_project
+  secret_id = local.key_secrets.release
+  role      = "roles/secretmanager.viewer"
+  member    = google_service_account.plan[each.key].member
+}
+
+# ---------------------------------------------------------------------------
+# The state bucket
+# ---------------------------------------------------------------------------
+
+resource "google_storage_bucket_iam_member" "tofu_state_list" {
+  for_each = local.layers
+
+  bucket = var.state_bucket
+  role   = "roles/storage.legacyBucketReader"
+  member = google_service_account.tofu[each.key].member
+}
+
+resource "google_storage_bucket_iam_member" "plan_state_list" {
+  for_each = local.layers
+
+  bucket = var.state_bucket
+  role   = "roles/storage.legacyBucketReader"
+  member = google_service_account.plan[each.key].member
+}
+
+resource "google_storage_bucket_iam_member" "tofu_state_own" {
+  for_each = local.layers
+
+  bucket = var.state_bucket
+  role   = "roles/storage.objectUser"
+  member = google_service_account.tofu[each.key].member
+
+  condition {
+    title       = "${local.layer_names[each.key]}-state"
+    description = "The layer's own state prefix."
+    expression  = "resource.name.startsWith(\"${local.state_bucket_objects}/${local.layer_state_prefixes[each.key]}/\")"
+  }
+}
+
+resource "google_storage_bucket_iam_member" "tofu_state_upstream" {
+  for_each = local.layers
+
+  bucket = var.state_bucket
+  role   = "roles/storage.objectViewer"
+  member = google_service_account.tofu[each.key].member
+
+  condition {
+    title       = "${local.layer_names[each.key]}-upstream-state"
+    description = "The upstream states the layer reads outputs from."
+    expression  = join(" || ", [for p in local.layer_upstream_prefixes[each.key] : "resource.name.startsWith(\"${local.state_bucket_objects}/${p}/\")"])
+  }
+}
+
+resource "google_storage_bucket_iam_member" "plan_state_read" {
+  for_each = local.layers
+
+  bucket = var.state_bucket
+  role   = "roles/storage.objectViewer"
+  member = google_service_account.plan[each.key].member
+
+  condition {
+    title       = "${local.layer_names[each.key]}-plan-state"
+    description = "The layer's own state prefix and the upstream states it reads."
+    expression  = join(" || ", [for p in concat([local.layer_state_prefixes[each.key]], local.layer_upstream_prefixes[each.key]) : "resource.name.startsWith(\"${local.state_bucket_objects}/${p}/\")"])
+  }
+}
+
+# The environment layer identities grant the application identities 2-env
+# creates their own slots in the bucket, which takes the bucket's policy
+# authority (0-bootstrap's custom role).
+resource "google_storage_bucket_iam_member" "environment_tofu_policy_admin" {
+  for_each = local.environment_layers
+
+  bucket = var.state_bucket
+  role   = local.boot.state_bucket_policy_admin_role
+  member = google_service_account.tofu[each.key].member
+}
+
+# The environment layers' plan identities refresh those slots on a pull
+# request, which reads the bucket's policy (custom-roles.tf): the bucket lives
+# in the boot project, where the plan identity's project roles do not reach.
+resource "google_storage_bucket_iam_member" "environment_plan_policy_reader" {
+  for_each = local.environment_layers
+
+  bucket = var.state_bucket
+  role   = google_project_iam_custom_role.bucket_policy_reader["boot"].id
+  member = google_service_account.plan[each.key].member
+}
+
+# org check, which the triggers run before a plan and an apply, lists each
+# environment project's API keys that carry no restriction (bedrock's
+# apikeys.go), and each list is billed to the project it reads: the runners
+# hold serviceUsageConsumer on each environment project for that read, as
+# they hold it on the boot project for the layers' calls.
+resource "google_project_iam_member" "runner_keys_quota" {
+  for_each = {
+    for pair in setproduct(["applier", "planner"], [for k, v in local.layers : k if v.role_set == "app"]) : "${pair[0]}__${pair[1]}" => { runner = pair[0], proj = pair[1] }
+  }
+
+  project = module.project[each.value.proj].project_id
+  role    = "roles/serviceusage.serviceUsageConsumer"
+  member  = each.value.runner == "applier" ? local.boot.applier_member : local.boot.planner_member
+}

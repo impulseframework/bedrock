@@ -1,0 +1,404 @@
+package derive
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/impulseframework/impulse/app"
+	spannerdeclaration "github.com/impulseframework/impulse/resource/database/spanner/declaration"
+)
+
+// The framework settings struct the harbor fixture embeds, as the fixture writes it, and
+// an alias the test imports it under.
+const (
+	gcpImport    = `"github.com/impulseframework/impulse/cloud/gcp"`
+	gcpEmbedding = "\t// The Google Cloud driver's variables: the logging project and the trace sampling.\n\tgcp.Settings\n"
+	gcpAlias     = "cloud"
+)
+
+// The expanded fields' docs, as the framework declares them.
+const (
+	loggingProjectDoc = "LoggingProject is the Google Cloud project request logs ship to and spans are\nrecorded in. Empty logs to the console and exports no span: development."
+	traceSamplingDoc  = "TraceSampling says which spans are recorded: every one (all), or the ones a request\nGoogle's edge sampled starts (edge)."
+)
+
+// expectedVariable is a variable a test expects: the text of the source line it is
+// declared on, and what it says about itself (variableLine) with <line> for that line.
+type expectedVariable struct {
+	needle string
+	line   string
+}
+
+// The harbor fixture's core variables: the two the struct declares and the two the
+// framework settings struct it embeds declares, at the embedding's line.
+var (
+	appVersionVar  = expectedVariable{needle: "AppVersion string", line: "APP_VERSION core coreConfig.AppVersion string pkg/config/config.go:<line> required=false default=\"dev\" set=true doc=\"AppVersion is the build-time or runtime application version.\""}
+	serviceNameVar = expectedVariable{needle: "ServiceName string", line: "APP_SERVICE_NAME core coreConfig.ServiceName string pkg/config/config.go:<line> required=true default=\"\" set=false doc=\"ServiceName names the process in logs.\""}
+	loggingVar     = expectedVariable{needle: "gcp.Settings", line: "GOOGLE_CLOUD_LOGGING_PROJECT core coreConfig.LoggingProject string pkg/config/config.go:<line> required=false default=\"\" set=false doc=" + strconv.Quote(loggingProjectDoc)}
+	samplingVar    = expectedVariable{needle: "gcp.Settings", line: "APP_TRACE_SAMPLING core coreConfig.TraceSampling string pkg/config/config.go:<line> required=false default=\"edge\" set=true doc=" + strconv.Quote(traceSamplingDoc)}
+)
+
+// TestEmbeddedFrameworkSettings reads a config package whose core struct embeds the
+// framework's settings struct: the embedding expands into the fields the struct
+// declares, each a field of the embedding struct at the embedding's line, placed among
+// the variables where the embedding stands; the tags impulse's scan declares at the
+// embedding from the same declaration are placed once; an import alias is honored; and
+// an embedded type of another package the framework does not declare is refused, as is
+// a settings struct embedded outside every level.
+func TestEmbeddedFrameworkSettings(t *testing.T) {
+	t.Parallel()
+
+	aliased := func(v expectedVariable) expectedVariable {
+		v.needle = gcpAlias + ".Settings"
+
+		return v
+	}
+	tests := []struct {
+		name string
+		// edit rewrites the fixture's config file; nil keeps it as committed.
+		edit func(src string) string
+		// scanned adds the tags impulse's scan reads for the embedding: the variables the
+		// struct declares, at the embedding's line, naming the struct.
+		scanned bool
+		// want are the core level's variables in order.
+		want []expectedVariable
+		// wantErr is the refusal, with <line> for the line of wantErrAt.
+		wantErr   string
+		wantErrAt string
+	}{
+		{
+			name: "the embedded settings expand into fields of the struct, after the declared ones",
+			want: []expectedVariable{appVersionVar, serviceNameVar, loggingVar, samplingVar},
+		},
+		{
+			name:    "the tags impulse's scan declares at the embedding are placed once",
+			scanned: true,
+			want:    []expectedVariable{appVersionVar, serviceNameVar, loggingVar, samplingVar},
+		},
+		{
+			name: "an embedding before the declared fields places its variables first",
+			edit: func(src string) string {
+				src = strings.Replace(src, gcpEmbedding, "", 1)
+
+				return strings.Replace(src, "type coreConfig struct {\n", "type coreConfig struct {\n\tgcp.Settings\n", 1)
+			},
+			want: []expectedVariable{loggingVar, samplingVar, appVersionVar, serviceNameVar},
+		},
+		{
+			name: "an import alias names the settings struct",
+			edit: func(src string) string {
+				src = strings.Replace(src, gcpImport, gcpAlias+" "+gcpImport, 1)
+
+				return strings.Replace(src, "gcp.Settings", gcpAlias+".Settings", 1)
+			},
+			want: []expectedVariable{appVersionVar, serviceNameVar, aliased(loggingVar), aliased(samplingVar)},
+		},
+		{
+			name: "an embedded type of another package is refused",
+			edit: func(src string) string {
+				return strings.Replace(src, gcpImport, `"example.com/other/gcp"`, 1)
+			},
+			wantErr:   "pkg/config/config.go:<line>: coreConfig embeds gcp.Settings (example.com/other/gcp), which is not a settings struct the framework declares: declare its variables on the struct, or export the struct's declaration from the module that owns it",
+			wantErrAt: "gcp.Settings",
+		},
+		{
+			name: "settings embedded outside every level are refused",
+			edit: func(src string) string {
+				return src + "\n// extraConfig is read by no level.\ntype extraConfig struct {\n\tgcp.Settings\n}\n"
+			},
+			wantErr:   "pkg/config/config.go:<line>: GOOGLE_CLOUD_LOGGING_PROJECT is declared outside every configuration level",
+			wantErrAt: "type extraConfig struct {\n\tgcp.Settings",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := filepath.Join(t.TempDir(), "app")
+			if err := os.CopyFS(dir, os.DirFS(filepath.Join("testdata", "harbor"))); err != nil {
+				t.Fatalf("os.CopyFS() error = %v", err)
+			}
+			file := filepath.Join(dir, "pkg", "config", "config.go")
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			src := string(data)
+			if tt.edit != nil {
+				src = tt.edit(src)
+				if err := os.WriteFile(file, []byte(src), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			a, err := app.Discover(dir)
+			if err != nil {
+				t.Fatalf("app.Discover() error = %v", err)
+			}
+			if tt.scanned {
+				a.EnvTags = append(a.EnvTags, scannedTags(t, src)...)
+			}
+			cfg, err := readConfig(a, nil)
+			if tt.wantErr != "" {
+				wantErr := atLine(t, src, tt.wantErrAt, tt.wantErr)
+				if err == nil || !strings.Contains(err.Error(), wantErr) {
+					t.Fatalf("readConfig() error = %v, wantErr %q", err, wantErr)
+				}
+
+				return
+			}
+			if err != nil {
+				t.Fatalf("readConfig() error = %v", err)
+			}
+			var got []string
+			for i := range cfg.variables {
+				v := &cfg.variables[i]
+				if v.Level == LevelCore {
+					got = append(got, variableLine(v))
+				}
+			}
+			want := make([]string, 0, len(tt.want))
+			for _, e := range tt.want {
+				want = append(want, atLine(t, src, e.needle, e.line))
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("core variables =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+		})
+	}
+}
+
+// scannedTags are the tags impulse's scan reads for the fixture's embedding of the
+// framework's settings struct: each of its variables at the embedding's line, naming the
+// struct as its origin.
+func scannedTags(t *testing.T, src string) []app.EnvTag {
+	t.Helper()
+
+	line := lineOf(t, src, "gcp.Settings")
+
+	return []app.EnvTag{
+		{File: "pkg/config/config.go", Line: line, Name: "GOOGLE_CLOUD_LOGGING_PROJECT"},
+		{File: "pkg/config/config.go", Line: line, Name: "APP_TRACE_SAMPLING", HasDefault: true},
+	}
+}
+
+// atLine fills <line> in text with the line the needle's first occurrence in the source
+// ends on.
+func atLine(t *testing.T, src, needle, text string) string {
+	t.Helper()
+
+	return strings.ReplaceAll(text, "<line>", strconv.Itoa(lineOf(t, src, needle)))
+}
+
+// lineOf is the line the needle's first occurrence in the source ends on.
+func lineOf(t *testing.T, src, needle string) int {
+	t.Helper()
+
+	at := strings.Index(src, needle)
+	if at < 0 {
+		t.Fatalf("the config file does not contain %q", needle)
+	}
+
+	return strings.Count(src[:at+len(needle)], "\n") + 1
+}
+
+// variableLine is what a variable says about itself: its name, level, declaration, type,
+// place, tag options and doc.
+func variableLine(v *Variable) string {
+	return fmt.Sprintf("%s %s %s %s %s:%d required=%v default=%q set=%v doc=%q", v.Name, v.Level, v.Declaration(), v.Type, v.File, v.Line, v.Required, v.Default, v.HasDefault, v.Doc)
+}
+
+// The database driver's settings struct and the alias the skeleton binds the driver
+// under, which the harbor fixture's data level is edited to embed in place of the
+// variables it declares itself.
+const (
+	spannerImport = "github.com/impulseframework/impulse/resource/database/spanner"
+	databaseAlias = "database"
+)
+
+// spannerFields are the harbor fixture's SpannerSettings fields, the ones the embedding
+// replaces.
+const spannerFields = "\tProjectID    string `env:\"GOOGLE_CLOUD_SPANNER_PROJECT,required\"`\n" +
+	"\tInstanceID   string `env:\"GOOGLE_CLOUD_SPANNER_INSTANCE_ID,required\"`\n" +
+	"\tDatabaseName string `env:\"GOOGLE_CLOUD_SPANNER_DATABASE_NAME,required\"`\n"
+
+// TestEmbeddedDriverSettingsAlias reads a config package whose data level embeds the
+// database driver's settings in its wrapper, under the driver's package name and under
+// the neutral alias the skeleton binds the driver by (database
+// "github.com/impulseframework/impulse/resource/database/spanner"): the embedding resolves to the
+// Spanner declaration through the file's imports, by whichever name the file refers to
+// the package, and expands into the declaration's variables, each a field of the wrapper
+// at the embedding's line.
+func TestEmbeddedDriverSettingsAlias(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// local is the name the file imports the driver under: its package name, or the
+		// alias.
+		local string
+		// aliased says the import line carries the name.
+		aliased bool
+	}{
+		{name: "the driver's package name", local: "spanner"},
+		{name: "the neutral alias the skeleton binds the driver under", local: databaseAlias, aliased: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := filepath.Join(t.TempDir(), "app")
+			if err := os.CopyFS(dir, os.DirFS(filepath.Join("testdata", "harbor"))); err != nil {
+				t.Fatalf("os.CopyFS() error = %v", err)
+			}
+			file := filepath.Join(dir, "pkg", "config", "data.go")
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			importLine := "\t\"" + spannerImport + "\"\n"
+			if tt.aliased {
+				importLine = "\t" + tt.local + " \"" + spannerImport + "\"\n"
+			}
+			embedding := "\t" + tt.local + ".Settings\n"
+			src := strings.Replace(string(data), spannerFields, embedding, 1)
+			src = strings.Replace(src, "\t\"github.com/impulseframework/impulse/resource\"\n", "\t\"github.com/impulseframework/impulse/resource\"\n"+importLine, 1)
+			if !strings.Contains(src, embedding) || !strings.Contains(src, importLine) {
+				t.Fatal("the fixture's data level was not edited to embed the driver's settings")
+			}
+			if err := os.WriteFile(file, []byte(src), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			a, err := app.Discover(dir)
+			if err != nil {
+				t.Fatalf("app.Discover() error = %v", err)
+			}
+			cfg, err := readConfig(a, nil)
+			if err != nil {
+				t.Fatalf("readConfig() error = %v", err)
+			}
+			var got []string
+			for i := range cfg.variables {
+				v := &cfg.variables[i]
+				if v.Struct == "SpannerSettings" {
+					got = append(got, variableLine(v))
+				}
+			}
+			var want []string
+			for _, f := range spannerdeclaration.Settings().Fields {
+				name, required := tagOptions(f.Tag)
+				want = append(want, atLine(t, src, strings.TrimSuffix(embedding, "\n"), fmt.Sprintf("%s data SpannerSettings.%s %s pkg/config/data.go:<line> required=%v default=%q set=false doc=%q", name, f.Name, f.Type, required, "", f.Doc)))
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("the wrapper's variables =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+		})
+	}
+}
+
+// TestShippedProgramTags reads an application whose code carries env tags outside the
+// config package. In the main package of a shipped program a release file declares they
+// are the program's own, read on the machine it is installed on: the configuration leaves
+// them out, whatever variables they name, and nothing of them reaches the stack's
+// variables. In a package no release file declares they are refused, the refusal saying
+// where tags may live.
+func TestShippedProgramTags(t *testing.T) {
+	t.Parallel()
+
+	const (
+		releaseFile = "pkg/router/zz_gen_release.json"
+		programFile = "cmd/corral/main.go"
+		configDir   = "pkg/config"
+		// shipping is a release file with a machine outlet shipping the program.
+		shipping = `{"outlets": {"default": {}, "machines": {"kind": "api-key", "programs": [{"name": "corral", "dir": "cmd/corral", "platforms": ["linux/amd64"]}]}}}`
+	)
+	// program is the shipped program's main package, reading its settings from a tagged
+	// struct that names the variable.
+	program := func(variable string) string {
+		return "package main\n\n// settings is what the corral reads from its environment.\ntype settings struct {\n\tOutlet string `env:\"" + variable + ",required\"`\n}\n\nfunc main() {}\n"
+	}
+	tests := []struct {
+		name  string
+		files map[string]string
+		// wantAbsent is a variable the program's tags name, which the configuration
+		// leaves out.
+		wantAbsent string
+		// wantProgram says the model lists the program as shipped.
+		wantProgram bool
+		wantErr     string
+	}{
+		{
+			name:        "a declared program's main package carries its own tags",
+			files:       map[string]string{releaseFile: shipping, programFile: program("CORRAL_OUTLET")},
+			wantAbsent:  "CORRAL_OUTLET",
+			wantProgram: true,
+		},
+		{
+			name:    "tags in a package no release file declares are refused",
+			files:   map[string]string{programFile: program("CORRAL_OUTLET")},
+			wantErr: "env tags in more than one package (cmd/corral and pkg/config): the config package holds the application's, and only the main package of a shipped program a release file declares (ShipsProgram) holds its own",
+		},
+		{
+			name:        "a declared program's tags may name a variable the config package names",
+			files:       map[string]string{releaseFile: shipping, programFile: program(varServiceName)},
+			wantProgram: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := filepath.Join(t.TempDir(), "app")
+			if err := os.CopyFS(dir, os.DirFS(filepath.Join("testdata", "harbor"))); err != nil {
+				t.Fatalf("os.CopyFS() error = %v", err)
+			}
+			for name, content := range tt.files {
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(name))), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(name)), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			a, err := app.Discover(dir)
+			if err != nil {
+				t.Fatalf("app.Discover() error = %v", err)
+			}
+			m, err := Derive(a, fixturePlacement(t, "placement.json"))
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Derive() error = %v, wantErr %q", err, tt.wantErr)
+				}
+
+				return
+			}
+			if err != nil {
+				t.Fatalf("Derive() error = %v", err)
+			}
+			named := 0
+			for i := range m.Variables {
+				v := &m.Variables[i]
+				if filepath.ToSlash(filepath.Dir(v.File)) != configDir {
+					t.Errorf("variable %s is declared in %s, and every variable of the stack is the config package's", v.Name, v.File)
+				}
+				if v.Name == tt.wantAbsent {
+					t.Errorf("variable %s reached the stack from the program's tags", v.Name)
+				}
+				if v.Name == varServiceName {
+					named++
+				}
+			}
+			if named != 1 {
+				t.Errorf("%s is declared %d time(s), want once, by the config package", varServiceName, named)
+			}
+			shipped := slices.ContainsFunc(m.ShippedPrograms, func(p ReleaseProgram) bool { return p.Dir == "cmd/corral" })
+			if shipped != tt.wantProgram {
+				t.Errorf("ShippedPrograms lists cmd/corral = %t, want %t", shipped, tt.wantProgram)
+			}
+		})
+	}
+}

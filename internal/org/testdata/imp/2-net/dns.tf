@@ -1,0 +1,170 @@
+# ---------------------------------------------------------------------------
+# DNS
+#
+# The public zone for the apps domain. A domain listed in registrations is
+# registered in domains.tf and its name servers are set to this zone's by the
+# same apply, so the zone is visible as soon as the registration completes
+# and the certificate provisions without a hand step. A domain registered
+# elsewhere, or a label of a domain served elsewhere, is delegated to this
+# zone by hand, once; bedrock domain check prints the records and where they
+# go (README.md, "Delegating the domain").
+# ---------------------------------------------------------------------------
+# The zone is the creation's: the root organization made it in this project as the
+# creating identity, which its apply verified as an owner of the domain in Google's
+# webmaster verification (Cloud DNS asks that of whoever makes a zone), and recorded it in
+# placement.json (appsZone). Adopted here
+# by an import block, a no-op once the zone is in the state.
+import {
+  id = "projects/${local.project_id}/managedZones/imp-net-gbl-dns-apps"
+  to = google_dns_managed_zone.apps
+}
+
+
+resource "google_dns_managed_zone" "apps" {
+  project     = local.project_id
+  name        = "${local.name_prefix}-dns-apps"
+  dns_name    = "${var.apps_domain}."
+  description = "Public zone for ${var.apps_domain}; the registration points at it"
+  labels      = local.labels
+
+  # DNSSEC costs nothing here and a registrar that supports it gets the DS
+  # record from the zone.
+  dnssec_config {
+    state = "on"
+  }
+
+  # Cloud DNS assigns a zone its name servers when it creates the zone, and a
+  # zone made again can land on a different set. Whatever points at the old
+  # set (the registration in domains.tf, the certificate's authorization
+  # record, a delegation a person made at a registrar or a parent zone) then
+  # points at servers that no longer answer for the domain. So a recreation is
+  # refused by default and is a deliberate change in steps: set
+  # zoneReplacement in placement.json and render, which lifts this rule,
+  # recreate the zone in the next change, then re-point what pointed at the
+  # old set (README.md, "Making a zone again").
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# The apex and every hostname one level below it resolve to the load
+# balancer. Two records cover every hostname the convention produces, and a
+# new application or pull-request environment needs no DNS change at all;
+# whether the load balancer serves a hostname is decided by var.hosts. A more
+# specific record (the authorization CNAME, anything in extra_records) wins
+# over the wildcard.
+resource "google_dns_record_set" "lb" {
+  for_each = toset([var.apps_domain, local.wildcard])
+
+  project      = local.project_id
+  managed_zone = google_dns_managed_zone.apps.name
+  name         = "${each.value}."
+  type         = "A"
+  ttl          = 300
+  rrdatas      = [google_compute_global_address.lb.address]
+}
+
+# The proof of ownership Certificate Manager asks for, copied from the
+# authorization it belongs to so the two can never drift.
+resource "google_dns_record_set" "dns_authorization" {
+  project      = local.project_id
+  managed_zone = google_dns_managed_zone.apps.name
+  name         = google_certificate_manager_dns_authorization.apps.dns_resource_record[0].name
+  type         = google_certificate_manager_dns_authorization.apps.dns_resource_record[0].type
+  ttl          = 300
+  rrdatas      = [google_certificate_manager_dns_authorization.apps.dns_resource_record[0].data]
+}
+
+# ---------------------------------------------------------------------------
+# Vanity domains
+#
+# One public zone per vanity domain delegated here (local.vanity_zones: the
+# domains placement.json's vanityDomains declares without dns "customer"): a
+# client's own domain an application serves on, delegated whole to this zone
+# from the registrar where it is registered, or registered here (domains.tf)
+# and pointed at the zone by the same apply. It holds what the apps zone
+# holds: the apex and the wildcard at the load balancer's address, and the
+# certificate's authorization record. Its name is the one a parked zone of
+# the domain has, and a parked zone moves here when the domain is declared
+# (domains.tf). bedrock domain check verifies each delegation as it verifies
+# the apps domain's, and refuses a domain that carries other DNS (README.md,
+# "Vanity domains"). A vanity domain kept at the customer's DNS provider
+# (var.customer_dns_domains) has no zone here: the provider carries the A
+# records and the authorization CNAME bedrock domain check prints.
+# ---------------------------------------------------------------------------
+
+resource "google_dns_managed_zone" "vanity" {
+  for_each = local.vanity_zones
+
+  project     = local.project_id
+  name        = "${local.name_prefix}-dns-${replace(each.key, ".", "-")}"
+  dns_name    = "${each.key}."
+  description = "Public zone for ${each.key}, a vanity domain delegated whole to it"
+  labels      = local.labels
+
+  dnssec_config {
+    state = "on"
+  }
+
+  # A zone made again can land on other name servers, as the apps zone can
+  # (above), so a recreation is refused by default and is a deliberate change
+  # in steps (README.md, "Making a zone again").
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# The apex and every hostname one level below it, at the load balancer, as for
+# the apps domain; whether the load balancer serves a hostname is decided by
+# var.hosts.
+resource "google_dns_record_set" "vanity_lb" {
+  for_each = local.vanity_records
+
+  project      = local.project_id
+  managed_zone = google_dns_managed_zone.vanity[each.value].name
+  name         = "${each.key}."
+  type         = "A"
+  ttl          = 300
+  rrdatas      = [google_compute_global_address.lb.address]
+}
+
+# The proof of ownership for each vanity domain's certificate, copied from its
+# authorization as the apps domain's is.
+resource "google_dns_record_set" "vanity_authorization" {
+  for_each = local.vanity_zones
+
+  project      = local.project_id
+  managed_zone = google_dns_managed_zone.vanity[each.key].name
+  name         = google_certificate_manager_dns_authorization.vanity[each.key].dns_resource_record[0].name
+  type         = google_certificate_manager_dns_authorization.vanity[each.key].dns_resource_record[0].type
+  ttl          = 300
+  rrdatas      = [google_certificate_manager_dns_authorization.vanity[each.key].dns_resource_record[0].data]
+}
+
+# Everything else the apps domain needs: mail and verification records when the
+# zone takes over a domain that already has them. See var.extra_records.
+resource "google_dns_record_set" "extra" {
+  for_each = { for r in var.extra_records : "${r.name}/${r.type}" => r }
+
+  project      = local.project_id
+  managed_zone = google_dns_managed_zone.apps.name
+  name         = each.value.name == "@" ? "${var.apps_domain}." : "${each.value.name}.${var.apps_domain}."
+  type         = each.value.type
+  ttl          = each.value.ttl
+  rrdatas      = each.value.rrdatas
+}
+
+# What else a vanity domain's zone needs: the records a domain delegated whole
+# publishes to prove itself and to say it sends no mail (a null SPF, a DMARC
+# policy, a verification record, a CAA record). See var.vanity_extra_records;
+# never a mail-exchanger record.
+resource "google_dns_record_set" "vanity_extra" {
+  for_each = { for e in flatten([for d, rs in var.vanity_extra_records : [for r in rs : merge(r, { domain = d })]]) : "${e.domain}/${e.name}/${e.type}" => e }
+
+  project      = local.project_id
+  managed_zone = google_dns_managed_zone.vanity[each.value.domain].name
+  name         = each.value.name == "@" ? "${each.value.domain}." : "${each.value.name}.${each.value.domain}."
+  type         = each.value.type
+  ttl          = each.value.ttl
+  rrdatas      = each.value.rrdatas
+}

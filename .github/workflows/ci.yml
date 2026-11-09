@@ -1,0 +1,32 @@
+name: CI
+on:
+  pull_request:
+    types: [opened, synchronize, reopened] # these are the defaults - synchronize means 'commits pushed to PR'
+  push:
+    branches: [master]
+    # The merge result is checked whole, and the caches its jobs save are the ones the next
+    # pull requests restore: a pull request can read entries saved on its own branch and on
+    # its base, nothing else.
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  golang-ci:
+    # A called workflow gets no more than its caller grants: the scans upload their findings
+    # to code scanning (security-events) and read the run they belong to (actions).
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: impulseframework/workflows/.github/workflows/golang-ci.yml@eac1fc51ab159fc660cd18461a172c50d1625893 # v0.1.0
+    with:
+      # The module has no build tag of its own (unix and !unix are the platform's), so the
+      # untagged leg is the only one.
+      build-tags: '[""]'
+      golangci-lint-version: 'v2.14.0'
+  semantic-titles:
+    permissions:
+      pull-requests: read
+    uses: impulseframework/workflows/.github/workflows/semantic-pull-request-title.yml@eac1fc51ab159fc660cd18461a172c50d1625893 # v0.1.0
