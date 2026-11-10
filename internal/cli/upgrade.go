@@ -59,14 +59,14 @@ the pipeline and the stack's triggers download that binary and verify it against
 The release is fetched for this machine (into the user's cache directory, verified against the
 same file) to render with.
 
-A commit pin: a commit of github.com/impulseframework/impulse (a full or abbreviated hash), a branch (its head
+A commit pin: a commit of github.com/impulseframework/bedrock (a full or abbreviated hash), a branch (its head
 commit, read from the GitHub API) or the pseudo-version Go gives a commit. The Go module proxy
 names its version (v0.0.0-lab.1.0.20260928222237-58b211dce544); the placement holds that version
 and no checksum, and the pipeline and the stack's triggers build it with go install, which
 verifies it against Go's checksum database. The commit must be pushed first: the proxy knows only
 pushed commits, and remembers for about 30 minutes that it did not know one asked about too soon.
 A commit a release tag names moves to that release. A commit named by its hash or its
-pseudo-version must be on a branch of github.com/impulseframework/impulse, since GitHub also serves the
+pseudo-version must be on a branch of github.com/impulseframework/bedrock, since GitHub also serves the
 commits of the repository's forks by hash; the triggers' first step checks the same with git
 before building a commit pin. A commit pin needs Go on this machine: the commit is built
 with go install into the user's cache directory to render with.
