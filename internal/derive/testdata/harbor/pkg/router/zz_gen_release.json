@@ -1,0 +1,46 @@
+{
+  "outlets": {
+    "default": {
+      "oldestAnswered": ""
+    }
+  },
+  "scheduled": [
+    {
+      "path": "/_scheduled/send-daily-digest",
+      "schedule": "0 7 * * 1-5",
+      "timeZone": "America/New_York"
+    }
+  ],
+  "fileRoutes": [
+    {
+      "kind": "upload",
+      "method": "POST",
+      "path": "/api/attach-manifest",
+      "source": "AttachManifest"
+    },
+    {
+      "kind": "file",
+      "method": "GET",
+      "path": "/api/manifests/{id}/file",
+      "source": "Manifest.Key"
+    }
+  ],
+  "surfaces": [
+    {
+      "prefix": "/_scheduled/send-daily-digest",
+      "kind": "route",
+      "log": "always"
+    },
+    {
+      "prefix": "/api/",
+      "kind": "prefix",
+      "log": "sampled",
+      "fraction": 0.1
+    },
+    {
+      "prefix": "/api/manifests/{id}/file",
+      "kind": "route",
+      "log": "never"
+    }
+  ]
+}

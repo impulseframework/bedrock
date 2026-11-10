@@ -1,0 +1,178 @@
+variable "applications" {
+  description = <<-EOT
+    Application codes registered in the organization. Each one placed in this
+    environment (application_environments) gets an apply identity, a deploy
+    identity, a Cloud Build repository link, and the grants in identities.tf.
+    Registering an application is an entry here plus a re-run; its own stack
+    lives in its repository (state slot 3-app/<code>/).
+
+    A code is at most 6 characters because it is embedded in service account
+    IDs, which are limited to 30: {{.Prefix}}-<env>-gbl-<code>-deploy is 25 with a
+    6-character code, the longest; the runtime identities its stack creates
+    ({{.Prefix}}-<env>-gbl-<code>-app, -jobs) are shorter.
+  EOT
+  type        = list(string)
+  default     = {{.ApplicationsList}}
+
+  validation {
+    condition     = alltrue([for a in var.applications : can(regex("{{.ApplicationCodePattern}}", a))])
+    error_message = "Every application code must be 1-6 lowercase letters and digits starting with a letter."
+  }
+
+  validation {
+    condition     = length(distinct(var.applications)) == length(var.applications)
+    error_message = "Application codes must be unique."
+  }
+}
+
+variable "application_repositories" {
+  description = "Each application's repository name under the GitHub organization, by code: the repository link (cloud-build.tf) and the operations workflow's identity binding (operations.tf) name it. Rendered into applications.auto.tfvars by bedrock org register."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = toset(keys(var.application_repositories)) == toset(var.applications)
+    error_message = "application_repositories names every application code and no other."
+  }
+}
+
+variable "boot_project_id" {
+  description = "(Required) Boot project from 0-bootstrap, used as the quota and billing project for API calls."
+  type        = string
+}
+
+variable "build_time_secrets" {
+  description = <<-EOT
+    Secret IDs in this environment's project that an application's deploy
+    identity may read during a build, keyed by application code. Empty by
+    default: the deploy identity holds accessor on nothing until a build needs
+    something, and never on a runtime secret (those are granted to the runtime
+    identities in the application stack). Example:
+
+      build_time_secrets = { {{.ExampleApp}} = ["{{.Prefix}}-tst-gbl-{{.ExampleApp}}-npm-token"] }
+  EOT
+  type        = map(list(string))
+  default     = {}
+}
+
+variable "application_environments" {
+  description = "The environments each application is placed in, by code, a prefix of the promotion order (the first environment; the first two; every one): this environment's run makes identities, grants, a repository link and triggers for the applications placed in it alone (locals.tf, applications). Rendered into applications.auto.tfvars from placement.json's applications."
+  type        = map(list(string))
+  default     = {}
+
+  validation {
+    condition     = toset(keys(var.application_environments)) == toset(var.applications)
+    error_message = "application_environments names every application code and no other."
+  }
+
+  validation {
+    condition     = alltrue([for app, envs in var.application_environments : length(envs) > 0 && try(envs == tolist(slice({{.EnvironmentsList}}, 0, length(envs))), false)])
+    error_message = "Each application's environments are a prefix of the promotion order ({{.EnvironmentsProse}})."
+  }
+}
+
+variable "next_environment" {
+  description = "(Required) The environment after each in the promotion order, empty after the last: the next environment's deploy identities may read this environment's deployment records, which gate a release into it."
+  type        = map(string)
+
+  validation {
+    condition     = alltrue([for env, next in var.next_environment : contains(["tst", "stg", "prd", ""], next)])
+    error_message = "next_environment values must be tst, stg, prd or empty."
+  }
+}
+
+variable "environment" {
+  description = "(Required) Environment this apply targets: tst, stg, or prd. Selects the project from 1-org and the state prefix 2-env/<environment>."
+  type        = string
+
+  validation {
+    condition     = contains(["tst", "stg", "prd"], var.environment)
+    error_message = "environment must be one of tst, stg, prd."
+  }
+}
+
+variable "team_groups" {
+  description = <<-EOT
+    The environments' team groups by environment code, each a group's address
+    (team-tst@{{.OrganizationDomain}}; the layer writes group: in front), from
+    placement.json (teamGroups). Each person's access to an environment comes
+    from its group: the group holds roles/cloudbuild.builds.approver where a
+    release waits for an approval, and its members ask for the environment's
+    entitlements (team-group.tf). Rendered, never set in terraform.tfvars: a
+    change is a change to placement.json and a render.
+  EOT
+  type        = map(string)
+  default = {
+{{.TeamGroupLines}}
+  }
+
+  validation {
+    condition     = alltrue([for env, g in var.team_groups : can(regex("^[^@:/]+@[^@:/]+$", g))])
+    error_message = "Every team group is a group's address, name@domain, with no member prefix."
+  }
+}
+
+variable "github_organization" {
+  description = "GitHub organization the application repositories live in. A repository link is https://github.com/<organization>/<application code>.git."
+  type        = string
+  default     = "{{.GithubOrganization}}"
+}
+
+variable "spanner_instances" {
+  description = <<-EOT
+    Where each environment's databases live, keyed by environment code. placement
+    is "own" (this layer creates an instance in the environment project) or
+    "shared" (the instance 2-spn creates for the organization). For an own
+    instance: config is the instance configuration (unset: regional-<primary
+    region>; {{.Spanner.Config}} for the organization's multi-region;
+    {{.OwnInstanceConfigsProse}} and no other, since a regional instance
+    sits in the primary region, where the primary service runs, and a
+    multi-region one has its read-write replicas in the two regions), edition
+    follows the configuration unless set (STANDARD for regional,
+    ENTERPRISE_PLUS for multi-region, which Google requires), processing_units
+    defaults to 100 and follows Spanner's rule (steps of 100 below a node, whole
+    nodes from 1000 on), raised for the databases the environment's applications
+    and pull-request stacks hold or for load (2-spn/README.md, Capacity). The
+    defaults are the ruling of 2026-09-26:
+    tst on its own regional Standard instance, stg and prd on the shared
+    multi-region one; an organization overrides an environment here, for
+    instance tst on the shared instance, or tst on a multi-region instance of
+    its own.
+  EOT
+  type = map(object({
+    placement        = string
+    config           = optional(string)
+    edition          = optional(string)
+    processing_units = optional(number, 100)
+  }))
+  default = {
+    tst = { placement = "own" }
+    stg = { placement = "shared" }
+    prd = { placement = "shared" }
+  }
+
+  validation {
+    condition     = alltrue([for e, i in var.spanner_instances : contains(["own", "shared"], i.placement)])
+    error_message = "placement must be own or shared."
+  }
+
+  validation {
+    condition     = alltrue([for e, i in var.spanner_instances : i.placement != "own" || contains({{.OwnInstanceConfigList}}, coalesce(i.config, "{{.RegionalSpannerConfig}}"))])
+    error_message = "An own instance's config is unset, {{.OwnInstanceConfigsProse}}: a regional instance sits in the primary region, {{.Primary.Name}}, where the primary service runs, and a multi-region one has its read-write replicas in {{.Primary.Name}} and {{.Secondary.Name}}."
+  }
+
+  validation {
+    condition     = alltrue([for e, i in var.spanner_instances : i.edition == null || contains(["STANDARD", "ENTERPRISE", "ENTERPRISE_PLUS"], i.edition)])
+    error_message = "edition must be unset, STANDARD, ENTERPRISE, or ENTERPRISE_PLUS."
+  }
+
+  validation {
+    condition     = alltrue([for e, i in var.spanner_instances : i.processing_units >= 100 && (i.processing_units < 1000 ? i.processing_units % 100 == 0 : i.processing_units % 1000 == 0)])
+    error_message = "processing_units follows Spanner's rule: at least 100, a multiple of 100 below 1000, and a multiple of 1000 (whole nodes) from 1000 on."
+  }
+}
+
+variable "state_bucket" {
+  description = "(Required) State bucket 0-bootstrap seeded, read for the upstream layers' outputs. The same name is substituted into the backend block by hand."
+  type        = string
+}

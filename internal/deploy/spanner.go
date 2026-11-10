@@ -1,0 +1,289 @@
+// spanner.go is the Spanner seam of the restores and the rollback: a restore from
+// production's backup drops the environment's database and restores it from the most
+// recent backup of production's database, on the instance they share; a release build
+// takes a backup of the database as of its cut; a rollback takes a forensic backup of the
+// live database and restores a backup into the database's next generation. All as the
+// apply identity.
+
+package deploy
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/url"
+	"sort"
+	"time"
+
+	"github.com/go-playground/errors/v5"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+	"google.golang.org/api/impersonate"
+)
+
+// spannerAPI is where databases are dropped and restored and backups are listed;
+// keyDatabase is the field naming a backup's database.
+const (
+	spannerAPI  = "https://spanner.googleapis.com"
+	keyDatabase = "database"
+)
+
+// Backup is one backup of a database as the restore reads it.
+type Backup struct {
+	// Name is the backup's resource name (projects/<p>/instances/<i>/backups/<b>).
+	Name string
+	// VersionTime is the moment the backup's data is from; CreateTime when it was taken.
+	VersionTime string
+	CreateTime  string
+	// Database is the database the backup was taken from (projects/<p>/instances/<i>/databases/<d>);
+	// State is CREATING while Spanner takes it and READY once it can be restored.
+	Database string
+	State    string
+	// ExpireTime is when Spanner deletes the backup.
+	ExpireTime string
+}
+
+// Spanner's backup states.
+const (
+	BackupReady    = "READY"
+	BackupCreating = "CREATING"
+)
+
+// Database is a Spanner database as its state matters here: READY (or READY_OPTIMIZING,
+// serving while Spanner finishes a restore's optimization) serves, and CREATING is a
+// restore still in progress, from the backup RestoredFrom names.
+type Database struct {
+	Name         string
+	State        string
+	RestoredFrom string
+}
+
+// Spanner's database states that serve.
+const (
+	DatabaseReady           = "READY"
+	DatabaseReadyOptimizing = "READY_OPTIMIZING"
+)
+
+// unitsPerNode is a Spanner node in processing units.
+const unitsPerNode = 1000
+
+// Spanner drops and restores databases, lists backups and counts an instance's databases:
+// the v1 API, or a fake in tests.
+type Spanner interface {
+	// LatestBackup is the most recently created backup of the database
+	// (projects/<p>/instances/<i>/databases/<d>) on its instance, READY or still CREATING
+	// (a backup Spanner is taking, a release's started minutes ago, holds the newest data,
+	// and a restore waits for it); nil when it has none.
+	LatestBackup(ctx context.Context, instance, database string) (*Backup, error)
+	// DropDatabase drops the database (projects/<p>/instances/<i>/databases/<d>); a
+	// database that is already gone is no error.
+	DropDatabase(ctx context.Context, database string) error
+	// RestoreDatabase creates the database id on the instance from the backup and waits
+	// for the restore to end.
+	RestoreDatabase(ctx context.Context, instance, databaseID, backup string) error
+	// CreateBackup starts a backup of the database (projects/<p>/instances/<i>/databases/<d>)
+	// as of versionTime, named backupID on the instance and kept until expireTime, and
+	// answers the operation's name without waiting for it.
+	CreateBackup(ctx context.Context, instance, backupID, database string, versionTime, expireTime time.Time) (string, error)
+	// Backup reads one backup by resource name; nil when there is none.
+	Backup(ctx context.Context, name string) (*Backup, error)
+	// Database reads one database by resource name (projects/<p>/instances/<i>/databases/<d>):
+	// its state and, for one a restore made, the backup it was restored from; nil when
+	// there is none.
+	Database(ctx context.Context, name string) (*Database, error)
+	// Databases names the databases on the instance (projects/<p>/instances/<i>), each by
+	// its resource name, for the count against what the instance holds.
+	Databases(ctx context.Context, instance string) ([]string, error)
+	// ProcessingUnits is the instance's compute capacity, a thousand to a node.
+	ProcessingUnits(ctx context.Context, instance string) (int, error)
+}
+
+// SpannerAsFunc opens Spanner as an impersonated identity: the apply identity, which holds
+// database admin on the environment's instance.
+type SpannerAsFunc func(ctx context.Context, identity string) (Spanner, error)
+
+// SpannerFunc opens Spanner with the process's own credentials: the build's identity,
+// for a step that runs as the identity it reads as.
+type SpannerFunc func(ctx context.Context) (Spanner, error)
+
+// NewSpanner opens the Spanner v1 REST API with the process's default credentials,
+// noting on out each call it sends again after a transient answer (retry.go).
+func NewSpanner(out io.Writer) SpannerFunc {
+	return func(ctx context.Context) (Spanner, error) {
+		client, err := google.DefaultClient(ctx, cloudPlatformScope)
+		if err != nil {
+			return nil, errors.Wrap(err, "google.DefaultClient()")
+		}
+
+		return &spanner{cloudRun: &cloudRun{http: client, base: spannerAPI, poll: 10 * time.Second, service: serviceSpanner, retry: retrier{out: out}}}, nil
+	}
+}
+
+// NewSpannerAs opens the Spanner v1 REST API as the identity, noting on out each call
+// it sends again after a transient answer (retry.go).
+func NewSpannerAs(out io.Writer) SpannerAsFunc {
+	return func(ctx context.Context, identity string) (Spanner, error) {
+		source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
+			TargetPrincipal: identity,
+			Scopes:          []string{cloudPlatformScope},
+		})
+		if err != nil {
+			return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
+		}
+
+		return &spanner{cloudRun: &cloudRun{http: oauth2.NewClient(ctx, source), base: spannerAPI, poll: 10 * time.Second, service: serviceSpanner, retry: retrier{out: out}}}, nil
+	}
+}
+
+// spanner is Spanner over the v1 API; it reuses the Cloud Run client's calling.
+type spanner struct {
+	*cloudRun
+}
+
+func (s *spanner) LatestBackup(ctx context.Context, instance, database string) (*Backup, error) {
+	query := url.Values{}
+	query.Set("filter", `database:"`+database+`"`)
+	backups, err := s.list(ctx, "/v1/"+instance+"/backups?"+query.Encode(), "backups")
+	if err != nil {
+		return nil, err
+	}
+	var found []*Backup
+	for _, b := range backups {
+		// The filter is a match on the backup's fields; the database is checked exactly.
+		state := text(b, "state")
+		if text(b, keyDatabase) != database || (state != BackupReady && state != BackupCreating) {
+			continue
+		}
+		found = append(found, &Backup{Name: text(b, keyName), VersionTime: text(b, "versionTime"), CreateTime: text(b, "createTime"), Database: database, State: state})
+	}
+	if len(found) == 0 {
+		return nil, nil
+	}
+	sort.Slice(found, func(i, j int) bool {
+		return found[i].CreateTime > found[j].CreateTime
+	})
+
+	return found[0], nil
+}
+
+func (s *spanner) CreateBackup(ctx context.Context, instance, backupID, database string, versionTime, expireTime time.Time) (string, error) {
+	query := url.Values{}
+	query.Set("backupId", backupID)
+	body := map[string]any{keyDatabase: database, "versionTime": versionTime.UTC().Format(time.RFC3339Nano), "expireTime": expireTime.UTC().Format(time.RFC3339Nano)}
+	op, err := s.call(ctx, http.MethodPost, "/v1/"+instance+"/backups?"+query.Encode(), body)
+	if err != nil {
+		return "", err
+	}
+	name, _ := op[keyName].(string)
+	if name == "" {
+		return "", errors.New("Spanner answered no operation name")
+	}
+	if apiErr, ok := op["error"].(map[string]any); ok {
+		msg, _ := apiErr["message"].(string)
+
+		return "", errors.Newf("Spanner refused the backup %s: %s", backupID, msg)
+	}
+
+	return name, nil
+}
+
+func (s *spanner) Backup(ctx context.Context, name string) (*Backup, error) {
+	b, err := s.call(ctx, http.MethodGet, "/v1/"+name, nil)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &Backup{Name: text(b, keyName), VersionTime: text(b, "versionTime"), CreateTime: text(b, "createTime"), Database: text(b, keyDatabase), State: text(b, "state"), ExpireTime: text(b, "expireTime")}, nil
+}
+
+func (s *spanner) Databases(ctx context.Context, instance string) ([]string, error) {
+	items, err := s.list(ctx, "/v1/"+instance+"/databases", "databases")
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		if name, _ := item["name"].(string); name != "" {
+			names = append(names, name)
+		}
+	}
+
+	return names, nil
+}
+
+// ProcessingUnits reads the instance; an instance described by its node count alone
+// (one the API answers without processingUnits) is a thousand a node.
+func (s *spanner) ProcessingUnits(ctx context.Context, instance string) (int, error) {
+	i, err := s.call(ctx, http.MethodGet, "/v1/"+instance, nil)
+	if err != nil {
+		return 0, err
+	}
+	units, _ := i["processingUnits"].(float64)
+	if units == 0 {
+		nodes, _ := i["nodeCount"].(float64)
+		units = nodes * unitsPerNode
+	}
+
+	return int(units), nil
+}
+
+func (s *spanner) Database(ctx context.Context, name string) (*Database, error) {
+	d, err := s.call(ctx, http.MethodGet, "/v1/"+name, nil)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+	restored := ""
+	if info, ok := d["restoreInfo"].(map[string]any); ok {
+		if backup, ok := info["backupInfo"].(map[string]any); ok {
+			restored = text(backup, "backup")
+		}
+	}
+
+	return &Database{Name: text(d, keyName), State: text(d, "state"), RestoredFrom: restored}, nil
+}
+
+func (s *spanner) DropDatabase(ctx context.Context, database string) error {
+	if _, err := s.call(ctx, http.MethodDelete, "/v1/"+database, nil); err != nil && !isNotFound(err) {
+		return err
+	}
+
+	return nil
+}
+
+func (s *spanner) RestoreDatabase(ctx context.Context, instance, databaseID, backup string) error {
+	op, err := s.call(ctx, http.MethodPost, "/v1/"+instance+"/databases:restore", map[string]any{"databaseId": databaseID, "backup": backup})
+	if err != nil {
+		return err
+	}
+	name, _ := op[keyName].(string)
+	if name == "" {
+		return errors.New("Spanner answered no operation name")
+	}
+	for {
+		if done, _ := op["done"].(bool); done {
+			if apiErr, ok := op["error"].(map[string]any); ok {
+				msg, _ := apiErr["message"].(string)
+
+				return errors.Newf("Spanner operation %s failed: %s", name, msg)
+			}
+
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Wrapf(ctx.Err(), "waiting for Spanner operation %s", name)
+		case <-time.After(s.poll):
+		}
+		if op, err = s.call(ctx, http.MethodGet, "/v1/"+name, nil); err != nil {
+			return err
+		}
+	}
+}

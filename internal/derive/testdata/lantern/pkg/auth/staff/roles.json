@@ -1,0 +1,137 @@
+{
+  "roles": {
+    "global": [
+      {
+        "name": "Administrator",
+        "description": "Manages the application's tenants and people: creates tenants, creates and invites users, seats and unseats roles, and resets passwords.",
+        "permissions": {
+          "Create": [
+            {
+              "resource": "Tenants",
+              "fields": [
+                "name"
+              ]
+            }
+          ],
+          "Delete": [
+            {
+              "resource": "Tenants"
+            }
+          ],
+          "List": [
+            {
+              "resource": "Tenants",
+              "fields": [
+                "name"
+              ]
+            }
+          ],
+          "Read": [
+            {
+              "resource": "Tenants",
+              "fields": [
+                "name"
+              ]
+            }
+          ],
+          "Update": [
+            {
+              "resource": "Tenants",
+              "fields": [
+                "name"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "name": "FeatureAdministrator",
+        "description": "Turns feature flags on and off for an environment.",
+        "permissions": {
+          "Execute": [
+            {
+              "resource": "SetFeature"
+            }
+          ],
+          "List": [
+            {
+              "resource": "FeatureFlags",
+              "fields": [
+                "description",
+                "enabled",
+                "updatedAt",
+                "updatedBy"
+              ]
+            }
+          ],
+          "Read": [
+            {
+              "resource": "FeatureFlags",
+              "fields": [
+                "description",
+                "enabled",
+                "updatedAt",
+                "updatedBy"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "domain": [
+      {
+        "name": "TenantAdministrator",
+        "description": "Runs one tenant: manages its people and their seats, declares the directories they sign in through, and posts its announcements.",
+        "permissions": {
+          "Create": [
+            {
+              "resource": "Announcements",
+              "fields": [
+                "body",
+                "kindId",
+                "title"
+              ]
+            }
+          ],
+          "Delete": [
+            {
+              "resource": "Announcements"
+            }
+          ],
+          "List": [
+            {
+              "resource": "Announcements",
+              "fields": [
+                "body",
+                "kindId",
+                "tenantId",
+                "title"
+              ]
+            }
+          ],
+          "Read": [
+            {
+              "resource": "Announcements",
+              "fields": [
+                "body",
+                "kindId",
+                "tenantId",
+                "title"
+              ]
+            }
+          ],
+          "Update": [
+            {
+              "resource": "Announcements",
+              "fields": [
+                "body",
+                "kindId",
+                "title"
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

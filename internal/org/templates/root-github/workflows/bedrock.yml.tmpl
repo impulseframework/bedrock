@@ -1,0 +1,137 @@
+# Rendered by bedrock org render from placement.json, and compared by bedrock org check:
+# change the placement, not this file.
+#
+# This workflow keeps the [[.Prefix]] root organization as placement.json says, on GitHub
+# alone, as the organization's infrastructure app. A pull request is planned, a merge is
+# applied, and once a week the organization is compared with the placement on its own
+# clock. Three things keep the app's key from a pull request: the plan runs on
+# pull_request_target, so its steps are the default branch's and the pull request's files
+# are read as data, never run; the bedrock that runs is the release the placement pins,
+# checked against its checksum; and the key is a secret of the [[.RootEnvironment]]
+# environment, which admits the branch [[.GithubDefaultBranch]] alone, so a workflow on
+# any other branch is never handed it.
+
+name: bedrock
+
+on:
+  pull_request_target:
+    branches:
+      - "[[.GithubDefaultBranch]]"
+  push:
+    branches:
+      - "[[.GithubDefaultBranch]]"
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  plan:
+    name: [[.PlanJobName]]
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    environment: [[.RootEnvironment]]
+    permissions:
+      contents: read
+    steps:
+[[template "bedrock" (step . "${{ github.event.pull_request.head.sha }}")]]
+      - name: Say what the merge changes
+        working-directory: organization
+        env:
+          [[.EnvironmentKeySecret]]: ${{ secrets.[[.EnvironmentKeySecret]] }}
+          BEDROCK_COMMIT: ${{ github.event.pull_request.head.sha }}
+          BEDROCK_PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: |
+          "$RUNNER_TEMP/bedrock" org check
+          "$RUNNER_TEMP/bedrock" org plan
+
+  apply:
+    name: [[.ApplyJobName]]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: [[.RootEnvironment]]
+    # One apply at a time; a merge that lands while one runs waits for it.
+    concurrency:
+      group: bedrock-apply
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+[[template "bedrock" (step . "${{ github.sha }}")]]
+      - name: Make the organization as placement.json says
+        working-directory: organization
+        env:
+          [[.EnvironmentKeySecret]]: ${{ secrets.[[.EnvironmentKeySecret]] }}
+          BEDROCK_COMMIT: ${{ github.sha }}
+        run: |
+          "$RUNNER_TEMP/bedrock" org check
+          "$RUNNER_TEMP/bedrock" org apply
+
+  check:
+    name: [[.CheckJobName]]
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: [[.RootEnvironment]]
+    permissions:
+      contents: read
+    steps:
+[[template "bedrock" (step . "${{ github.sha }}")]]
+      - name: Compare the organization with placement.json
+        working-directory: organization
+        env:
+          [[.EnvironmentKeySecret]]: ${{ secrets.[[.EnvironmentKeySecret]] }}
+          BEDROCK_COMMIT: ${{ github.sha }}
+        run: |
+          "$RUNNER_TEMP/bedrock" org check --issue
+[[define "bedrock"]]      - name: The infrastructure app's key
+        env:
+          KEY: ${{ secrets.[[.View.EnvironmentKeySecret]] }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::The [[.View.RootEnvironment]] environment handed this job no [[.View.EnvironmentKeySecret]]: seal the infrastructure app's key with bedrock secret add [[.View.InfrastructureKeyName]] --from-file <the file>."
+            exit 1
+          fi
+      - name: The repository's files, as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: [[.Ref]]
+          path: organization
+          persist-credentials: false
+      # The release placement.json pins is downloaded and checked against the checksum
+      # beside it; a commit pin is checked to be on a branch of bedrock's repository and
+      # built in the next steps, where Go's checksum database verifies it. The script runs
+      # from the runner's own directory with Python isolated (-I), so nothing in the
+      # repository's files is on its path.
+      - name: Fetch the bedrock placement.json pins
+        id: fetch
+        working-directory: ${{ runner.temp }}
+        run: |
+          cat > fetch-bedrock.py <<'BEDROCK_FETCH'
+[[.View.FetchBedrockYAML]]
+          BEDROCK_FETCH
+          python3 -I fetch-bedrock.py "$RUNNER_TEMP" https://github.com [[.View.BedrockRepository]] "$GITHUB_WORKSPACE/organization/placement.json"
+          if [ -f bedrock-commit ]; then
+            echo "commit=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Go, for a commit pin
+        if: steps.fetch.outputs.commit == 'true'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: stable
+          cache: false
+      - name: Build the commit pin
+        if: steps.fetch.outputs.commit == 'true'
+        working-directory: ${{ runner.temp }}
+        env:
+          GOBIN: ${{ runner.temp }}
+          CGO_ENABLED: "0"
+          GOFLAGS: -trimpath
+          GOPROXY: https://proxy.golang.org
+          GOSUMDB: sum.golang.org
+          GONOSUMDB: ""
+          GOPRIVATE: ""
+          GOINSECURE: ""
+        run: |
+          go install -ldflags="-s -w" [[.View.BedrockModule]]@"$(cat bedrock-commit)"
+          ./bedrock --version[[end]]

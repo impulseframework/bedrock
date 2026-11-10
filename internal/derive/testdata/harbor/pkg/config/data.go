@@ -1,0 +1,309 @@
+package config
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"log"
+	"time"
+
+	cloudspanner "cloud.google.com/go/spanner"
+	"github.com/go-playground/errors/v5"
+	"github.com/impulseframework/harbor/pkg/auth/members"
+	"github.com/impulseframework/harbor/pkg/auth/staff"
+	"github.com/impulseframework/impulse/access"
+	"github.com/impulseframework/impulse/resource"
+	"github.com/sethvargo/go-envconfig"
+)
+
+// SpannerSettings identifies the application's database. It is the first half of the
+// data level, loadable on its own so cmd/bootstrap can create the instance and database
+// before any client opens against them.
+type SpannerSettings struct {
+	ProjectID    string `env:"GOOGLE_CLOUD_SPANNER_PROJECT,required"`
+	InstanceID   string `env:"GOOGLE_CLOUD_SPANNER_INSTANCE_ID,required"`
+	DatabaseName string `env:"GOOGLE_CLOUD_SPANNER_DATABASE_NAME,required"`
+}
+
+// LoadSpannerSettings reads the database identity from the environment without opening
+// anything.
+func LoadSpannerSettings(ctx context.Context) (SpannerSettings, error) {
+	var settings SpannerSettings
+	if err := envconfig.ProcessWith(ctx, &envconfig.Config{Target: &settings, Lookuper: envconfig.OsLookuper()}); err != nil {
+		return SpannerSettings{}, errors.Wrap(err, "envconfig.ProcessWith()")
+	}
+
+	return settings, nil
+}
+
+// DatabasePath returns the fully qualified Spanner database path.
+func (s SpannerSettings) DatabasePath() string {
+	return fmt.Sprintf("projects/%s/instances/%s/databases/%s", s.ProjectID, s.InstanceID, s.DatabaseName)
+}
+
+// FirestoreSettings identifies the Firestore database the application keeps documents in,
+// beside the Spanner database. The database id is how a deployment hands the database to
+// the application (APP_FIRESTORE_DATABASE), with its project
+// (GOOGLE_CLOUD_FIRESTORE_PROJECT); the emulator host is how the development stack does.
+type FirestoreSettings struct {
+	// ProjectID is the Google Cloud project the database belongs to. A deployment that
+	// names the database names its project too, or the data level refuses to start: the
+	// database is not assumed to be in the Spanner project, which, where environments
+	// share a Spanner instance, is the shared instance's and not the environment's.
+	// Against the emulator it may stay empty, and the Spanner project stands in, since
+	// the emulator takes any project id.
+	ProjectID string `env:"GOOGLE_CLOUD_FIRESTORE_PROJECT"`
+	// DatabaseID is the Firestore database, by id.
+	DatabaseID string `env:"APP_FIRESTORE_DATABASE"`
+	// APIKey is the Firebase web API key the browser initializes the SDK with; unused
+	// against the emulator.
+	APIKey string `env:"APP_FIREBASE_API_KEY"`
+	// EmulatorHost is the Firestore emulator's host:port, the development stack's.
+	EmulatorHost string `env:"FIRESTORE_EMULATOR_HOST"`
+}
+
+// Configured reports whether there is a database to open: a database is named, or the
+// emulator is.
+func (s FirestoreSettings) Configured() bool {
+	return s.DatabaseID != "" || s.EmulatorHost != ""
+}
+
+// Project is the project the database is opened in: ProjectID, or, against the emulator
+// with ProjectID empty, the Spanner project, which the emulator takes as it takes any
+// project id. A database named without its project is refused, naming both variables, as
+// is a configuration naming neither a database nor the emulator.
+func (s FirestoreSettings) Project(spannerProject string) (string, error) {
+	switch {
+	case !s.Configured():
+		return "", errors.New("no Firestore database and no emulator is configured: set APP_FIRESTORE_DATABASE (a deployment) or FIRESTORE_EMULATOR_HOST (development)")
+	case s.ProjectID != "":
+		return s.ProjectID, nil
+	case s.EmulatorHost != "":
+		return spannerProject, nil
+	default:
+		return "", errors.New("APP_FIRESTORE_DATABASE names a Firestore database and GOOGLE_CLOUD_FIRESTORE_PROJECT names no project for it: set GOOGLE_CLOUD_FIRESTORE_PROJECT to the project the database is in, which is not assumed to be the Spanner project")
+	}
+}
+
+// DataConfiguration is the second level: every process that opens the database. It
+// owns the Spanner client, the resource client over it, the staff auth (its permission
+// engine and session manager), and the Firestore database's project.
+type DataConfiguration struct {
+	*coreConfiguration
+	env              *dataConfig
+	spannerClient    *cloudspanner.Client
+	resourceClient   *resource.SpannerClient
+	cursorKey        *resource.CursorKey
+	staff            *staff.Auth
+	members          *members.Auth
+	firestoreProject string
+}
+
+// NewDataConfiguration loads the core and data levels and opens their clients. The
+// permission engine blocks until its first policy snapshot is loaded.
+func NewDataConfiguration(ctx context.Context) (*DataConfiguration, error) {
+	core, err := newCoreConfiguration(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	env := &dataConfig{}
+	if err := envconfig.ProcessWith(ctx, &envconfig.Config{Target: env, Lookuper: envconfig.OsLookuper()}); err != nil {
+		return nil, errors.Wrap(err, "envconfig.ProcessWith()")
+	}
+
+	firestoreProject, err := env.Firestore.Project(env.Spanner.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+
+	spannerClient, err := cloudspanner.NewClient(ctx, env.Spanner.DatabasePath())
+	if err != nil {
+		return nil, errors.Wrap(err, "spanner.NewClient()")
+	}
+
+	cookieKey, err := cookieKey(env.CookieKey)
+	if err != nil {
+		return nil, err
+	}
+
+	// The same key material seals list cursors under its own derivation, so a
+	// rotation ends outstanding cursors as it ends sessions.
+	cursorKey, err := resource.NewCursorKey(cookieKey)
+	if err != nil {
+		return nil, errors.Wrap(err, "resource.NewCursorKey()")
+	}
+
+	staffAuth, err := staff.New(ctx, spannerClient, &staff.Settings{
+		CookieKey:      cookieKey,
+		SessionTimeout: env.SessionTimeout,
+		LoginURL:       "/login",
+		Directory: staff.DirectorySettings{
+			ClientID:               env.StaffDirectoryClientID,
+			ClientSecret:           env.StaffDirectoryClientSecret,
+			RedirectURL:            env.StaffDirectoryRedirectURL,
+			HostedDomain:           env.StaffDirectoryHostedDomain,
+			AdministeredWorkspaces: env.StaffDirectoryAdministeredWorkspaces,
+			GroupPrefix:            env.StaffDirectoryGroupPrefix,
+			GroupLookup:            env.StaffDirectoryGroupLookup,
+		},
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "staff.New()")
+	}
+
+	membersAuth, err := members.New(ctx, spannerClient, &members.Settings{
+		CookieKey:      cookieKey,
+		SessionTimeout: env.SessionTimeout,
+		LoginURL:       "/portal/login",
+		Directory: members.DirectorySettings{
+			TenantID:            env.MembersDirectoryTenantID,
+			AdministeredTenants: env.MembersDirectoryAdministeredTenants,
+			ClientID:            env.MembersDirectoryClientID,
+			ClientSecret:        env.MembersDirectoryClientSecret,
+			RedirectURL:         env.MembersDirectoryRedirectURL,
+		},
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "members.New()")
+	}
+
+	return &DataConfiguration{
+		coreConfiguration: core,
+		env:               env,
+		spannerClient:     spannerClient,
+		resourceClient:    resource.NewSpannerClient(spannerClient),
+		cursorKey:         cursorKey,
+		staff:             staffAuth,
+		members:           membersAuth,
+		firestoreProject:  firestoreProject,
+	}, nil
+}
+
+// Close releases the level's clients, then the levels below it.
+func (c *DataConfiguration) Close() {
+	if err := c.staff.Close(); err != nil {
+		log.Print(errors.Wrap(err, "staff.Auth.Close()"))
+	}
+	if err := c.members.Close(); err != nil {
+		log.Print(errors.Wrap(err, "members.Auth.Close()"))
+	}
+	c.spannerClient.Close()
+	c.coreConfiguration.Close()
+}
+
+// Spanner returns the database identity.
+func (c *DataConfiguration) Spanner() SpannerSettings {
+	return c.env.Spanner
+}
+
+// ResourceClient returns the database client the resource layer uses.
+func (c *DataConfiguration) ResourceClient() resource.Client {
+	return c.resourceClient
+}
+
+// CursorKey returns the key that seals list cursors.
+func (c *DataConfiguration) CursorKey() *resource.CursorKey {
+	return c.cursorKey
+}
+
+// Access returns the permission engine the handlers check against: the staff auth's,
+// which is the auth the console binds to.
+func (c *DataConfiguration) Access() access.Controller {
+	return c.staff.Access()
+}
+
+// UserManager returns the staff auth's permission writer: roles, grants, and role
+// assignments.
+func (c *DataConfiguration) UserManager() access.UserManager {
+	return c.staff.Access().UserManager()
+}
+
+// Staff returns the staff auth: the one the console binds to.
+func (c *DataConfiguration) Staff() *staff.Auth {
+	return c.staff
+}
+
+// Members returns the members auth: the one the portal binds to.
+func (c *DataConfiguration) Members() *members.Auth {
+	return c.members
+}
+
+// FirestoreProject returns the project the Firestore database is opened in.
+func (c *DataConfiguration) FirestoreProject() string {
+	return c.firestoreProject
+}
+
+// cookieKey returns the configured session cookie key, or an ephemeral one when none is
+// configured. An ephemeral key means sessions do not survive a restart.
+func cookieKey(configured string) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return "", errors.Wrap(err, "rand.Read()")
+	}
+
+	return base64.StdEncoding.EncodeToString(key), nil
+}
+
+// dataConfig holds the environment every database-opening process reads.
+type dataConfig struct {
+	Spanner   SpannerSettings
+	Firestore FirestoreSettings
+
+	// SessionTimeout is the idle timeout of a browser session.
+	SessionTimeout time.Duration `env:"APP_DEFAULT_SESSION_TIMEOUT,default=10m"`
+
+	// CookieKey signs session cookies: a Base64-encoded string of at least 32 bytes of
+	// cryptographically secure random data. Unset, an ephemeral key is generated at
+	// startup.
+	CookieKey string `env:"APP_COOKIE_KEY" secret:"true"`
+
+	// PublicURL is the application's address as a browser reaches it; every link the
+	// auths mail opens the login page under it.
+	PublicURL string `env:"APP_PUBLIC_URL,required"`
+
+	// MailMailbox and MailAppPassword send the auths' mail through the Google Workspace
+	// SMTP relay as the mailbox; unset, the mail is written to the log.
+	MailMailbox     string `env:"APP_MAIL_MAILBOX"`
+	MailAppPassword string `env:"APP_MAIL_APP_PASSWORD" secret:"true"`
+	// The staff auth's directory registration (pkg/auth/staff/directory.go): how the
+	// application is known to Google, under the registration's variables. Under the
+	// session library's skipAuth build tag only the redirect URL, the hosted domain and the
+	// group prefix are read.
+	StaffDirectoryClientID               string `env:"APP_STAFF_DIRECTORY_CLIENT_ID"`
+	StaffDirectoryClientSecret           string `env:"APP_STAFF_DIRECTORY_CLIENT_SECRET" secret:"true"`
+	StaffDirectoryRedirectURL            string `env:"APP_STAFF_DIRECTORY_REDIRECT_URL"`
+	StaffDirectoryHostedDomain           string `env:"APP_STAFF_DIRECTORY_HOSTED_DOMAIN"`
+	StaffDirectoryAdministeredWorkspaces string `env:"APP_STAFF_DIRECTORY_ADMINISTERED_WORKSPACES"`
+	StaffDirectoryGroupPrefix            string `env:"APP_STAFF_DIRECTORY_GROUP_PREFIX"`
+	StaffDirectoryGroupLookup            string `env:"APP_STAFF_DIRECTORY_GROUP_LOOKUP"`
+
+	// The members auth's directory registration (pkg/auth/members/directory.go): how the
+	// application is known to Microsoft, under the registration's variables. Under the
+	// skipAuth build tag only the tenant id and the redirect URL are read.
+	MembersDirectoryTenantID            string `env:"APP_MEMBERS_DIRECTORY_TENANT_ID"`
+	MembersDirectoryAdministeredTenants string `env:"APP_MEMBERS_DIRECTORY_ADMINISTERED_TENANTS"`
+	MembersDirectoryClientID            string `env:"APP_MEMBERS_DIRECTORY_CLIENT_ID"`
+	MembersDirectoryClientSecret        string `env:"APP_MEMBERS_DIRECTORY_CLIENT_SECRET"        secret:"true"`
+	MembersDirectoryRedirectURL         string `env:"APP_MEMBERS_DIRECTORY_REDIRECT_URL"`
+
+	// FileStore is the application's default file store: the Cloud Storage bucket its
+	// files live in, as a gs:// URL.
+	FileStore string `env:"APP_FILE_STORE"`
+
+	// TasksQueue is the Cloud Tasks queue the application enqueues its deferred work on,
+	// as the Cloud Tasks API names it (projects/<project>/locations/<region>/queues/<name>).
+	TasksQueue string `env:"APP_TASKS_QUEUE"`
+
+	// MembersAdministrator is the sign-in name of the members auth's first administrator,
+	// as the directory presents it (the user principal name): the migrate command seeds
+	// the administrator role membership under it while the auth's users table holds no
+	// rows, so the first person to sign in holds the role. Named per environment by the
+	// placement; the bootstrap seeds the development members instead.
+	MembersAdministrator string `env:"APP_MEMBERS_ADMINISTRATOR"`
+}

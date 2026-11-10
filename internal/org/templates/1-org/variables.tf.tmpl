@@ -1,0 +1,457 @@
+variable "allowed_contact_domains" {
+  description = "Domains the Essential Contacts may belong to: the root organization enforces them on every folder here with the essentialcontacts.managed.allowedContactDomains constraint, from this organization's record (its README, \"The organization-policy baseline\"); this layer checks essential_contact_emails against them."
+  type        = list(string)
+  default     = {{.ContactDomainsList}}
+}
+
+variable "applications" {
+  description = "The applications whose GitHub repositories this layer configures, by code, one repository per application named by application_repositories. Rendered into applications.auto.tfvars by bedrock org register."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for a in var.applications : can(regex("{{.ApplicationCodePattern}}", a))])
+    error_message = "Every application code must be 1-6 lowercase letters and digits starting with a letter."
+  }
+}
+
+variable "application_repositories" {
+  description = "Each application's repository name under the organization, by code: what this layer creates the repository as (github.tf) and the rest of the organization refers to it by. Rendered into applications.auto.tfvars by bedrock org register, from the application's module path."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = toset(keys(var.application_repositories)) == toset(var.applications)
+    error_message = "application_repositories names every application code and no other."
+  }
+}
+
+variable "adopted_applications" {
+  description = "The applications whose repositories existed on GitHub before they were registered, by code: this layer adopts each on its first apply through an import block (github.tf) instead of making it. Rendered into applications.auto.tfvars from placement.json's applications (adopted), which bedrock org register records from GitHub."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for a in var.adopted_applications : contains(var.applications, a)])
+    error_message = "adopted_applications names registered application codes alone."
+  }
+}
+
+variable "application_environments" {
+  description = "The environments each application is placed in, by code, a prefix of the promotion order (the first environment; the first two; every one): the repository's GitHub Environments and their deployment policies are made for those alone (github.tf). Rendered into applications.auto.tfvars from placement.json's applications."
+  type        = map(list(string))
+  default     = {}
+
+  validation {
+    condition     = toset(keys(var.application_environments)) == toset(var.applications)
+    error_message = "application_environments names every application code and no other."
+  }
+
+  validation {
+    condition     = alltrue([for app, envs in var.application_environments : length(envs) > 0 && try(envs == tolist(slice({{.EnvironmentsList}}, 0, length(envs))), false)])
+    error_message = "Each application's environments are a prefix of the promotion order ({{.EnvironmentsProse}})."
+  }
+}
+
+variable "applied_applications" {
+  description = "The applications whose stacks have had their first apply in every environment (registered in full in placement.json): their repositories' rulesets require the stack's check trigger, which the first apply made, beside the CI jobs every application's require. Rendered into applications.auto.tfvars by bedrock org register <app> --next."
+  type        = list(string)
+  default     = []
+}
+
+variable "audit_log_retention_days" {
+  description = "Retention period, in days, for the central audit log bucket in the log project. Only used when central_logging is true."
+  type        = number
+  default     = 400
+}
+
+variable "billing_account_id" {
+  description = "(Required) Billing account ID to link projects to."
+  type        = string
+}
+
+variable "boot_project_id" {
+  description = "(Required) Boot project created by 0-bootstrap. Used as the quota and billing project for API calls."
+  type        = string
+}
+
+variable "central_logging" {
+  description = "Whether to create the log project, the central audit log bucket in it, and one audit log sink per folder. Off by default: nothing here needs a system of record beyond the audit logs every project already retains. Turning it on also needs roles/logging.configWriter and roles/storage.admin in org_layer_roles in 0-bootstrap; see the README."
+  type        = bool
+  default     = false
+}
+
+variable "essential_contact_emails" {
+  description = "Email addresses registered as Essential Contacts on every folder. Must fall within allowed_contact_domains."
+  type        = list(string)
+  default     = []
+}
+
+variable "gcp_region" {
+  description = "Primary GCP region for regional resources."
+  type        = string
+  default     = "{{.Primary.Name}}"
+}
+
+variable "gcp_secondary_region" {
+  description = "Secondary GCP region, for resources that run in two regions. Nothing in this layer is regional; it is published as an output so every layer reads the same value."
+  type        = string
+  default     = "{{.Secondary.Name}}"
+}
+
+variable "github_default_branch" {
+  description = "The default branch of every application repository, from which alone the operations workflow's Environments deploy."
+  type        = string
+  default     = "{{.GithubDefaultBranch}}"
+}
+
+variable "github_infrastructure_team" {
+  description = "Slug of the organization's infrastructure team, whose approval a change to an application's workflow and Cloud Build files needs, given after the last push. Empty for none."
+  type        = string
+  default     = "{{.GithubInfrastructureTeam}}"
+}
+
+variable "github_organization" {
+  description = "The GitHub organization that holds the application repositories."
+  type        = string
+  default     = "{{.GithubOrganization}}"
+}
+
+variable "github_infrastructure_app_id" {
+  description = "App ID of the infrastructure GitHub App, which a run of the triggers acts on GitHub as and which bypasses the infrastructure repository's branch rules, written here; from placement.json (githubInfrastructureAppId), recorded by the root organization's bootstrap."
+  type        = number
+  default     = {{.GithubInfrastructureAppIDHCL}}
+}
+
+variable "github_release_app_id" {
+  description = "App ID of the release GitHub App, the only actor that creates, moves or deletes a release tag; from the app's settings page (a private app cannot be read by its slug)."
+  type        = number
+  default     = {{.GithubReleaseAppID}}
+}
+
+variable "infrastructure_repository" {
+  description = "This repository's name under var.github_organization (placement.json, sourceRepo): the repository the triggers plan and apply the layers from, which github.tf adopts on the first apply and whose default branch it rules. It exists before 0-bootstrap."
+  type        = string
+  default     = "{{.SourceRepo}}"
+}
+
+variable "layer_roles" {
+  description = <<-EOT
+    Project-level roles granted to each layer identity on its own project.
+    Keys map to the role_set field of each entry in var.projects.
+
+    An entry is either a predefined role ("roles/...") or the bare ID of a
+    custom role created in custom-roles.tf, in every project (secretContainerAdmin,
+    storageBucketCreator). Custom roles are named by bare ID because a
+    variable default cannot reference a resource; locals.tf resolves them,
+    in the project the identity is granted on.
+  EOT
+  type        = map(list(string))
+  default = {
+    app = [
+      "roles/artifactregistry.admin",
+      "roles/cloudbuild.builds.editor",
+      "roles/cloudbuild.connectionAdmin",
+      "roles/cloudscheduler.admin",
+      "roles/cloudtasks.queueAdmin",
+      # 2-env owns the pull-request stacks' serverless network endpoint groups
+      # and their backend service, which the project's other roles do not read
+      # or write.
+      "roles/compute.loadBalancerAdmin",
+      "roles/iam.serviceAccountAdmin",
+      "roles/iam.serviceAccountUser",
+      "roles/iam.workloadIdentityPoolAdmin",
+      # 2-env initializes Identity Platform on the environment project, the
+      # Firebase Authentication the applications' live pages sign browsers in
+      # through; the initialization adds Firebase to the project first, which
+      # the custom role beside the predefined one permits (custom-roles.tf).
+      "roles/identityplatform.admin",
+      "identityPlatformInitializer",
+      "roles/logging.admin",
+      "roles/monitoring.admin",
+      # 2-env declares the team group's entitlements on the environment project
+      # (Privileged Access Manager); a starting set, completed by refusal.
+      "roles/privilegedaccessmanager.admin",
+      "roles/resourcemanager.projectIamAdmin",
+      "roles/run.admin",
+      # bedrock org apply restricts Firebase's browser key, which initializing
+      # Identity Platform creates in the environment project, to the sign-in
+      # APIs after each apply of 2-env, as this identity: the list and the
+      # update of the project's API keys.
+      "roles/serviceusage.apiKeysAdmin",
+      "roles/serviceusage.serviceUsageAdmin",
+      "roles/spanner.admin",
+      "secretContainerAdmin",
+      # 2-env declares one bucket, the deployment records: its storage admin
+      # is granted under a condition naming that bucket (service-accounts.tf),
+      # and this role holds what Cloud Storage checks on the project, creating
+      # a bucket and listing the project's buckets.
+      "storageBucketCreator",
+    ]
+    net = [
+      "roles/certificatemanager.editor",
+      "roles/compute.loadBalancerAdmin",
+      "roles/compute.networkAdmin",
+      "roles/compute.securityAdmin",
+      "roles/dns.admin",
+      # 2-net owns the organization's domain registrations, which no other
+      # role in the set reads or writes.
+      "roles/domains.admin",
+      "roles/iam.serviceAccountAdmin",
+      "roles/iam.serviceAccountUser",
+      "roles/logging.admin",
+      "roles/monitoring.admin",
+      "roles/resourcemanager.projectIamAdmin",
+      "roles/serviceusage.serviceUsageAdmin",
+      "roles/storage.admin",
+    ]
+    shr = [
+      "roles/artifactregistry.admin",
+      "roles/iam.serviceAccountAdmin",
+      "roles/iam.serviceAccountUser",
+      "roles/iam.workloadIdentityPoolAdmin",
+      "roles/logging.admin",
+      "roles/monitoring.admin",
+      "roles/resourcemanager.projectIamAdmin",
+      "roles/serviceusage.serviceUsageAdmin",
+      "roles/storage.admin",
+      "secretContainerAdmin",
+    ]
+    spn = [
+      "roles/iam.serviceAccountAdmin",
+      "roles/iam.serviceAccountUser",
+      "roles/logging.admin",
+      "roles/monitoring.admin",
+      # 2-spn declares the environments' Spanner entitlements on the spn project
+      # (Privileged Access Manager); a starting set, completed by refusal.
+      "roles/privilegedaccessmanager.admin",
+      "roles/resourcemanager.projectIamAdmin",
+      "roles/serviceusage.serviceUsageAdmin",
+      "roles/spanner.admin",
+      "roles/storage.admin",
+    ]
+  }
+}
+
+variable "plan_roles" {
+  description = <<-EOT
+    Project-level roles granted to each plan identity on its own project: the
+    reads a plan of the project's layer needs, and no bundle. Keys map to the
+    role_set field of each entry in var.projects, as var.layer_roles' do.
+
+    Each set is the custom role of its kind from custom-roles.tf, in each project
+    (named by bare ID; locals.tf resolves it), which reads the resource types
+    the layer declares and nothing of their data, beside
+    roles/iam.securityReviewer for the IAM policies the layer's grants are
+    refreshed through. roles/viewer is in no set: it reads the rows of every
+    Spanner database in the project and every container image, none of which
+    a plan reads, and the objects of any bucket that still carries Cloud
+    Storage's default grants to the project's basic roles (the records bucket
+    and the applications' file stores carry none).
+  EOT
+  type        = map(list(string))
+  default = {
+    app = [
+      "environmentLayerPlanReader",
+      "roles/iam.securityReviewer",
+    ]
+    net = [
+      "networkLayerPlanReader",
+      "roles/iam.securityReviewer",
+      # The domain registrations. Cloud Domains permissions are not supported in
+      # custom roles, so the registration's read comes from the cloud's viewer
+      # bundle for the service: registrations, locations and operations, read only.
+      "roles/domains.viewer",
+    ]
+    shr = [
+      "servicesLayerPlanReader",
+      "roles/iam.securityReviewer",
+    ]
+    spn = [
+      "spannerLayerPlanReader",
+      "roles/iam.securityReviewer",
+    ]
+  }
+}
+
+variable "prefix" {
+  description = "Short org-wide prefix used in resource names (e.g. \"{{.Prefix}}\")."
+  type        = string
+  default     = "{{.Prefix}}"
+}
+
+variable "projects" {
+  description = <<-EOT
+    Every project in the organization, keyed by a short environment code. This
+    is the provisioning process: adding a project means adding an entry here
+    and re-running this layer.
+
+    Each entry creates the project itself, and unless layer is false, a layer
+    identity (the service account that applies the project's own layer, with
+    the roles of its role set) and a read-only plan identity.
+
+    folder      key in local.folders the project is created under
+    description what the project is for
+    api_set     key in var.required_apis selecting the APIs to enable
+    role_set    key in var.layer_roles selecting the layer identity's roles
+    layer       set false for projects managed entirely from this layer
+  EOT
+  type = map(object({
+    folder      = string
+    description = string
+    api_set     = optional(string, "app")
+    role_set    = optional(string, "app")
+    layer       = optional(bool, true)
+  }))
+  default = {
+    shr = {
+      folder      = "shared"
+      description = "Shared services: container images"
+      api_set     = "shr"
+      role_set    = "shr"
+    }
+    net = {
+      folder      = "shared"
+      description = "Shared network: global load balancer, DNS, certificates"
+      api_set     = "net"
+      role_set    = "net"
+    }
+    spn = {
+      folder      = "shared"
+      description = "Shared Spanner instance for stg and prd"
+      api_set     = "spn"
+      role_set    = "spn"
+    }
+    tst = {
+      folder      = "tst"
+      description = "Environment project: tst"
+    }
+    stg = {
+      folder      = "stg"
+      description = "Environment project: stg"
+    }
+    prd = {
+      folder      = "prd"
+      description = "Environment project: prd"
+    }
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.projects : can(regex("^[a-z][a-z0-9]{1,7}$", k))])
+    error_message = "Project keys must be 2-8 lowercase alphanumeric characters; they are embedded in project IDs and service account IDs."
+  }
+
+  validation {
+    condition     = !contains(keys(var.projects), "log")
+    error_message = "The log project is added by central_logging, not by var.projects."
+  }
+}
+
+variable "public_invokers" {
+  description = "Per application, by environment, the IAM member of its apply identity there (2-env's), granted roles/resourcemanager.tagUser on that environment project's public-invoker tag value (tags.tf): an apply identity binds the tag to its own Cloud Run services, which is what lets it grant allUsers roles/run.invoker there. Rendered into public-invokers.auto.tfvars by bedrock org register and committed after 2-env has created the identities, since a grant on an identity that does not exist is refused."
+  type        = map(map(string))
+  default     = {}
+}
+
+variable "state_bucket" {
+  description = "The seeded state bucket every backend block names (placement.json, stateBucket). This layer reads 0-bootstrap's state from it and grants on it for the identities it creates (runners.tf)."
+  type        = string
+  default     = "{{.StateBucket}}"
+}
+
+variable "required_apis" {
+  description = "APIs enabled on each class of project. Keys map to the api_set field of each entry in var.projects."
+  type        = map(list(string))
+  default = {
+    # The application layers name the environment project as their quota
+    # project, so every API they call must be enabled here, the project and
+    # storage ones included (the first 3-app apply, 2026-09-25, was refused:
+    # "Cloud Resource Manager API has not been used in project ...").
+    app = [
+      # An application's stack makes the web API key its browsers present to
+      # Firebase Authentication (apikeys), releases the security rules of its
+      # Firestore database (firebaserules), and signs its browsers in with
+      # custom tokens the Identity Toolkit API exchanges and the Secure Token
+      # API refreshes; 2-env initializes Identity Platform on the project.
+      "apikeys.googleapis.com",
+      "artifactregistry.googleapis.com",
+      "cloudbuild.googleapis.com",
+      # The sign-in reads a login's role groups through the Cloud Identity
+      # Groups API with the person's own token, and the API is consumed in the
+      # project that owns the OAuth client: the environment project.
+      "cloudidentity.googleapis.com",
+      "cloudresourcemanager.googleapis.com",
+      "cloudscheduler.googleapis.com",
+      "cloudtasks.googleapis.com",
+      "cloudtrace.googleapis.com",
+      "compute.googleapis.com",
+      # An application that declares a Firestore database (APP_FIRESTORE_DATABASE)
+      # gets one beside its Spanner database, in the environment project.
+      "firebaserules.googleapis.com",
+      "firestore.googleapis.com",
+      "iam.googleapis.com",
+      "iamcredentials.googleapis.com",
+      "identitytoolkit.googleapis.com",
+      "logging.googleapis.com",
+      "monitoring.googleapis.com",
+      # The team group's entitlements (2-env/team-group.tf): a member asks for a
+      # time-limited grant through Privileged Access Manager.
+      "privilegedaccessmanager.googleapis.com",
+      "run.googleapis.com",
+      "secretmanager.googleapis.com",
+      "securetoken.googleapis.com",
+      "serviceusage.googleapis.com",
+      "spanner.googleapis.com",
+      "storage.googleapis.com",
+      "sts.googleapis.com",
+      # The applications' traces arrive through the Telemetry API (OTLP).
+      "telemetry.googleapis.com",
+    ]
+    log = [
+      "iam.googleapis.com",
+      "logging.googleapis.com",
+      "monitoring.googleapis.com",
+      "storage.googleapis.com",
+    ]
+    net = [
+      "certificatemanager.googleapis.com",
+      "compute.googleapis.com",
+      "dns.googleapis.com",
+      "domains.googleapis.com", # Cloud Domains: the registrations live beside their zones (2-net)
+      "iam.googleapis.com",
+      "logging.googleapis.com",
+      "monitoring.googleapis.com",
+    ]
+    shr = [
+      "artifactregistry.googleapis.com",
+      "iam.googleapis.com",
+      "iamcredentials.googleapis.com",
+      "logging.googleapis.com",
+      "monitoring.googleapis.com",
+      "secretmanager.googleapis.com",
+      "sts.googleapis.com",
+    ]
+    spn = [
+      "iam.googleapis.com",
+      "logging.googleapis.com",
+      "monitoring.googleapis.com",
+      # The environments' Spanner entitlements on the shared instance
+      # (2-spn/entitlements.tf), through Privileged Access Manager.
+      "privilegedaccessmanager.googleapis.com",
+      "spanner.googleapis.com",
+    ]
+  }
+}
+
+variable "destroy" {
+  description = <<-EOT
+    Set by bedrock org destroy alone, on its own runs: the environment projects' deletion
+    policy becomes DELETE, no API is disabled on the destroy (the project's
+    deletion takes everything in it, and disabling an API a resource outside
+    this layer's state uses would refuse), and the folders' deletion protection
+    comes off, all three recorded by an apply before the destroy, since the
+    provider reads them from the state. Every other run leaves it false.
+  EOT
+  type        = bool
+  default     = false
+}

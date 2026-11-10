@@ -1,1 +1,3248 @@
 # bedrock
+
+`bedrock` is the command-line tool for the infrastructure of Impulse applications: the
+organization foundation an application deploys into, the application's own stack, the
+pipeline that deploys it, and the operations around a deployment (secrets, patch lines,
+repository rules, migration renumbering).
+
+The tool keeps no record of its own. It derives what an application needs from the
+application's own code, through impulse's reader (the config struct tags, the main
+packages, the auths, the generated router, the Dockerfile), and from a placement file that
+records what the code cannot know: the organization's naming prefix, its environments and
+regions, its domains, the bedrock the pipeline runs. The code and the placement are the
+inputs; the stack and the pipeline are the output, rewritten on every render and
+compared by every check.
+
+## Install
+
+Each release of the tool is a GitHub Release of this repository tagged `vX.Y.Z`, the
+version itself, carrying one static binary per platform the tool runs on
+(`bedrock-linux-amd64`, `bedrock-linux-arm64`, `bedrock-darwin-arm64`) and
+`checksums.txt`, the SHA-256 of each. Download the binary for your machine from the
+release page, verify it against the checksum and put it on your PATH. A pushed commit
+installs with Go: `go install github.com/impulseframework/bedrock@<commit>`. Or build it
+from a checkout of this repository (`go build -o bedrock .` at its root).
+
+Which bedrock an application runs is not the installed one's choice. The application's
+placement pins it (`bedrockVersion`), one of two ways:
+
+- **A release**, with the SHA-256 of its linux/amd64 binary (`bedrockSha256`). The
+  pipeline and the stack's triggers download that binary and verify it against the
+  checksum.
+- **A commit pin**: the pseudo-version the Go module proxy gives a pushed commit of this
+  module (`v0.0.0-lab.1.0.20260928222237-58b211dce544`), with no `bedrockSha256`. The
+  pipeline and the stack's triggers build it with `go install` in a Go image pinned by
+  digest, and Go's checksum database verifies the module in place of a checksum in the
+  placement. The triggers build a commit only once git finds a branch of
+  `impulseframework/bedrock` that reaches it (their first step clones the repository's
+  branches, commits only), as `upgrade` checks by hand; a commit no branch reaches is
+  refused before anything is built. This runs bedrock from an unreleased commit, for
+  trying a change in an application before it is released; it costs each pipeline build
+  and each hourly sweep a minute or two of building.
+
+`render` and `check` refuse to run a release, or a commit installed with `go install`,
+against a placement that pins another bedrock, so the installed bedrock is kept at the
+pin and `bedrock upgrade` moves it. A build from a checkout is nobody's pin and renders
+any pin.
+
+A release is made in four steps, all in one run of this repository's release-please
+workflow when bedrock's release pull request merges:
+
+- **Draft**: release-please, as the release app, creates the tag `vX.Y.Z` at the release
+  commit and a draft release on it (`draft` and `force-tag-creation` in
+  `release-please-config.json`, whose one package is the repository root).
+- **Binaries**: a job of the same run (`.github/workflows/bedrock-release.yml`) checks out
+  the tag, refuses it if it names another commit than the release, builds the binaries
+  there, and uploads them and `checksums.txt` to the draft.
+- **Publish**: the job reads the draft's assets back and publishes only when they are
+  exactly the files it built, each with the digest GitHub reports matching
+  `checksums.txt`; while the release is a draft, anyone with write access could add or
+  replace an asset.
+- **Locked**: with the repository's immutable releases on, the published release and its
+  assets cannot change.
+
+A draft is not a release `bedrock upgrade` finds, so no application can move to a release
+before its binaries are on it. If the job fails, the draft stays a draft: re-run the
+run's failed jobs, or start the `bedrock release` workflow by hand from the Actions tab
+with the tag, and it builds, checks and publishes that draft. Starting release-please
+again does not, because its pull request is already labeled as tagged.
+
+## Vocabulary
+
+- **Organization foundation**: the six layers of the CCC provisioning model, one OpenTofu
+  root each, that every application deploys into: `0-bootstrap` (the state bucket and the
+  boot identity), `1-org` (the folders, the environment projects and the organization
+  policies), `2-shr` (the shared project: the registries), `2-spn` (the
+  Spanner instances), `2-net` (the load balancer, the certificates, the zones of the apps
+  domain and the vanity domains, and the hostnames) and
+  `2-env` (per environment: the application identities and their grants, the records
+  bucket, the repository links, the team group's release approval and entitlements).
+  Rendered by `bedrock org` from the organization's placement into the organization's
+  infrastructure repository. A **root organization** (`"kind": "root"` in its
+  placement) is a bedrock organization with no environments and no terraform that holds
+  DNS zones alone, in its root project: one public zone per domain a customer delegated
+  to it once, and one NS record set per application name under the domain, handed onward
+  to the zone of the hosting organization that serves the application (bedrock org,
+  below). One per Google Cloud organization that hosts applications: the one thing made
+  by hand, by `bedrock org bootstrap`, kept true from the same placement file by its two
+  Cloud Build triggers, and the place each hosting organization is created from, by pull
+  request.
+- **Application stack**: the OpenTofu root under the application repository's
+  `infrastructure/` directory (or the one layer under `3-app/` of an infrastructure
+  repository): the Cloud Run services (their port named `h2c` when the site's main
+  package imports the framework's server, `resource/server`, which speaks HTTP/1.1 and
+  unencrypted HTTP/2 on one listener, so bodies over Cloud Run's 32 MiB HTTP/1 bound
+  pass; HTTP/1 otherwise), the database, the secret
+  containers, the backend service, the triggers, the sweep schedule and the scheduled
+  routes' jobs, per environment. An application in impulse's sites layout gets a Cloud
+  Run service per site and region and a backend service per site, with the site's own
+  hostnames, behind one image (a binary and a bundle per site), one runtime identity and
+  one database; a site's name is one word of lowercase letters and digits, short enough
+  for every name the site is in to fit Cloud Run's.
+  Rendered by `bedrock render` from the code and the application's placement.
+- **Placement**: `placement.json` beside the stack. For an application it records the
+  organization's facts the stack needs, the bedrock the pipeline runs
+  (`bedrockVersion`, and `bedrockSha256` for a release) and, when the organization
+  sets one, the Cloud Build machine the pipeline's builds run on (`buildMachine`, one
+  of Cloud Build's machine names; absent, Cloud Build's default), the most Cloud Run
+  instances the service may run per region in an environment (`maxInstances`, by
+  environment name; an environment it leaves out has no cap, and Cloud Run's default
+  applies), the backend service's outlier detection thresholds (`outlierDetection`;
+  absent, bedrock's defaults) and the Cloud Armor policy an environment may turn on
+  (`cloudArmor`; absent, bedrock's defaults); for an organization it records the prefix,
+  the domains, the organization and billing ids, the regions, the Spanner configuration,
+  the outlier detection thresholds, the Cloud Armor policy its applications start with,
+  the GitHub organization and its Bot Account, the
+  applications, the environment projects and
+  each environment's team group (`teamGroups`: the group whose members approve the
+  environment's releases and ask for its entitlements, with `entitlementDurations` for
+  the longest grants); a root organization's records its kind (`kind`), the fields every
+  organization has, one region, and the domains it holds zones for with the labels handed
+  onward (`domains`), and none of the applications' or the environments' fields.
+- **Environment**: `tst`, `stg` and `prd`, in promotion order. A pull request deploys to
+  the first; a release goes through them in order, each after it is live in the previous
+  one.
+- **Owned file**: a file bedrock writes on every render and compares on every check: the
+  stack's `.tf` files and its README, the pipeline files at the application root
+  (`cloudbuild.yaml`, `cloudbuild-sweep.yaml`), the generate-time step
+  (`cmd/generate/bedrock.go`, which runs the pinned bedrock through `go run` so `go
+  generate` needs no bedrock installed) and the operations workflow
+  (`.github/workflows/operations.yml`). A person never edits one; the code or the
+  placement changes and the file is rendered again. A **retired file** is one an earlier
+  bedrock rendered and this one does not (`.github/workflows/release-please.yml`: the
+  stack's release trigger cuts the releases in Cloud Build now); `render` removes it and
+  `check` reports it until removed.
+- **Seeded file**: a file bedrock writes once when it is absent and then leaves to a
+  person: `terraform.tfvars` (the placement values per environment: the pins, the build
+  secrets, the substitutions), the stack's `.gitignore`, and at the application root the
+  Dockerfile with its `.dockerignore` and release-please's two files,
+  `release-please-config.json` and `.release-please-manifest.json`.
+- **Pipeline**: `cloudbuild.yaml`, the deploy sequence Cloud Build runs on a pull request's
+  `/gcbrun` comment and on a release tag. Every step but the image build is a `bedrock
+  deploy` command run by the pinned bedrock release; the application customizes it
+  through hooks, build secrets, declared substitutions and its Dockerfile, never by editing
+  the file. The steps run in order. A pull-request build applies no Terraform from it: the
+  pull request's own stack is the stack's pr-stack trigger's job (`infrastructure/cloud-build.tf`),
+  which runs as the apply identity from steps the pull request cannot edit, and the build
+  reads what that job applied.
+- **Hook**: a shell script the application commits at `infrastructure/hooks/<stage>.sh`,
+  run at that stage of the pipeline as the deploy identity with the build's facts in its
+  environment: `before-build`, `before-migrate`, `after-migrate`, `before-traffic`,
+  `after-traffic`, `after-down`. No file, nothing runs.
+- **Deploy identity** and **apply identity**: per application and environment, the
+  service account the pipeline runs as (`<prefix>-<env>-gbl-<app>-deploy`) and the one
+  that applies the stack (`<prefix>-<env>-gbl-<app>-tofu`), both created by `2-env`. Both
+  read the environment's deployment records through `2-env`'s bindings on the records
+  bucket: the pipeline as the deploy identity, and the pull request's stack job, which
+  the pr-stack and check triggers run as the apply identity, before its plan.
+- **Deployment record**: what a build deployed, written to the environment's records
+  bucket as `<app>/<env>/<release>/<build id>.json`; the next environment's gate reads
+  it, and the pipeline reads the newest one to tell a stale pull-request database.
+- **Breaking release** and **maintenance window**: a release is breaking for an
+  environment when the oldest release its outlets still answer (the release file beside
+  the generated router) is newer than the release the environment runs, and deploys
+  behind the maintenance page inside the environment's maintenance window, the time the
+  client allows for a release that interrupts service (`placement.json`, `maintenance`).
+- **Release**: a tag `v<major>.<minor>.<patch>` cut by release-please as the release app;
+  the pipeline accepts a release from that author only. A **patch line** is the branch
+  `patch/<major>.<minor>.x` on which release-please releases the line's next patch
+  versions while the default branch moves on. A feature release advances the minor,
+  below 1.0 too (release-please's `bump-patch-for-minor-pre-major` off; `check` refuses
+  it on), so a feature production does not run yet opens a new line; a fix is a patch on
+  the line, a breaking change advances the minor.
+
+## The application's placement
+
+An application's `placement.json`, in its repository's `infrastructure` directory beside
+the stack, records what the code cannot know. `bedrock org register <code> <checkout>`
+writes the first one from the organization's placement (`bedrock org`, below), and the
+application's team owns it from then on: `bedrock upgrade` moves the pin, and a person
+writes the optional fields. A field the file does not know is refused, and so is a value
+of the wrong shape. Each field, what it means, where the first placement takes it from,
+and what its absence means:
+
+- `prefix`: the organization's naming prefix; every resource name starts with
+  `<prefix>-<env>`. From the organization's `prefix`. Required.
+- `code`: the application's code, the segment every resource name of the application
+  carries: one to six lowercase letters and digits starting with a letter, the one rule
+  for it, declared to `org register` and the organization's naming decision. A placement
+  written before the code was recorded names none, and the repository's name stands in
+  for it, the two having coincided then; `bedrock upgrade` writes it in.
+- `environments`: the environments the application is placed in, in promotion order, a
+  prefix of the organization's three (`tst`; `tst`, `stg`; or all): pull requests deploy to
+  the first, and the release line ends at the last. From the organization's placement, the
+  application's entry there, every environment unless `bedrock org register --environments`
+  or `bedrock org place` named a prefix. Required.
+- `productionEnvironment`: the organization's production environment, the last of its promotion
+  order: the one whose hostnames carry the bare label, and the one the environments between
+  the first and it restore their databases from. The application is placed there when
+  `environments` ends with it; placed in a prefix, it has no bare-label hostname, keeps no
+  release backups by default, and seeds every environment it is placed in, since nothing
+  restores them from production's backups. From the organization's promotion order. Absent,
+  the last of `environments`.
+- `regions`: the Cloud Run regions, each a `name` and the `code` regional resources are
+  named by; the first is the primary. From the organization's `regions`. Required.
+- `appsDomain`: the domain the application's hostnames are under: `<label>-<env>.<domain>`,
+  and `<label>.<domain>` in production, the label being the site's (`hostnames`, below; the
+  code by default). From the organization's `appsDomain`. Required.
+- `hostnames`: what each site answers on, by site name (the directory under `apps/` in
+  impulse's sites layout, the module path's last element in the flat layout). Written as
+  the site's hostname label alone (`"portal": "lanterns"`) or as an object with the label
+  and the site's vanity hostnames (`"portal": {"label": "lanterns", "vanity": {"prd":
+  ["lanterns.example"]}}`); the label may be left out of the object for the default.
+  The label is one DNS label of lowercase letters, digits and hyphens starting with a
+  letter and ending with a letter or digit, at most 54 characters (so `<label>-<env>`, with
+  an environment name of up to eight characters, fits a DNS label): the stack serves
+  `<label>-<env>` under the apps domain, the bare `<label>` in production and `<label>-next`
+  for the next revision. A pull-request stack serves `<app>-pr<N>` (`<app>-pr<N>-<site>` per
+  site in the sites layout), the pull request's name, which its Cloud Run service carries
+  too, as every resource of its stack does. A site left out keeps the default, the code (in the sites
+  layout the code, a hyphen and the site's name), so the code is in a URL by default alone
+  and stays the identifier every resource name carries. A label names a site the
+  application has, and one label under the apps domain only: the organization's wildcard
+  certificate covers exactly one level. `vanity`, per environment, lists the hostnames
+  the site answers on besides, on a vanity domain the organization declares in its
+  placement (`vanityDomains`, bedrock domain below) and delegates whole to its network
+  project: the domain itself for one site of the application (`lanterns.example`), a
+  label of it for the others of a multi-site application (`console.lanterns.example`),
+  each a lowercase hostname not under the apps domain and declared once. Any environment
+  may declare them; in practice production does, and the other environments stay under
+  the apps domain. In an environment that declares them they come first in the stack's
+  `var.hostnames`, and the first declared is the site's canonical hostname there: the
+  directory sign-in callbacks, the hostname build argument, the scheduled routes' calls
+  and the pipeline's `_HOSTNAME` derive from it. The apps-domain hostname follows and
+  keeps answering; `net_hosts` lists them all. The next revision's `-next` twin and a
+  pull-request stack's hostname stay on the apps domain, where the wildcard certificate
+  is, and the stack hands the pipeline the next revision's hostname (`_NEXT_HOSTNAME`,
+  per site `_NEXT_HOSTNAMES`) so the next-revision check stays there. Changing a
+  label or a vanity hostname is an ordinary configuration change: the stack re-renders
+  and the next apply moves the hostnames, nothing else; then `bedrock org hostnames
+  <app>` records them in the organization, which refuses a hostname another application
+  serves or one under no domain it declares. Optional.
+- `hostedDomain`: the Google Workspace domain a directory sign-in limits logins to. From
+  the organization's `organizationDomain`. Required.
+- `stateBucket`: the Cloud Storage bucket holding every layer's state, which the stack's
+  backend writes to and its reads of the organization's layers read from. From the
+  organization's `stateBucket`. Required.
+- `placeholderImage`: the image the services and the job are created with before the
+  first deploy, after which the pipeline owns the image. Cloud Run's public sample,
+  `us-docker.pkg.dev/cloudrun/container/hello`. Required.
+- `defaultBranch`: the branch pull requests target and releases are cut on. From the
+  organization's `githubDefaultBranch`. Required.
+- `repository`: the application repository's name, the `source_repo` label every
+  resource carries: the last segment of the application's module path (a module under
+  `github.com/<organization>` is its repository), the name `1-org` creates the repository
+  with. Bound by no length rule; the code is. Required.
+- `releaseApp`: the slug of the GitHub App release-please runs as; the pipeline accepts
+  a release tag only from a GitHub Release that app authored. From the organization's
+  `githubReleaseAppSlug`. Required.
+- `bedrockVersion` and `bedrockSha256`: the bedrock the pipeline and the infrastructure
+  check run (Install, above): a release with the SHA-256 of its linux/amd64 binary, or a
+  commit pin with none. The bedrock that ran `org register`; `bedrock upgrade` moves it.
+  Both absent, the placement is unpinned, and `render` and `check` refuse it.
+- `labels`: labels on every resource beside the ones the stack derives. From the
+  organization's `labels`. Absent, none.
+- `seed`: the environments whose database takes the development seed (`schema/devseed`)
+  at a release build. The first environment. Absent, none; production is never seeded.
+- `releaseBackups`: the environments whose release builds keep a backup of the database
+  as of the cut, the moment before the release's migrations run, for fourteen days, so
+  `bedrock restore --before <release>` can return the database to the state before that
+  release (bedrock restore, below). Not written. Absent, production alone.
+- `spannerRetention`: how far back each environment's database keeps its past, by
+  environment (`{"prd": "7d"}`), one hour to seven days (`1h` to `168h`, or `1d` to
+  `7d`): the version retention period of the Spanner database, which bounds a restore
+  to a moment (`bedrock restore --at`) and what a backup taken as of a past moment can
+  hold. Not written. Absent, or for an environment it leaves out, seven days.
+- `projects`: each environment project's `id` and `number`, by which the operations
+  workflow, started from GitHub (`bedrock restore`, `bedrock rerun`, `bedrock release`,
+  `bedrock rollback`, `bedrock backups`, `bedrock maintenance`),
+  names the environment's identity provider and operations identity. From the organization's
+  `projects` and `projectNumbers`, 1-org's outputs. An environment without an entry
+  cannot be operated from GitHub.
+- `approvals`: the environments whose release waits for a person's approval in Cloud
+  Build. Not written. Absent, every environment but the first.
+- `maintenance`: each environment's maintenance window, the time it may take a release
+  that interrupts service (Maintenance windows, below). Not written. Absent, every
+  environment but production is `anytime`; production has none, and a breaking release
+  to it is refused until the team writes its window, which is done before the first
+  breaking release.
+- `maintenanceWindow`: the application's routine maintenance window as the team declares
+  it, a value for the team (`"Tuesdays 02:00-04:00 UTC"`): when its patch releases are
+  made, by whom and under what approval is the team's configuration, never the
+  framework's. bedrock carries the value and `bedrock patch status` prints it; nothing in
+  the framework acts on it. Not written.
+- `buildMachine`: the Cloud Build machine the pipeline's builds run on, one of
+  `E2_MEDIUM`, `E2_STANDARD_2`, `E2_HIGHCPU_8` and `E2_HIGHCPU_32`. Not written. Absent,
+  Cloud Build's default machine.
+- `maxInstances`: the most Cloud Run instances the service may run per region, by
+  environment (`{"prd": 10}`), at least 1 each (bedrock render, below). Not written.
+  Absent, or for an environment it leaves out, no cap: Cloud Run's default maximum.
+- `outlierDetection`: the thresholds by which the load balancer takes a failing region
+  out of the backend service. A serverless network endpoint group, the backend of each
+  region, has no health check, so without outlier detection a region that fails keeps
+  its share of the requests until it recovers. From the organization's
+  `outlierDetection`, when it sets one. Absent, or for a field it leaves out, the
+  default; a field written is a whole number, and one that would turn the ejection off
+  is refused:
+  - `consecutiveErrors`: how many errors in a row (a 5xx answer, or a request that gets
+    none) take a region's endpoint group out. At least 1; default 5.
+  - `enforcingConsecutiveErrors`: the chance, in percent, that a group reaching that
+    count is taken out. 1 to 100; default 100, every time.
+  - `maxEjectionPercent`: the most of the backend's groups out at once, in percent. 1 to
+    100; default 50, one region of the two.
+  - `intervalSeconds`: how often, in seconds, the load balancer looks at the counts,
+    taking groups out and putting back those whose time is up. At least 1; default 1.
+  - `baseEjectionSeconds`: how long, in seconds, a group stays out the first time; each
+    further time, that multiplied by the number of times it was taken out. At least 1;
+    default 30.
+- `cloudArmor`: the Cloud Armor policy the stack renders on its backend services
+  (`cloud-armor.tf`), which an environment turns on in the stack's `terraform.tfvars`
+  (`cloud_armor`, by environment: `"preview"` evaluates the rules and logs what each
+  would have done, `"enforce"` applies them, `"off"` keeps the policy and detaches it
+  from the backend services; an environment left out has no policy, an environment
+  goes off before its entry is removed, since an apply that deletes the policy while
+  the backend services still name it fails, and a pull-request stack never has a
+  policy, since the environment layer serves previews from one backend service).
+  Rules run in priority order and the first match decides: a rule
+  set that reads no body (scanner detection) first, on every path; then the bypasses,
+  each a route whose body is a file or a third party's rather than the application's
+  JSON, allowed so that no rule below reads it, the generated router's upload and
+  stored-file routes (the release file's `fileRoutes`) and the placement's; then the
+  other rule sets, each scoped to the outlets' routes; then the sign-in throttles; and
+  every other request allowed. Each rule's description names its source.
+
+  The sign-in routes are throttled by client address: one rule per route of the
+  generated router that takes a credential by POST, each session outlet's password login
+  (`/<prefix>/user/password/login`, where the outlet's auth registers the password
+  method) and its pending sign-in's confirmation and cancel
+  (`/<prefix>/user/pending/confirm`, `/cancel`), read from the outlets' `Auth`
+  declarations as the directory callbacks are; a directory method's login and callback
+  are not throttled, since the directory holds the credential. An address past
+  `cloud_armor_sign_in_count` POSTs to one of them in `cloud_armor_sign_in_interval`
+  seconds (the stack's `terraform.tfvars`; 30 in 60 by default, chosen for a login page:
+  a person types a handful of attempts in a minute and an office behind one address a
+  few dozen at its busiest, so neither meets it, while a password guessed from one
+  address is held to the count) is answered 429 on that route until the interval passes.
+  The throttles run after the rule sets, so a sign-in POST is still read by them, and
+  follow the environment's mode: preview logs the throttle an address would have met
+  (`jsonPayload.previewSecurityPolicy`), which says whether the default fits the
+  application's addresses before the environment is enforced; off leaves the policy
+  detached. `bedrock check` refuses a count or an interval that is not a positive whole
+  number, naming the variable, and the stack's own validation refuses the same at plan.
+
+  The policy is from the organization's `cloudArmor`, when it sets one. Absent, or for a
+  field it leaves out, the default:
+  - `ruleSets`: the preconfigured rule sets the policy evaluates, in order, each a `name`
+    Cloud Armor gives the set (`sqli-v33-stable`, `xss-v33-stable`, `lfi-v33-stable`,
+    `rfi-v33-stable`, `rce-v33-stable`, `methodenforcement-v33-stable`,
+    `scannerdetection-v33-stable`, `protocolattack-v33-stable`, `php-v33-stable`,
+    `sessionfixation-v33-stable`, `java-v33-stable`, `nodejs-v33-stable`, `cve-canary`,
+    `json-sqli-canary`; any other is refused) and a `sensitivity` from 1, the rules least
+    likely to misfire, to 4, every rule. Absent, the reference deployment's five at
+    sensitivity 1: `scannerdetection-v33-stable`, `sqli-v33-stable`, `json-sqli-canary`,
+    `xss-v33-stable` and `protocolattack-v33-stable`.
+  - `fieldExclusions`: the request fields a rule set does not inspect, each the
+    `ruleSet` (one of the policy's), the `field` (`header`, `cookie`, `queryParam` or
+    `uri`), how the `value` names it (`operator`: `equals`, the default, `startsWith`,
+    `endsWith`, `contains`, or `any`, which names every field of the kind and takes no
+    value), the rules it is for (`rules`, Cloud Armor's rule ids such as
+    `owasp-crs-v030301-id941100-xss`; absent, every rule of the set) and a `reason`. For a
+    field whose legitimate values trip a rule: a session cookie of random bytes under the
+    cross-site scripting rules. Absent, none.
+  - `bypasses`: the paths allowed ahead of the rule sets beside the ones derived from the
+    router, each a `path` as the application mounts it, parameters in braces and a last
+    segment of `*` for the subtree (`/hooks/registry`, `/streams/*`), a `method` (absent,
+    every method) and a `reason`: a webhook under the Root hook whose sender signs its
+    body, a media stream. A bypass the router already derives is refused, naming the
+    declaration. Absent, none.
+- `buildArguments`: values the stack makes in each environment that the image build
+  takes as build arguments (a build argument is a `NAME=value` the image build is given
+  and a Dockerfile stage reads after it declares `ARG NAME`), as a map from the argument's
+  name to the value's name: `{"FIREBASE_API_KEY": "firebaseApiKey", "PROJECT_ID":
+  "projectId"}`. Not written. Absent, none. A name is an uppercase identifier, other than
+  `VERSION` and `COMMIT`, which the pipeline passes itself. A value is one of
+  the values bedrock knows:
+  - `firebaseApiKey`: the key string of the Firebase web API key the stack makes for the
+    application, which the browser presents to sign in (made when the code declares
+    `APP_FIREBASE_API_KEY`; `render` refuses it otherwise);
+  - `firestoreDatabase`: the id of the application's Firestore database (made when the
+    code declares `APP_FIRESTORE_DATABASE`; `render` refuses it otherwise);
+  - `projectId`: the environment project's id;
+  - `environment`: the environment's name;
+  - `hostname`: the service's canonical hostname in the environment.
+- `persona`: the persona provider the first environment and its pull requests sign in
+  through when an auth registers the persona method (`impulse add method <auth>
+  persona`): the provider's `issuer` URL (https) and the application's `clientId` root
+  at the provider (lowercase letters, digits and hyphens starting with a letter), both
+  from Redgrade's registration of the application. The stack sets the issuer on the
+  served site in the first environment and its pull requests alone, so the method is
+  registered there and nowhere else and a later environment never offers it; derives each
+  deployment's client ID from the root (`<root>-pr<N>` for a pull request,
+  `<root>-<first environment>` for the environment) and the callback from the canonical
+  hostname; and carries the registrations on the triggers (`_PERSONA`), from which the
+  pipeline registers each deployment, its callback and its cast
+  (`pkg/auth/<auth>/cast.json`) with the provider after traffic (`deploy persona
+  register`) and removes a torn-down or closed pull request's (`deploy persona remove`,
+  the sweep). Absent, no auth may register the method; present, one must; `render` and
+  `check` refuse the mismatch either way, and a cast that is missing or malformed.
+
+  Such a value exists only once the stack is applied (the Firebase key is made by the
+  apply), so it cannot be written per environment the way a declared substitution in
+  `terraform.tfvars` is. The stack carries each on its triggers as `_BUILD_ARG_<NAME>`,
+  read from its own resources, and the image build passes it as `--build-arg NAME=value`
+  (`bedrock deploy`, below). The Dockerfile consumes it in the stage that builds with it:
+
+  ```dockerfile
+  FROM node AS web-build-env
+  ARG FIREBASE_API_KEY
+  RUN bun run build    # the build script reads FIREBASE_API_KEY from its environment
+  ```
+
+  `bedrock check` refuses a declared argument no stage of the Dockerfile declares. A build
+  argument is part of the layer cache key: every layer after the `ARG` is built again
+  when the value differs, so each environment builds those layers with its own value and
+  never takes another environment's. A dependency stage that sees an argument (through
+  the stage its `FROM` names) caches under a digest of the value. A build secret never
+  carries such a value: a secret is not part of the cache key, and a layer built with
+  one environment's value would be served to another. A release build passes what its
+  trigger carries, as the stack's last apply set it, so an argument a release declares
+  first reaches the image from the next release on, and the build's log says so; a
+  pull-request build passes the pull request's own stack's values.
+
+## bedrock render
+
+`render` reads the application (its config struct tags, its main packages, its auths, its
+generated router, its Dockerfile) and the placement, and writes the stack: the owned
+files rewritten, the seeded files written when absent.
+
+```sh
+bedrock render                       # from anywhere inside the application repository
+bedrock render --app . --out infrastructure
+bedrock render --placement infrastructure/placement.json
+```
+
+Run from anywhere inside the repository, it finds both directories: the stack is the
+application repository's `infrastructure` directory, or the one application layer under
+`3-app` of an infrastructure root; `--out` overrides. The application is read from the
+repository root when the stack is in its infrastructure directory, else from the working
+directory; `--app` overrides.
+
+The render ends by reading the schema migrations, and the seed directory beside them, by
+the sequence rule the migrate command needs (`bedrock migration check`, below). The stack
+is written first; a problem is then listed as `bedrock check` lists it and the render exits
+1. So a gap a generator left (two migrations given one index, a number skipped) is refused
+before the first push and never reaches the default branch.
+
+The service scales from zero instances. Where the placement caps an environment
+(`"maxInstances": {"prd": 10}`, the most instances per region, at least 1), the
+service there runs at most that many: a cap bounds what the environment can cost when
+traffic rises. An environment the placement leaves out, and every environment of a
+placement without `maxInstances`, has no cap of bedrock's, and Cloud Run's own default
+maximum applies. The stack reads the cap of the environment it is applied in from a
+local, `max_instances` in `locals.tf`, so one rendered stack serves every environment.
+
+What the stack carries comes from declarations in the code: a config variable tagged as
+a secret becomes a Secret Manager container mounted at a pinned version; a directory auth
+becomes the registration variables, the redirect output and the hand steps in the README;
+an auth's first-administrator variable (`APP_<AUTH>_ADMINISTRATOR`, the sign-in name the
+migrate command seeds the administrator role membership under while the auth has no users)
+becomes a stack variable per environment, carried by every data-level process, and a hand
+step; a first administrator's generated password (`secret:"generated"`) is a secret like
+any other; the application's public address (`APP_PUBLIC_URL`, which every link its auths
+mail opens the login page under) is derived from the site's canonical hostname, each
+site's own in the sites layout; the Google Workspace mailbox the auths' mail is sent as
+(`APP_MAIL_MAILBOX`) becomes a stack variable once for the organization (`mail_mailbox`,
+empty until named, when the application writes its mail to the log) and a hand step, the
+address the mail is from when it is not the mailbox (`APP_MAIL_FROM`, an alias of the
+mailbox's account) a second one beside it (`mail_from`, empty to send from the mailbox), and
+its app password (`APP_MAIL_APP_PASSWORD`) a secret the migrate command reads too, since
+the data level opens the sender;
+a main package under `cmd/deployment/migrate` becomes the migrate command, which the
+pipeline takes out of each build's image and runs on the build worker as the deploy
+identity, granted database admin on the application's own database by the stack; a main package
+under `cmd/jobs` becomes the job process: a template Cloud Run job in the primary
+region (never run, never deployed to; each build copies it into a job of its own, named
+after it with the build's version, on the build's image), its runtime identity with the
+site's project roles and, when it constructs the data level, the database user grant and
+accessor on that level's secrets, its timeout, retries and resources as stack variables,
+and the template job's name on the service as `APP_JOBS_TEMPLATE`, which the framework's
+job driver (resource/jobs/cloudrun) names the job of its own build from with the version the image bakes in,
+with `run.jobsExecutorWithOverrides` for the site's identity on the template job (a start passes the command's arguments as container overrides), copied by the pipeline onto
+each build's job, so the running service, and only it, starts the job of its own build
+through the Cloud Run API
+(a schedule calls an endpoint on the service; the pipeline never runs it). The variable's
+name comes from the job driver's declaration (`resource/jobs/cloudrun/declaration`), which
+the served site reads by embedding the job driver's settings (`jobstarter.Settings`, the
+alias the skeleton binds `resource/jobs/cloudrun` under) in a configuration level, and
+`bedrock check` refuses a configuration with one half and not the other: a job process
+with no level declaring the variable, or the variable declared with no job process; the
+refusal names the hand edit by the alias, since every release of the framework carries
+the drivers. It
+also refuses the driver's settings embedded at a level another process constructs (the
+migrate command's or the job process's), naming that process: the settings sit at the
+served site's level, the one no other process constructs, since only the service starts
+jobs and the stack sets the variable on the service alone, so no other process starts
+with the driver's template unset. A method the
+code marks `@schedule("<cron>", zone: "<IANA zone>")` on an `@rpc` struct, which the
+generated router serves at `POST /_scheduled/<method>` and lists in its release file,
+becomes one Cloud Scheduler job per environment in the primary region (`scheduler.tf`),
+`<prefix>-<env>-<region>-<app>-sched-<method>`, which calls the route on the environment's
+canonical hostname on its schedule, in its time zone, with an OIDC token of the stack's
+invoker identity `<prefix>-<env>-gbl-<app>-sched` minted for the route's URL; the service
+receives that identity's email as `APP_SCHEDULER_INVOKER`, and the framework in front of
+the route admits a token Google signed for the route's URL with that email and answers
+every other call 401, so the identity holds no role and Cloud Run's IAM, which the load
+balancer's tag opens, is not what guards the route; a pull-request stack creates neither
+the identity nor the jobs and leaves the variable unset, so its scheduled routes refuse
+every call; the request log words the code declares per surface (`WithRequestLog`,
+`OutletRequestLog`, `WithMountedRoutes`, `log:` on `@rpc`), which the generated router
+lists in its release file as `surfaces`, become the request log's exclusion: the entries
+Cloud Run and the load balancer write for every request the service answers follow the
+same words as the application's own, so a surface logged on event alone costs no entry
+for its quiet requests anywhere. It is one project-level Cloud Logging exclusion per
+environment (`logging.tf`), `<prefix>-<env>-gbl-<app>-log-excl`, never in a pull-request
+stack, whose filter is scoped to the service's own entries (Cloud Run's by the regional
+services' names, the load balancer's by the backend's; never the project's, which holds
+several applications) and then drops, per surface, what the word drops, the surface's
+path matched after any host (`^https://[^/]+<prefix>`, a `{param}` segment matching any
+one), a route matched to the end of its path with a query string allowed
+(`^https://[^/]+<route>([?]|$)`) and a prefix by prefix, as the router matches them, so a
+route never takes the entries of a longer path that merely starts with it: on event the
+entries of the requests that answered below 400, so every failure is kept; sampled the
+same but the declared fraction of them (`NOT sample(insertId, <fraction>)`); never every
+entry under the prefix. A surface's clause excepts the surfaces declared beneath it,
+whatever their words (`AND NOT httpRequest.requestUrl =~ "^https://[^/]+<prefix>"` per
+surface beneath, a grandchild's among them, each matched by its own kind), since the
+application decides a request's entry by its nearest declaration: with `/` sampled at
+0.1 and `/api/` logged always, the root's clause leaves every `/api/` entry alone and the
+child, having no clause, is kept whole, where the plain match would have dropped nine in
+ten quiet `/api/` entries the application wrote; a surface declaring its trace setting
+alone keeps the word above it and is not excepted. A surface logged always has no
+clause, and an application none of whose surfaces excludes anything gets no exclusion,
+since every entry is written as it is today; a config variable
+`APP_FILE_STORE` (the application's default file store) or `APP_FILE_STORE_<NAME>` (a
+named store, `APP_FILE_STORE_DOCUMENTS`) becomes a Cloud Storage bucket where the
+environment's database is (the region of a regional instance, a dual-region over the two
+regions of the shared instance's configuration), one per variable, named
+`<prefix>-<env>-<location code>-<app>-files-<project number>` or
+`...-files-<name>-<project number>` with the name in lower case and hyphens and the
+location code the region's (`uc1`) or the instance configuration's (`nam10`), uniform
+access, no public access, soft delete seven days in production and none elsewhere, the
+variable set to the bucket's `gs://` URL for the processes that construct its level, with
+`objectUser` for the site and, when it constructs that level, the job process, as the
+bucket's whole permission list (set on every apply, with Cloud Storage's default grants to
+the project's basic roles kept, so a grant added on the bucket by hand does not outlive the
+next release and an Owner reaches the files as an Owner does), the service's first revision waiting for those grants
+(its `depends_on`), a pull-request stack with its own database having its own bucket and
+one sharing the integration environment's database using its bucket, its identities
+granted on it, since the rows it reads name objects there, and
+neither the URL nor a grant for the migrate command; a config variable `APP_TASKS_QUEUE` becomes a
+Cloud Tasks queue in the primary region (a pull-request stack enqueues on the
+integration environment's), the variable set to its resource name, with `enqueuer` on
+the queue and Service Account User on its own account for the site and, when it
+constructs that level, the job process, so a task calls the application back with the
+enqueuer's OIDC token; a config variable `APP_FIRESTORE_DATABASE` becomes a Firestore
+database in Native mode beside the Spanner database, the variable set to its id and
+`GOOGLE_CLOUD_FIRESTORE_PROJECT` to the environment project on every process that
+constructs the variable's level (the site, the job process and the migrate command; the
+Spanner project is the shared instance's where one is shared, so the database's project is
+told on its own, and the skeleton's data level refuses a database named without it), with
+`datastore.user` under a condition naming that database alone for the site and, when they
+construct that level, the migrate command (the data level opens the database's live
+service when it is constructed, and the release's role migration signals the running
+instances through it) and the job process; the generated router's outlets become the
+service's paths on the backend. The rendered README of the
+stack explains every file and names the declaration it comes from.
+
+A Firestore database also brings what the resource package's live pages need of it. The
+stack reads the two files beside the schema migrations, `schema/firestore/firestore.indexes.json`
+and `schema/firestore/firestore.rules` (the live package ships them and the skeleton copies
+them; a declared database without either is refused by name), and applies the composite
+indexes and the time-to-live policies the first declares and releases the rules of the
+second to the database (`cloud.firestore/<database id>`, from an owned copy
+`firestore.rules` in the stack, so a change to the rules shows as drift); it grants the
+site Token Creator on its own account for the custom tokens it mints through the IAM
+Credentials API, and, when the config also declares `APP_FIREBASE_API_KEY`, makes the web
+API key the browser presents, restricted to the Identity Toolkit and Secure Token APIs,
+and sets the variable to it. Firebase Authentication on the environment project is
+`2-env`'s, initialized once with no sign-in provider.
+
+## bedrock check
+
+`check` renders the stack afresh and compares every owned file with the committed one,
+at the stack directory and at the application root. It exits 1 when any differs or is
+missing, listing each with the first line that differs: the drift between the code and
+the committed infrastructure. Seeded files are a person's and are not compared.
+
+```sh
+bedrock check
+bedrock check --app . --dir infrastructure
+```
+
+It also refuses:
+
+- a schema migrations directory, or the seed directory beside it (`schema/devseed`),
+  whose files do not form the sequence the migrate command applies: six-digit indexes, one
+  up file per index, at most one down, contiguous from the lowest present. The pipeline
+  repeats that rule on every build and, in a pull-request build once the repository has
+  a release tag, also refuses a schema migration modified, renamed or removed against the
+  default branch, and an index the default branch has taken since the branch was cut;
+  `bedrock migration renumber` is the fix it names. The pull-request workflow's
+  `migrations` job reads the whole directory by the same rule (`bedrock migration check`),
+  and `bedrock render` does before the first push. While the checkout has no release tag,
+  the refusal adds the line that names the fix: the renumber packs the whole sequence from
+  000001 until the first release, committed migrations included. Seed files are development data and may be edited or removed, the
+  directory staying one sequence; a changed seed applies from the start by recreating
+  the database: a pull request's on its next build, a seeded environment's by the next
+  release, as a restore run the release asks for itself.
+- an application root without release-please's configuration
+  (`release-please-config.json`) or its manifest (`.release-please-manifest.json`),
+  naming the file: the release workflow reads both, and without them no release is cut
+  and nothing reaches an environment. `bedrock render` seeds both when absent, the
+  configuration with `initial-version` 0.1.0 and a changelog section for every title
+  type the CI's `title` check accepts (`upgrade`, `infra` and `config` shown, so a merge
+  of only those releases a patch; `cleanup` hidden beside `refactor`), and the manifest
+  at 0.0.0, so the first release pull request proposes 0.1.0; release-please moves the
+  manifest from then on, and both are the application's to edit. An application seeded
+  before the four types had sections adds them by hand, since render never rewrites the
+  configuration.
+- a release-please configuration whose `changelog-sections`, at the top level or a
+  package's own, lacks a type the CI's `title` check accepts (impulse's `ci.TitleTypes`,
+  the list the check reads), naming the types: release-please drops a merge whose type
+  has no section exactly as it drops a hidden one, so a pull request of only such titles
+  opens no release pull request and never reaches an environment, and an upgrade (new
+  pins, new pipeline) or an infrastructure change (applied only in a tag build) must not
+  wait for a later releasing merge. Whether a section is hidden is the application's
+  choice; only an absent entry is refused.
+- a release-please configuration (`release-please-config.json`) with
+  `bump-patch-for-minor-pre-major` true, at the top level or for a package: below 1.0 a
+  feature release would bump the patch and stay on production's patch line
+  (`v<major>.<minor>.x`), so a patch release of production's release could be neither numbered
+  (the line's next patch is taken) nor passed by the patch check (the feature's
+  migrations are what the environment would be restored to). Off, a feature opens a new
+  line, a fix bumps the patch and a breaking change the minor.
+- a Cloud Armor policy removed in one step: an environment's policy is on while
+  `cloud_armor` in `terraform.tfvars` names the environment with `"preview"` or
+  `"enforce"`, attached to the backend services, and removing the entry detaches the
+  policy and destroys it in one apply, which fails while the policy is attached. The
+  check reads the default branch's `terraform.tfvars` (origin's copy, or the local branch)
+  and refuses an
+  environment on there whose entry the working tree removes: set it to `"off"` first
+  (the policy kept, detached), merge and apply, then remove the entry. By hand the check
+  compares nothing outside a git working tree or without the default branch to read; in
+  the pipeline the check trigger's plan step (`deploy plan-environments`, below) reads
+  the base branch's copy through GitHub and refuses the same change, so the required
+  check holds it.
+- a sign-in throttle threshold the Cloud Armor policy could not take:
+  `cloud_armor_sign_in_count` or `cloud_armor_sign_in_interval` in `terraform.tfvars`
+  that is not a positive whole number (zero, negative, a fraction, or not a number),
+  naming the variable and the value as written. A variable left out takes the stack's
+  default. The stack's own validation refuses the same at plan; the check refuses it where
+  the pull request is.
+- an authoritative IAM resource (`*_iam_binding`, `*_iam_policy`) anywhere in the stack:
+  such a resource replaces every member of its role on each apply, so a pull-request stack
+  applying one would remove the environment's members. A `*_iam_member` adds one member.
+  The file stores' bucket policies (`google_storage_bucket_iam_policy.files`, one per
+  store, as `storage.tf` declares them) are the one exception, admitted by address: the
+  stack sets each bucket's whole permission list on purpose, so that a grant added by hand
+  does not outlive the next apply, and a pull-request stack makes buckets of its own. The pipeline's test before every apply admits the same
+  addresses, named from the buckets its trigger carries (`_FILE_STORES`).
+- an input variable a `.tf` file of the stack reads (`var.<name>`), in an owned file or
+  one of yours, that no `variable` block in the stack declares, naming the file and the
+  line: tofu refuses the plan at its first step over it, with nothing else in the stack
+  read. A file of your own declares every variable it reads; the owned files' declarations
+  are bedrock's to render, and the render tests hold every template to them.
+- a Dockerfile whose browser build stage (the stage that runs `bun run build`) does not
+  declare `ARG VERSION`: a build argument is visible inside a stage only after the stage
+  declares it again, and the release is stamped into each bundle in that stage, so without
+  the declaration every bundle is built as `dev` and never sends its release. The seeded
+  Dockerfile declares it; an older one adds the line before its build.
+- a build secret the Dockerfile mounts as required (`--mount=type=secret,id=NAME,required=true`)
+  that some environment's `build_secrets` in `terraform.tfvars` does not declare, naming
+  the environments: a release that passed the earlier environments would fail in the
+  image build of the one lacking it. An optional mount passes with nothing said.
+- an entry of `secret_versions` in `terraform.tfvars` that disagrees with the code's
+  secret tags: a version number, `latest` or no entry for a secret declared
+  `secret:"generated"`, whose version the pipeline derives at each build and whose entry
+  is the word `generated` in every environment; and the word on a secret someone puts in
+  place. Each line names the environment, the entry and what to write.
+- a variable in `retired` in `terraform.tfvars` that nothing declares: no secret, no
+  build secret (any environment's `build_secrets`), no file store and no Firestore
+  database by that variable. The list names what a release retires (the stack README,
+  "Retiring a secret or a file store"): the release's apply lifts the protection of the
+  secret container, the file store's bucket or the Firestore database in every
+  environment, and the next release removes the declaration and takes the name out of
+  the list together, so a name left behind is refused, and a name that declares no
+  protected resource lifts nothing.
+- a build argument `placement.json` declares (`buildArguments`) that no stage of the
+  Dockerfile declares with `ARG`, naming the line to add (`ARG FIREBASE_API_KEY`) to the
+  stage that builds with it: the image build would be given the value and drop it. An
+  `ARG` before the first `FROM` does not count, since it reaches the `FROM` lines alone.
+  `render` refuses a value the stack does not make for the code (`firebaseApiKey`
+  without `APP_FIREBASE_API_KEY`, `firestoreDatabase` without `APP_FIRESTORE_DATABASE`).
+- the shipped programs the release files declare (a command program the generator
+  program declares on a machine outlet, which that outlet serves to the installed copies)
+  with a Dockerfile no stage of which declares `ARG PROGRAMS`: the pipeline passes the
+  programs to the image build as `PROGRAMS`, and a stage reads it only once it declares
+  it, so the image would carry no program and the outlet serve none. The refusal names
+  the programs and the lines to add, as the seeded Dockerfile has them: the compile in
+  the Go build stage after its `go build`, and the copy into the runtime stage with
+  `APP_PROGRAMS=/programs` on its `ENV` line. An application that ships none passes
+  whether or not its Dockerfile carries them.
+- an `env` struct tag outside the config package, naming the two packages: the stack's
+  variables are derived from the config package's tags, so a tag elsewhere declares a
+  variable nothing sets. One package is exempt: the main package of a shipped program a
+  release file declares (`ShipsProgram` on a machine outlet), whose tags are the
+  program's own settings, read on the machine it is installed on, which the derivation
+  leaves out, so nothing of them reaches the stack's variables or the processes' levels.
+  `impulse check` (`env-reads`) holds the reads to the same two places: no environment
+  read outside the config package, except inside such a package.
+- a Firestore database (`APP_FIRESTORE_DATABASE`) without its project variable
+  (`GOOGLE_CLOUD_FIRESTORE_PROJECT`), which the stack sets to the environment project,
+  or without `schema/firestore/firestore.indexes.json`
+  or `schema/firestore/firestore.rules` beside the schema migrations, naming the missing
+  file: the stack applies the database's indexes, time-to-live policies and rules from
+  them, so render and check both stop before the stack is written. `APP_FIREBASE_API_KEY`
+  without the database, or at another level than it, is refused the same way.
+
+- an auth registering the persona method (`oidc.SignIn`, `impulse add method persona`)
+  under a `placement.json` that names no persona provider (`persona`), since the method is
+  registered where the stack sets the issuer and nowhere else; a `persona` block that no
+  auth's method reads; a persona method whose registration synchronizes roles from the
+  provider (`RoleSync`), since the provider asserts who a persona is and the cast seeds
+  what it may do; and a persona method whose cast (`pkg/auth/<auth>/cast.json`) is
+  missing or does not read (no persona, a login outside its shape, a login twice), naming
+  the registration and the file.
+
+It also warns, without failing, about the maintenance windows (Maintenance windows,
+below): production with no maintenance setting in `placement.json`, when the application
+is placed there, so that the refusal of a breaking release at the start of its run is never
+the first sign; no release file
+(`zz_gen_release.json`) in the router package, so that no release of the checkout is
+breaking and the window never holds a run; a release file that does not read; and a
+dated slot that has passed. A malformed setting (a time zone that does not load, a slot
+that never opens, a from that is not before its to on a dated slot, an environment the
+placement does not list) is refused by `render` and `check` alike, since both read the
+placement.
+
+It lists, as information, each secret that tracks `latest`: a secret whose version in an
+environment's `secret_versions` in `terraform.tfvars` is the word `latest` in place of a
+version number, which the environment then runs at whatever version is added next, with
+no release. One line names each secret and environment, and a stack where every secret is
+pinned says so. Pinning is the default and `latest` the exception for a secret that has
+to follow its source, so the listing never fails the check; it keeps the exception
+visible. It lists each variable `retired` names the same way, with what the variable
+declares and where: the retirement is this release's, and the next release's removal is
+what the line looks ahead to.
+
+The application's check runs in Cloud Build, from the stack's check trigger
+(`infrastructure/cloud-build.tf`, rendered with the stack), on every push to a pull
+request against the default branch or a patch line, as the apply identity. The trigger
+holds its steps in its own text: the first reads the bedrock pin from
+`infrastructure/placement.json` in the checkout when it runs (a release downloaded from
+its GitHub Release and verified against the placement's checksum; a commit pin checked
+with git to be on a branch of `impulseframework/bedrock`, then built with `go install`
+in the pipeline's Go image) and the next runs that bedrock's `check` in the
+checkout, which reads the code with Go's parser and needs no toolchain, no cloud role and
+no key. So the checker is the pipeline's, and a wording change in a newer bedrock fails no
+application's check until that application moves its pin. The same build then plans and
+tests the stack for every environment (`deploy plan-environments`) and applies the pull
+request's own stack again when one is standing (`deploy pr-stack --if-exists`); its result
+is the required check `1-org` names, reported by Google's Cloud Build GitHub App, which no
+Actions job can imitate. The steps are the stack's and change with its apply, one release
+behind the repository: a bedrock release works under the previous release's steps, and a
+command says in its log when it runs under older ones. `release-please.yml` is rendered
+beside the pipeline files: release-please as the release app the placement names, on the
+default branch and the patch lines.
+
+## bedrock upgrade
+
+`bedrock upgrade [version|commit|branch]` moves the application's bedrock pin and renders
+the stack and the pipeline with the bedrock it names, so the committed files come from
+that bedrock. Commit `placement.json` with the rendered files: from that commit the
+pipeline's first step and the stack's triggers get that bedrock, and every
+`bedrock deploy` step runs it. The pin is the one place a bedrock version appears in an
+application; nothing else names one. In the organization's infrastructure repository (the
+one whose `placement.json` at the root names the organization, `organizationId`) the same
+command moves the organization's pin instead, which the Cloud Build triggers' runs fetch
+at run time, and renders the layers with the bedrock it names (`bedrock org render`);
+`--dir` is the repository root there, and `--app` is refused.
+
+Upgrade impulse first, then bedrock, and land both in one change: bedrock's checks read
+what `impulse upgrade` writes (the release file, the processes), and impulse reads nothing
+bedrock renders. Every release of the framework carries the provider drivers, so a
+driver's settings missing from the configuration is a hand edit, which the refusal names
+by the alias the skeleton binds the driver under.
+
+- **A release** (`bedrock upgrade v0.4.0`, or no argument for the latest release; a
+  pre-release is moved to by name). It writes the version and the release's linux/amd64
+  checksum into `placement.json` (`bedrockVersion`, `bedrockSha256`; the checksum is read
+  from the release's `checksums.txt`, never typed), and fetches that release for the
+  machine it runs on (into the user's cache directory, verified against the same file)
+  to render with.
+- **A commit** (`bedrock upgrade 58b211dce544`, a full or abbreviated hash; a branch,
+  `bedrock upgrade feature/my-change`, whose head commit is read from the GitHub API; or
+  the pseudo-version itself). The Go module proxy names the commit's version, and
+  `upgrade` writes it as `bedrockVersion` with no `bedrockSha256`, clearing the checksum
+  a release pin left. It builds that commit with `go install` into the user's cache
+  directory to render with, so a commit pin needs Go on the machine; the install turns
+  Go's checksum database on, whatever the machine's Go settings say. A commit a release
+  tag names moves to that release instead. A commit whose `go.mod` has a `replace` or
+  `exclude` directive is refused, since `go install` cannot build it. A commit named by
+  its hash or its pseudo-version must be on a branch of `impulseframework/bedrock`:
+  GitHub serves the commits of the repository's forks by hash too, and the proxy would
+  fetch one, so `upgrade` refuses a commit none of the repository's branches holds. The
+  triggers' first step makes the same check with git before building a commit pin, so a
+  pin edited into the placement by hand is refused there too.
+
+In the organization's repository, a move that changes the pin's kind, a release to a
+commit or a commit to a release, changes the shape of the Cloud Build triggers' steps
+(`0-bootstrap/cloud-build.tf`: a release pin renders the fetch step alone, a commit pin
+adds the step that builds it with `go install`), and 0-bootstrap is the one layer no
+trigger applies, so the triggers stay in the old shape until someone applies it. In the
+release shape the fetch step refuses a commit pin, since no step follows to build it: a
+pull request that moved the pin from a release to a commit could not be planned. So
+`upgrade` says so before it moves anything, asks for `yes` typed back (`--yes` stands in
+for it where there is no terminal; without either the run is refused and nothing is
+moved), and after the render applies 0-bootstrap as the person running it, with their
+sign-in, the way the break-glass account applies the layer by hand (`tofu init`,
+`plan` and `apply` in `0-bootstrap`, at its backend). It prints the plan's summary line
+(the two triggers updated in place) and the apply's, then the usual closing line. A move
+that keeps the kind applies nothing and reads as before. A pull request that reaches the
+plan trigger with a commit pin while the triggers are in the release shape fails at the
+fetch step with a message that says what applies the commit shape: `bedrock upgrade` when
+it moves the pin, else 0-bootstrap applied from that branch by hand.
+
+Push the commit before pinning it: the proxy knows only pushed commits, and when it is
+asked about one too soon it remembers for about 30 minutes that it did not know it.
+`upgrade` then says to push first and retry.
+
+`render` and `check` refuse a placement with no pin at all (an application's first
+placement, which `bedrock org register` writes, carries the pin of the bedrock that wrote
+it), and a placement pinned to another bedrock than the one running them
+when that one is held to its pin: a release, however it was built, and a commit installed
+with `go install`. The refusal names how to install the pinned one: its release page, or
+`go install github.com/impulseframework/bedrock@<pin>`. A build from a checkout, at any
+commit, and a `(devel)` build are nobody's pin and render any pin.
+
+## bedrock deploy
+
+`deploy` holds the pipeline's steps, one command each, run inside Cloud Build by the
+bedrock its first step got: the release the placement pins, downloaded and verified
+against its checksum, or the commit it pins, built with `go install` (in about one and a
+half to two minutes, against seconds for a download) and verified by Go's checksum
+database. Each step after it runs its command in the image whose tool the command drives
+(gcloud's for most, OpenTofu's for the pull request's stack, docker's for the image
+build), and none of them installs anything. The steps share a workspace, the checkout
+(`/workspace`, `--workspace` overrides): `environment.sh` (the facts resolve exports, then what later
+steps append), `build.json` (the build as Cloud Build describes it), `build-args.txt` (the
+image build's arguments, `NAME=value` lines: the declared substitutions, then what a hook
+before the build adds), `revision-templates.json` (what each service's revision and the
+job process's job run with, as the release's stack says it: identity, scaling, variables,
+secret mounts, left by the stack steps for the deploy steps) and `revisions.txt` (the
+revisions the service step created). Each
+command reads those files, does one thing and appends what it learned; that is the only
+thing one step hands the next. In order:
+
+- `deploy resolve`: reads the build through the Cloud Build API, mints the repository's
+  GitHub token from the Cloud Build connection, and works out the facts: the trigger's
+  kind (a tag's build, or a pull request's, which deploys only to the first environment),
+  the pull request's instruction (the words after its latest `/gcbrun` comment:
+  `shared-db`, `reload-db`, `down`), the image and its tags, whether the migrations run
+  and traffic shifts (a stale pull-request database, one whose last build applied a
+  migration no longer in the tree, is the stack job's decision, `deploy pr-stack`). A tag build may carry a restore
+  instruction (`_RESTORE`: `empty`, or `production-backup` for the environment on
+  production's instance, with `_REQUESTER` naming who asked): the environment's database
+  is replaced before the release deploys. A pull-request build carries none, and
+  production is never restored by a run. `_REQUESTER` alone is a rerun (`bedrock rerun`:
+  the release's tag build again, production included), which the record names. Whether
+  the build applies the development seed (`SEED`) is read from the placement in the
+  checkout: every pull request seeds, and a tag build seeds where the placement's `seed`
+  list names the environment, so a release that changes the list seeds with its own. The
+  trigger's `_SEED` is what the stack said at its last apply; it stays among the
+  substitutions as what the trigger said, and the log says when the two differ. In an
+  environment on the seed list, a tag build decides a restore itself when the tree no
+  longer carries a seed file as the environment's live release applied it (its record
+  lists the seed files with their hashes; edited, renumbered or removed since): the
+  release is the requester, the reason goes on the record (`RESTORE_REASON`), and a
+  restore asked for takes precedence. A seed file added beside the applied ones
+  recreates nothing. In staging a tag build decides a restore from production's backup
+  itself, the staging rehearsal: staging runs a release against production's data before
+  production does, so a release that carries migrations production has not applied, by
+  the versions tst's live record of the release and production's live record say they
+  applied (the highest schema migration's index in each; both records are read as the
+  build, production's from the bucket its 2-env lets this environment's deploy identity
+  read, and it also names production's live database and the backup a restore put it there
+  from), restores staging's database from
+  production's newest backup before it deploys there, as a restore run the release asked
+  for, and so does a release when staging's own live record lists a migration file the
+  release does not carry as applied (a failed release's), so that staging sits at
+  production's release between releases; a release without such migrations deploys to
+  staging as it stands, since there may be things to see against production's data
+  anyway. The reason goes on the record, and the log says which versions it read. The substitutions the application declares for its hooks and its
+  image build (`substitutions` in the stack's `terraform.tfvars`) and its build secrets'
+  pins (`build_secrets` there) are read from the checkout the same way, the build
+  secrets' containers alone from the trigger (`BUILD_SECRETS`), so a release that
+  changes them builds with its own; `environment.sh` exports the contract's
+  substitutions as the trigger passed them and the declared ones as the checkout
+  declares them, and a name the trigger carries that the checkout no longer declares is
+  left out. A declared name the contract carries is refused here, and so is one starting
+  with `_BUILD_ARG_`. The build arguments `placement.json` in the checkout declares
+  (`buildArguments`) are values of the stack's, so they come from the stack and never the
+  checkout: a tag build exports the trigger's `_BUILD_ARG_<NAME>` for each name the
+  checkout declares, says when the trigger does not carry one yet (it comes with the
+  build's stack apply, after the image build, and reaches the image from the next
+  release on) and leaves out one the checkout no longer declares; a pull-request build
+  exports none, and `deploy pr-outputs` appends the pull request's own stack's, from its
+  stack job's outputs. The
+  log names the arguments, never their values. What the trigger carries beyond these is
+  what only the stack knows (the identities, the buckets, the
+  services, made by the stack or the organization's layers) or a gate's own record:
+  `_RELEASE_ACTORS` stays the trigger's, since a release must not name the actor that
+  admits it, and the promotion order (`_ENVIRONMENTS`, `_PREVIOUS_ENV`) stays the
+  trigger's beside the identities and buckets it is paired with.
+- `deploy validate-release`: for a tag build, the tag belongs to a GitHub Release cut by
+  an accepted release actor, the tagged commit is on the default branch or at the tip of
+  a patch line, and the record gate holds: the release is live in the previous
+  environment. A refusal starts with `Build REJECTED` and says why. A tag build's log first
+  names the bedrock running it, and says when that is a commit pin; a release may deploy
+  with a commit pin. A release whose notes carry release-please's breaking-changes section
+  (a commit with `!` after its type, or a `BREAKING CHANGE:` footer) is said and recorded
+  (`WINDOW_RELEASE`); whether the release waits for the maintenance window is decided
+  from the release file, not from the notes: last, the step reads the oldest release the
+  session outlets still answer from `zz_gen_release.json` in the router package
+  (`--router-dir`, which the pipeline passes) and the environment's newest live record,
+  decides whether the release is breaking and whether the run waits for the window
+  (`WINDOW_NEEDED`, `WINDOW_BREAKING`, `WINDOW_REASON`), and refuses here what can never
+  proceed (Maintenance windows, below). A pull-request build has no release to validate;
+  the patch release and window previews are the check trigger's (`deploy plan-environments`).
+  A patch release passes one more check
+  in every environment: the environment's newest live deployment record lists the
+  migration and seed files its database holds, each with its hash, and the patch release is
+  refused when the database holds a file the patch release does not carry, or one whose content
+  differs, naming the file; the environment is restored to the patch release first (staging's
+  own build restores it, as the staging rehearsal says, when its database is ahead of the
+  release; tst is restored with `bedrock restore tst`; a restore
+  run replaces the database and skips this check); at production's door the patch release must
+  also be on the line production runs, read from the same record.
+- `deploy guard-migrations`: the schema migrations and the seed are each one sequence
+  (the rule `bedrock check` applies), and in a pull-request build every schema migration
+  the branch started from is still there unchanged and the sequence is read together with
+  the default branch's. Seed files may be edited or removed; the resolve step recreates a
+  pull request's database when a seed its last build applied changed, and restores a
+  seeded environment's when a seed its live release applied changed. A refusal is posted
+  on the pull request and names the fix.
+- `deploy plan-environments`: the stack's check trigger's step after `bedrock check`, on
+  every push to a pull request, as the apply identity, from a step the pull request
+  cannot edit. It reads its build through the Cloud Build API (`BUILD_ID`, `PROJECT_ID`
+  and `LOCATION`, which the step passes), reads the base branch's
+  `infrastructure/terraform.tfvars` through GitHub and refuses a Cloud Armor policy
+  removed in one step (the rule `bedrock check` applies by hand, which the trigger's
+  checkout of the pull request's commit alone cannot compare; the refusal is said on
+  the pull request), then plans the stack for every
+  environment of the promotion order, each against that environment's state prefix as
+  its plan identity (a reader, without the state lock, so the job can change no
+  environment; the apply identity may act as each). Before each environment's plan, when
+  the stack's database is not on the instance the environment's databases live on
+  (`2-env`'s `spanner_instance` output, read from its state as the plan identity), it
+  counts the instance's databases against what the instance holds at its processing
+  units (Google's rule: ten for every hundred below a node, a hundred from a node on)
+  and refuses the plan while the instance is full, naming how many of its databases are
+  pull-request stacks' (closing or merging one is the first way out then), the setting
+  that grows the instance (`processing_units` in `2-spn/terraform.tfvars` for the shared
+  instance, `spanner_instances` in `2-env/terraform.tfvars` for an environment's own) and
+  `bedrock destroy` of an application no longer needed, so the limit is met in a
+  sentence on the pull request and not by Google's refusal inside an apply, after the
+  first environment's stack already stands. After each environment's plan it reads the
+  plan for a destroy of a resource whose state records its protection (a secret
+  container, a file store's bucket, the database, the Firestore database: protected in
+  every environment, the stack README's "Retiring a secret or a file store") and refuses
+  the build, said on the pull request with the way on: retire the variable in
+  `terraform.tfvars` in one release and remove the declaration in the next. Google's
+  provider refuses the same destroy at the apply alone, where the release has merged and
+  its run has started; the guard says it where the pull request is. After each plan it
+  also says what the release changes in the revision templates (the `revision_templates`
+  output's value before and after: the variables added, removed and changed, the secret
+  mounts moved, the scaling, the identity, per service and for the job), in the log and
+  on the pull request, which is what the plan showed as a change to the service while the
+  stack owned the template. It then runs the
+  tests a tag build runs
+  before its apply, then the pull request's looks ahead as the same identities: the
+  patch preview, when the pull request is against a patch line, and the window
+  preview. One
+  comment on the pull request carries every summary; a failing plan or test stops the
+  build, which is the check a merge waits for, and the comment says so. The plan the reviewer approves is each
+  environment's. A secret the code declares that an environment after the first has no
+  pinned version for (`secret_versions.<env>` in `terraform.tfvars`) is not a refusal
+  here: that environment's summary names the variable and the pin to make, since the
+  release's own plan refuses it there (`deploy stack plan`, below), so the pin lands
+  before the release reaches the environment. An environment whose stack has never been applied (no state object
+  under its prefix, which the plan identity reads) is skipped with the line "no stack
+  yet: its first apply is the operations workflow's apply action", in the log and in the
+  comment, and the build goes on: a plan of a missing state would create it, a write a
+  reader is refused, and the first apply is the stack trigger's (`deploy stack first`,
+  below). It says when the build's steps are an older bedrock's than itself.
+- `deploy pr-stack`: the pull request's stack job, the stack's pr-stack trigger's step on
+  the `/gcbrun` comment, beside the preview build, as the apply identity. It reads its
+  build the same way, mints the repository's token from the Cloud Build connection, reads
+  the latest `/gcbrun` comment, and applies the pull request's own stack into its own
+  state prefix: the capacity guard counts the databases on the integration environment's
+  instance when the pull request's own database is not there yet (a stack on
+  `/gcbrun shared-db` makes none) and refuses the job while the instance is full, naming
+  the pull requests whose stacks are up as the first way out (the job runs as the apply
+  identity and reads with its own credentials, as its tofu runs; the generated pins read
+  the same way, since a service account is granted no token for itself); the plan is saved, the
+  guard lets only the pull request's own resources
+  through, the apply applies exactly that plan (a destroy on `/gcbrun down`; the
+  database replaced on `/gcbrun reload-db`, or when the migrations its last build applied
+  are no longer in the tree as applied, read from the pull request's newest deployment
+  record as the apply identity, which `2-env` binds to the records bucket as a viewer for
+  this read). What the stack now says (the services, the job,
+  the hostname, the migrate command's settings and secrets, the build arguments the placement
+  declares, the database mode) goes to the records bucket as
+  `<app>/stacks/<env>/pr<N>/<commit>.json`, which the preview build reads; a destroy and
+  a failure, with its reason, are written the same way. With `--if-exists` (the check
+  trigger's last step, on every push) the stack is applied again only when the pull
+  request has a preview standing, so the preview's infrastructure follows the pushes; a
+  `reload-db` in the latest comment is that build's and is not repeated. The plan and the
+  apply wait up to thirty minutes for the state lock, so a refresh on a push and a
+  `/gcbrun` build on a comment that land together take turns on the stack instead of the
+  second failing on the lock.
+- `deploy pr-outputs`: the preview build's read of what the pull request's stack job
+  applied, the object above matched to this build's `/gcbrun` comment, whose facts go to
+  `environment.sh` for the steps after and whose revision templates (the pull request's
+  stack's `revision_templates` output, which the job carries in the object) go to the
+  workspace for `deploy service` and `deploy jobs`; an object without them, written by a
+  bedrock before them, stops the build. Before the image build when the placement
+  declares build arguments (the image carries the pull request's own values), after it
+  otherwise. An object not yet written is waited for, up to ten minutes, fifteen seconds
+  between looks, then the step stops the build naming the trigger; a job that failed
+  stops this build at once with the job's reason. On `/gcbrun down` the step waits for
+  the job's destroy instead, after which the after-down hook runs and talk-back marks
+  the deployment inactive. A tag build says so and ends.
+- `deploy check-release`: reads the registry before the image build. Neither tag exists,
+  the build runs; the commit is built and the release tag is not, the release name is
+  added to that build; both exist and agree, the build is reused; the release tag names
+  another build, the run is refused.
+- `deploy build-image`: builds the checkout's Dockerfile with docker and pushes the image
+  under its two tags, with the build arguments (`VERSION`, `COMMIT`, `PROGRAMS`, the job
+  of the build, the stack's values `placement.json` declares as `_BUILD_ARG_<NAME>` in
+  `environment.sh`, passed as `NAME=value` and named in the log without their values,
+  then `build-args.txt`) and the declared build secrets (read as the deploy identity
+  into memory and passed as BuildKit secrets, never build arguments); the digest goes to
+  `environment.sh`. `PROGRAMS` carries the shipped programs the checkout's release files
+  declare, read from the application under the checkout's placement as `check` reads
+  it: one word per program, `<dir>=<os>/<arch>[,...]`, which the seeded Dockerfile's loop
+  compiles for each platform into `/programs`; empty when the code ships none, and the
+  log says which. In a pull-request build of an application that declares build
+  arguments, the step waits for the pull request's stack to be applied, so the image
+  carries the pull request's own values. The build runs in a BuildKit container
+  (buildx's docker-container driver, created for the build: the one driver that
+  exports a cache) and pushes a plain image. Three builds: the Dockerfile's two reserved
+  stages, `go-modules` and `web-packages`, each exporting its layers alone to the registry
+  under `cache-<commit>-go` and `cache-<commit>-web`, then the full build, reading those
+  caches and exporting nothing. Only the downloads, which go.sum and bun.lock pin, are
+  ever served from a cache; the compile and the bundles are built fresh in every
+  environment, and since every stage copies its inputs by name, no per-build file of the
+  pipeline is an input of any layer. A tag build reads this commit's caches and the live
+  release's commit's; a pull-request build reads its own pull request's last build's and
+  the live release's; a tag build never reads a pull-request build's. Before composing
+  the builds the step asks the registry which candidate tags exist, names only those as
+  sources and writes this commit's tags only when they are absent (the registry's tags
+  are immutable), so the log carries no ERROR line for an import docker cannot find or an
+  export the registry refuses; its "Layer cache:" line names what was read, by the commit
+  it belongs to, and whether this commit's caches were written or were held already. A
+  workspace whose package.json lists trustedDependencies has its install stage built with
+  no cache in or out, and the log says why. A build argument is part of a layer's key, so
+  a layer that sees one of the stack's per-environment values is never served to another
+  environment; a reserved stage declares no `ARG` (`bedrock check` refuses one), and one
+  that sees an argument through the stage its `FROM` names or a stage it copies from is
+  built with it and caches under a digest of its value (`cache-<commit>-go-<digest>`), so
+  each environment reads and writes a cache of its own. Every environment still builds
+  its own image from the commit; nothing is promoted between environments.
+- `deploy maintenance on`: puts the application into maintenance when the run needs it,
+  at one of two places. Before the stack is applied, a run that replaces the database (a
+  restore run); after the wait for the maintenance window (`--window`), a breaking
+  release that is not in maintenance already, after a second look at the window, which
+  must still be open, else the run stops with nothing changed and names the next opening.
+  The release's own image starts as a revision with `APP_MAINTENANCE=1` in every region,
+  under the tag `next` and with no traffic; the revision is probed through the load
+  balancer's next hostname and must answer 503 with `X-Maintenance: 1`, else the run
+  stops with nothing moved and names the application's missing switch (`impulse check
+  maintenance-switch`); then all traffic moves to it, the task queue (`_TASKS_QUEUE`) is
+  paused and, on a restore, purged, the running executions of the serving build's job are
+  canceled, and the old revision's requests in flight are let finish (its active instances
+  read from Cloud Monitoring until none is, or the service's request timeout). Any other
+  run keeps the application serving: an ordinary release inside a window deploys the
+  rolling way, with no maintenance revision, no probe, no pause and no cancel. The facts
+  (`MAINTENANCE`, `MAINTENANCE_REVISIONS`, `MAINTENANCE_QUEUE`, `MAINTENANCE_PURGED`,
+  `MAINTENANCE_CANCELED`, `MAINTENANCE_WAITED`) reach the record.
+- `deploy stack plan`, `apply`: in a tag build, the environment's stack planned and
+  applied as the apply identity, after the image build (a failed build changes no
+  infrastructure) and before the jobs and the migrations (what they need exists first).
+  `plan` runs the capacity guard first (the databases on the environment's instance
+  against what it holds, when the stack's database is not there yet, as
+  `deploy plan-environments` does), saves the plan with its JSON, prints and appends the
+  summary (`STACK_PLAN`), refuses a plan that destroys a resource whose state records its
+  protection (the guard `deploy plan-environments` runs on the pull request, so a release
+  meets it only when its pull request's plan was bound to another state), and
+  runs the tests: no authoritative IAM resource in the stack other than the file stores'
+  bucket policies, and every secret version a
+  planned revision template pins exists and is enabled. A restore run that replaces the
+  database (and the first environment's file stores) or drops it for production's backup
+  first applies the stack targeted at those resources with `restore=true`, so that the
+  state records their protection lifted for the one apply that replaces them; the plan
+  after it declares the protection again, and passes the guard. `apply` applies the saved
+  plan and reads the stack's outputs as applied: the migrate command's settings, the
+  hostname, and the `revision_templates` output, what each service's revision and the job
+  process's job run with (identity, scaling, variables, secret mounts), left in the
+  workspace as `revision-templates.json` for `deploy service` and `deploy jobs`. A
+  rollback run applies no stack: `plan` reads the plan of the release's stack for its
+  revision templates (as that stack evaluates them, against the environment as it is;
+  the guard does not read a plan nothing applies, and the plan's JSON is not saved, so
+  the record carries no stack) and `apply` says so and does nothing, so the environment's
+  infrastructure stays as the newer release made it and the earlier release runs under its
+  own configuration. Before the plan it derives the
+  generated secrets' pins (`secret:"generated"`): the newest enabled version of each
+  container, read as the apply identity, version 1 added when the container has none
+  (the container created ahead of the apply, which adopts it), passed to the plan as
+  `var.generated_secret_versions` and left for the record. Before the plan, in an
+  environment other than the first, it refuses the release when the code declares a
+  secret the environment's `secret_versions` in `terraform.tfvars` pins no version for
+  (the process would start without the variable): the refusal names the environment,
+  every unpinned variable and the pin to make (`bedrock secret pin <env> <VARIABLE>
+  <version>`, after `bedrock secret add <env> <VARIABLE>` has put the value in place),
+  and nothing is changed, a restore run's database included. The first environment runs
+  without a pin, "not yet", and the log names the variables it runs without. `apply` applies exactly that plan.
+  The plan is the build's own: a saved plan is bound to the state it was made from, and a
+  release bundles several pull requests. An infrastructure change must be safe on the
+  running service (add first, remove later); one that is not is declared breaking in
+  release-please's way and becomes a window release. The first apply of an environment,
+  before any release exists there, is `first`'s (below), and so is the apply after a
+  teardown. In a restore run (`_RESTORE=empty`) the
+  plan replaces the Spanner database and, in the first environment, the file stores'
+  buckets (every one the stack's `_FILE_STORES` names), each when the stack has it, so
+  the migrations apply afresh, and the seed where the placement's seed list names the
+  environment; the environment on production's instance keeps its file stores'
+  buckets. The Firestore database is not replaced (Firestore keeps a deleted database's id
+  unavailable for minutes): after the apply, the step deletes its documents as the apply
+  identity, since they refer to rows the restore replaced (`RESTORE_CLEARED`). In a
+  restore from production's backup (`_RESTORE=production-backup`, the environment on
+  production's instance) the plan step first drops the environment's database and
+  restores it, under its own name, from the most recent backup of production's live
+  database on the instance they share, as the apply identity (a backup Spanner is still
+  taking, the release backup a release started minutes earlier, is that backup, since it
+  holds the newest data: the maintenance step chooses it and waits for it before the
+  maintenance page goes up, then names it for the plan step, `RESTORE_READY_BACKUP`, which
+  restores that one); the plan then recreates the
+  memberships the drop took with it, and the migrate command applies whatever production's
+  backup predates. Production's live database is the one its deployment record names
+  (`_RESTORE_DATABASE`, read by the operations workflow): after a restore to a backup, the
+  generation restored into, not the stack's first database, and while that generation has
+  no backup of its own (the next release or the schedule takes one) the backup it was
+  restored from stands in (`_RESTORE_DATABASE_BACKUP`, the record's `restore.backup`); a record written
+  before database generations names none, and production's first database is read. The
+  backup and the moment its data is from reach the record
+  (`RESTORE_BACKUP`, `RESTORE_BACKUP_TIME`). The stack never touches a service's revision
+  template (the pipeline builds every revision from the stack's `revision_templates`
+  output), so the apply starts no revision while the database is replaced, and the
+  maintenance revision serves until the release's own is deployed after the migrations.
+- `deploy stack first`: the stack trigger's step, the environment's stack applied when no
+  release's build can: for the first time, before any release exists there, and again
+  after a teardown (`bedrock teardown`), which destroyed the triggers a release's build
+  would run in. `2-env` renders one such trigger per
+  application and environment, run as the deploy identity, and the application's
+  operations workflow starts it with its `apply` action, so no person holds a cloud role
+  for an application's first apply. It reads its build (the trigger carries the
+  application, the environment, the apply identity and the records bucket), refuses a
+  live stack (its deployment records say a release has run on it, and no teardown record
+  beside the stack's id is newer than its newest live release: a release's build applies
+  a live stack, and the workflow's `run` action runs the live release again), runs `tofu init` on the
+  environment's state prefix as the apply identity, counts the databases on the
+  environment's instance against what it holds when the stack's database is not there
+  yet (the capacity guard `deploy plan-environments` runs, with the same refusal, so a
+  sixth application's first apply on a full shared instance stops here and not inside
+  tofu's apply), plans with the environment and the
+  generated secrets' pins derived from their containers the way a pull request's plan
+  derives them (each container's newest enabled version; nothing while a container has
+  none, since the first release adds it), prints the plan's summary and applies it. After
+  a teardown the workflow's `run` action then runs the release the environment ran.
+- `deploy migrate`: runs the release's migrate command, which `deploy build-image` took
+  out of the image (`/builder/home/migrate`), on the build worker as the deploy identity,
+  once to completion, from the checkout's root (where the command finds the schema
+  directory), with the variables the stack derives for it (`MIGRATE_ENV`, which the stack
+  steps read from the applied stack's `_MIGRATE_ENV` output, so a release that changes
+  them migrates with its own) and the release in the version variable the pipeline names
+  (`--version-variable`); with the seed (`schema/devseed` as data migrations after the
+  schema) where resolve's `SEED` fact is true: every pull request, and a release build
+  only in the environments the seed list of the placement in the checkout names. Before the command runs, the step reads
+  each database the stack names (`_MIGRATE_DATABASES`, read back with the settings) as
+  the deploy identity until it may, for up to three minutes: the stack's apply in the
+  same build may have just created the identity's grants (an application's first
+  release, or the first after its grants change), and IAM makes a new grant effective
+  seconds to minutes after the policy holds it. The command's lines are the build log's,
+  so a failed migration's message is where the run is read, and the deployment record
+  lists the migrations applied. A release build may carry a migration operation
+  (`_MIGRATE_ACTION`, from the operations workflow: `version`, `rerun` or `force`, with
+  `_MIGRATE_TABLE`, `_MIGRATE_VERSION` and `_REQUESTER`; `bedrock migration`, below):
+  `version` runs the command once with `-version` and leaves `SKIP_DEPLOY` with the
+  reason, so nothing else deploys; `force` runs it with `-force <n>` (or `-force-data
+  <n>`), leaves the force for the record, then runs it as it always does; `rerun` is the
+  command as it always does. An operation that cannot run (an unknown action or table, a
+  force whose version is missing or not an integer, a force without a requester) is
+  refused by `deploy resolve` and again here, before the command runs.
+- `deploy jobs`: makes this build's job for the job process (`cmd/jobs`) after the
+  stack's apply, before the migrations, from the release's job template (the
+  `revision_templates` output's `job`: identity, variables, secret mounts, timeout,
+  retries, resources, as the release's stack says them), named after the stack's template
+  job (`_JOBS_JOB`, read from the stack as this build applied it, so the first release
+  with a job process makes one) with the build's version, on this build's image with the
+  pipeline's labels and the template job's IAM policy (the site's `run.jobsExecutorWithOverrides`). It does not
+  run it; the service carries the template's name (`APP_JOBS_TEMPLATE`, set by the stack)
+  and the image its version, and the framework names the job of its own build from the
+  two, so the revision starts the job of its own build and a traffic rollback starts the
+  earlier one. Made before the migrations so that a failure here leaves the database
+  untouched. The step is rendered
+  only for an application with a job process.
+- `deploy migrate --preflight`: in a run that waits for the maintenance window and
+  replaces no database, runs the release's migrate command once with `-version` before
+  the wait: the command starts on the build worker against the environment's database
+  and prints what the migrations tables say, so a command that does not start, a
+  configuration that does not load or a database that cannot be reached stops the run
+  with nothing changed and the window not entered. Nothing is applied. Any other run says
+  so and does nothing.
+- `deploy window`: in a run that waits for the maintenance window, holds the run at the
+  gate until the environment's window opens, with the image built and the stack applied, so
+  the window holds only maintenance, the migrations and the rollout. It reads the
+  setting from the checkout's `placement.json`, prints when the run will proceed and
+  waits, reading the clock again at most every ten minutes; when the window opens it
+  leaves when, how long it waited and which opening let it in (`WINDOW_OPENED`,
+  `WINDOW_WAITED`, `WINDOW_SLOT`) for the record. An opening further away than the build
+  can wait stops the run here. A run in maintenance already (a restore run, or a rerun
+  after a window release that failed) passes at once.
+- `deploy sweep-jobs`: after the traffic shift, deletes the builds' jobs nothing runs any
+  more: a job of the job process whose version no revision in any region carries (a
+  revision that exists can take a rollback, and then starts its own build's job). A job
+  with an execution running, or made in the last three hours (its build may still be
+  running), stays; the template always stays. The step is rendered only for an
+  application with a job process. Nothing retires a revision: that is Cloud Run's own ceiling. Jobs are
+  deleted because Cloud Run allows 1,000 per project and region, shared by every
+  application and pull-request environment. How far back a rollback reaches is the shared
+  registry's keep count: Cloud Run keeps an image only while a serving revision uses it,
+  so an older revision needs the registry's copy to start again. The job process's part
+  of the contract: end what it is doing on SIGTERM, the signal Cloud Run sends a job's
+  container when its execution is canceled, within Cloud Run's grace.
+- `deploy service`: puts a new revision of the service in every region, receiving no
+  traffic yet, after repairing a service a failed earlier deploy left inconsistent. The
+  new revision carries the tag `next` (or the pull request's tag), under which the
+  stack's next backend serves it at `<app>-<env>-next`; `NEXT_URL` and the per-region
+  `REVISION_URLS` are left in the workspace for the hook before traffic. The hostname
+  `NEXT_URL` is named by is the one the stack this build applied names
+  (`CANONICAL_HOSTNAME`, read back after the apply), so a release that changes it is
+  reached under its own. The revision's template is the release's own, built from the
+  stack's `revision_templates` output (`revision-templates.json`, left by the stack steps
+  or `deploy pr-outputs`) and the release's image: its identity, scaling, variables and
+  secret mounts as the release's stack says them, so a release's image runs under its own
+  release's configuration, forward or back, and a maintenance revision's
+  `APP_MAINTENANCE` is not in it. A service the templates do not name stops the step
+  before anything is touched.
+- `deploy shift-traffic`: moves every region to 100 percent on its new revision, keeping
+  the tags other revisions carry; a pull-request revision served under its tag alone
+  leaves the traffic where it is.
+- `deploy maintenance off`: after traffic moved in a run that was in maintenance, resumes
+  the task queue against the new release; the maintenance revisions stay, with no
+  traffic, as any old revision does.
+- `deploy record`: writes the deployment record once traffic has moved, with the plan of
+  the stack the build applied (`stack`: counts and changes) and, in a restore run, what
+  replaced the database, who asked and what the stack replaced (`restore`), the
+  maintenance the run went through (`maintenance`: the revisions, the queue, the
+  executions canceled, how the wait ended), and, for a release that needed the
+  maintenance window, whether it was breaking, why, which opening let the run in, when
+  and after how long a wait (`window`).
+- `deploy talk-back`: in a pull-request build, tells the pull request what the build did
+  as the deployer app: a GitHub deployment carrying the environment's URL and a comment.
+  The app's token is minted from its key when there is something to say, by this step or
+  by a guard with a refusal to post, and is kept nowhere.
+
+`deploy hook <stage>` runs the application's hook for a stage, with the build's facts in
+its environment: `before-build`, `before-migrate`, `after-migrate` (the schema migrated,
+the service not yet deployed), `before-traffic` (the new revision deployed in every region
+and the old one still serving; `NEXT_URL` is the new revision's public URL through the load
+balancer, the `<app>-<env>-next` hostname over the revision tag `next`, and a failure here
+stops the build with the old revision serving), `after-traffic` and `after-down` (on a
+teardown). A hook is a script, `infrastructure/hooks/<stage>.sh`, or a function of the
+application's hooks program: a Go program at `cmd/deployment/hooks` built on impulse's
+`deployhook` package (`deployhook.Main(deployhook.Hooks{BeforeTraffic: checkNextRevision})`), which
+takes the four stages after the image build. bedrock reads the program's stages from its
+`Hooks` literal, `check` refuses a Dockerfile that does not build it as `/hooks` and a stage
+that has both a script and a function, and the image build (`deploy build-image --hooks`)
+takes the program out of the image for the hook steps (`deploy hook <stage> --program`).
+The pipeline has a step for each stage the application implements. `deploy sweep`
+is the hourly sweep's one step: the pull requests whose services stand, which of them
+are closed, and each closed one's stack destroyed, its state object deleted last.
+
+`deploy persona register` is the step after the hooks in a build whose environment has a
+persona provider. The registrations are read from the stack as applied (`PERSONA`: a
+release build's after its own `stack apply`, a pull-request build's from its stack job's
+outputs), so the release or pull request that introduces, changes or removes the method
+registers what its own code says in that very run; the trigger's `_PERSONA`, which the
+stack's apply sets and so says what the stack said at its last apply, is read only by a
+build that applied nothing, and the log names it when the two differ:
+for each persona method, it sends the provider the deployment's registration, the client ID
+the placement's root and the deployment make (`<root>-pr<N>` for a pull request,
+`<root>-<first environment>` for the environment), the callback on the deployment's
+canonical hostname and the cast from the checkout, as the build's deploy identity with its
+Google identity token for the provider (Cloud Build's metadata server issues it to the deploy
+identity under its grant to create its own OpenID Connect tokens, from the organization's
+environment layer), so the provider offers the cast for this deployment; a refusal fails the
+build before the record is written. A build with nothing
+to send, or a torn-down environment, does nothing. `deploy persona remove` runs after a
+teardown's `after-down` hook and removes the pull request's registrations, which its stack
+job read off the standing stack before the destroy; outside a teardown it does nothing, and
+the sweep removes a closed pull request's the same way, from the stack it destroys, best
+effort, since the provider forgets a registration nothing refreshes on its own.
+
+## Maintenance windows
+
+A maintenance window is the time an environment may take a release that interrupts
+service. It is not a deploy freeze: an ordinary release rolls in at any time, because the
+old server keeps answering through the deploy, and only a breaking release waits for the
+window and deploys behind the maintenance page.
+
+A release is breaking for an environment when it turns away the release the environment
+runs: the oldest release of the browser application its session outlets still answer
+(`OldestAnswered` in the generator program, which the resource generator writes into
+`zz_gen_release.json` beside the generated router) is newer than the environment's live
+release (its newest live deployment record), or an outlet answers its own release alone
+(`OldestAnswered(generation.ThisRelease)`, for a release whose migration the old server
+cannot run on). The newest value over the session outlets counts; an API-key outlet
+never does. The pipeline reads the file from the checkout, never from a binary. With
+production on 1.4.0: 1.5.0 with oldest answered 1.5.0 is breaking; 1.6.0 with oldest
+answered 1.5.0 is not once production runs 1.5.0, and is while production is still on
+1.4.0, because a rolling step was skipped. A rerun of the release the environment runs
+turns nothing away. A checkout without the file declares nothing, so no release of it is
+breaking; `bedrock check` and the release check both say so.
+
+The window is written in `placement.json`, per environment:
+
+```json
+"maintenance": {
+  "tst": "anytime",
+  "prd": {
+    "timeZone": "America/Chicago",
+    "weekly": [{"day": "Sunday", "from": "02:00", "to": "04:00"}],
+    "dates": [{"on": "2026-11-15", "from": "22:00", "to": "23:30"}],
+    "releases": "breaking"
+  }
+}
+```
+
+`"anytime"` takes a window release at any time. An object names the client's time zone
+(an IANA name; the slots are the client's wall clock through its daylight-saving
+changes), weekly slots (a day, from a time of day to another; a slot whose `to` is not
+after its `from` crosses midnight and ends the next day) and dated slots (a one-off the
+client agreed to, on one date, `from` before `to`; a slot past midnight is the next
+date's own). `releases` says which releases wait for the window: `breaking` (the
+default when absent) or `all`, under which every release from master waits, patch releases
+included, and an ordinary release then deploys the rolling way: the window says when a
+release may go in, maintenance mode says what a breaking release does when it goes.
+Every environment but production is `anytime` unless its setting is written. Production
+has no default: a breaking release to production is refused at the start of its run
+until its setting is written, and `"anytime"` is a setting to write, so a forgotten
+setting never takes production offline in the middle of the day; ordinary releases to
+production are unaffected. The release reads the placement of the commit it was tagged
+on, like everything else in the run: changing a window is a commit merged before the
+release is tagged, and a change after the tag needs a new release. A slot that never
+opens, a time zone that does not load, a dated slot whose `from` is not before its
+`to`, and an environment the placement does not list are refused by `render` and
+`check`; `check` warns while production's setting is missing and when a dated slot has
+passed.
+
+How a window release runs, in the pipeline's order: the release check at the start
+(`deploy validate-release`) decides whether the release is breaking and whether the run
+waits for the window, and refuses what can never proceed, production without a setting
+when the release is breaking, a window whose next opening is further away than the
+build can wait (the build's timeout of 24 hours less three hours for the steps after the
+window), a window with no opening ahead; the image is built and the stack applied (and
+the build's job made, where the application has a job process), so nothing that can fail
+on its own is left for the window; the pre-flight runs the migrate command once with
+`-version` (`deploy migrate --preflight`);
+the run waits inside the build for the window to open (`deploy window`), printing when
+it will proceed, so the approver approves by day and the run proceeds at night on its
+own; then, for a breaking release, maintenance goes on (`deploy maintenance on
+--window`, after a second look at the window), the migrations run, the release's
+revision deploys, traffic moves to it and maintenance ends; the record says it was a
+window release. If the migration fails, the maintenance revision keeps answering and the
+rerun's gate is open: an environment whose traffic is on a maintenance revision passes
+the gate with the window closed, since the interruption has happened and waiting for the
+next window would hold the client on the maintenance page meanwhile; the rerun still
+needs its approval, as every production run does. A restore run passes the gate the
+same way. A pull-request build never waits and never goes into maintenance; its release
+check previews what the release will turn away in each environment and which
+environments will hold it, read as each environment's plan identity.
+
+What users see during a breaking release: the maintenance page (every request answered
+503 with `Retry-After` and `X-Maintenance: 1`, from the framework's `maintenance`
+package, with no database opened), the browser library's maintenance notice checking
+back, and, once the new release answers, a reload. The task queue is paused meanwhile
+and resumed against the new release; running executions of the old build's job are
+canceled, since a breaking release is the decision to interrupt everything the
+application is doing, and the window is when the client accepts that. The stack declares
+`APP_MAINTENANCE` on the service, so a deploy that sets it and a later apply do not
+fight.
+
+## bedrock secret
+
+Secrets are containers in Secret Manager, one per variable the code declares as a secret
+(and one per build-time secret the placement declares), mounted by the stack at a pinned
+version. Two commands move them along.
+
+```sh
+bedrock secret add tst APP_MAIL_API_KEY --from-file key.txt     # a new version, the container created when absent
+bedrock secret pin tst APP_MAIL_API_KEY 2                       # terraform.tfvars secret_versions.tst
+bedrock secret rotate tst APP_COOKIE_KEY                        # a generated secret: a random version, the live release run again
+```
+
+`secret add` stores a value as a new version of the container the stack names for the
+variable in the environment (`<prefix>-<env>-gbl-<app>-<kebab name>`), creating the
+container when the project has none by that name, so an operator puts the value in place
+ahead of the release that first reads it; the stack's next apply adopts the container.
+The value is read from `--from-file` (a path, or `-` for standard input), from standard
+input when it is not a terminal, else asked for at the terminal without echo. Nothing is
+pinned or rolled out; the command prints the pin to make.
+
+`secret pin` writes the version an environment runs into the application layer's
+`terraform.tfvars` under `secret_versions.<env>.<VARIABLE>`, after asking Secret Manager
+whether the version exists and is enabled. The pull request's plan shows the revision
+template change in that environment and nothing elsewhere; the pin promotes as a release
+(a commit with a releasable type, `fix(<env>): …`), whose tag build applies the stack and
+deploys. An argument left out is asked for at the terminal with the choices listed. A
+secret with no pin is mounted nowhere in the environment, and the process starts without
+the variable: the first environment runs that way ("not yet"), and a release to any
+environment after it is refused at that environment's plan until every secret the code
+declares is pinned there, naming the variables and the pins to make; the pull request's
+plan says the same in the environment's summary ahead of the release.
+
+Both find the rest from where they run: the infrastructure root, the application, the
+environment project (by its labels) and the container (by its labels and the variable);
+`--dir`, `--app`, `--project` and `--container` override. A value from outside goes in
+through the Secret Manager console first, as a member of the environment's team group
+holding the secret operator entitlement for the time asked, else `gcloud secrets versions
+add`, else `secret add`; the pin is a pull request either way.
+
+A secret the code declares `secret:"generated"` (beside `secret:"true"`; the skeletons'
+cookie key) has a value nobody types: 32 bytes of cryptographically secure random data,
+base64, made by the tooling. Its entry in `secret_versions` is the word `generated` in
+every environment (`render` seeds it; `check` refuses a number there, and the word on a
+secret someone puts in place), `secret add` and `secret pin` refuse the variable, and its
+version is derived at each build the way the image digest is: the tag build's plan step,
+as the apply identity, reads the container's newest enabled version, adds version 1 when
+the container has none (creating the container ahead of the apply, which adopts it), and
+passes the number to the plan (`var.generated_secret_versions`), so the revision template
+pins `versions/N` exactly as a committed pin does, and the deployment record names N
+(`generatedSecrets`). A pull request's plans read each environment's newest version the
+same way and add none. `secret rotate <env> <VARIABLE>` starts the operations workflow
+with the rotate action: its job, as the environment's operations identity, adds a new
+random version (the stack grants that identity and the apply identity the adding of
+versions on the generated containers alone) and runs the live release again, so a
+revision pinned to the new version takes traffic in the same action; a rotated cookie key
+signs every user of the environment out, which is the point.
+
+A secret's container is protected from a destroy in every environment (`deletion_protection`
+in `secret-manager.tf`), as the file stores' buckets and the Firestore database are: a
+container holds every version of its value, and the release before stays deployable. A
+release whose code stops declaring a secret is refused at its plan, on the pull request and
+in the release's own plan step, until the release before it retired the variable: keep the
+declaration, name the variable in `retired` in the application layer's `terraform.tfvars`
+(`retired = ["APP_LEGACY_API_KEY"]`), release, which lifts the protection, then remove the
+declaration and the name together in the next release. `check` lists each retirement and
+refuses a name nothing declares; a build secret retires the same way by its name. The stack
+README says the rule in full ("Retiring a secret or a file store").
+
+In the root organization's infrastructure repository (the one whose `placement.json` at
+the root names the organization, `organizationId`, with `"kind": "root"`), the same two
+commands take one of the four secrets that organization holds for every organization in
+the Google Cloud organization, the private keys of the GitHub Apps and the Bot Account's
+token, in place of an environment and a variable, with `org secrets check` between them:
+
+```sh
+bedrock secret add github-deployer-key --from-file deployer.pem   # a new version of the secret in the root project
+bedrock org secrets check github-deployer-key 2                   # GitHub accepts a token signed with it as the app
+bedrock secret pin github-deployer-key 2                          # placement.json, then org render: the alias
+bedrock secret add github-token                                   # the Bot Account's new token, asked for without echo
+bedrock org secrets check github-token 2                          # GitHub says whose it is: the Bot Account, an owner
+bedrock secret pin github-token 2                                 # placement.json (githubTokenVersion), then org render
+```
+
+`github-infrastructure-key` is the key of the infrastructure GitHub App, the app the
+triggers' runs act as when 1-org configures the applications' repositories (the root
+organization's apply rules its own repository with it); `github-deployer-key` the key of the
+deployer GitHub App, the app the plan trigger's run posts each layer's plan as and the app
+every application's pipeline talks back on a pull request as; `github-release-key` the key
+of the release GitHub App, which each application's release trigger cuts the releases as.
+Each lives in one secret in the root organization's root project
+(`<prefix>-root-gbl-github-<app>-key`), and every reader in every organization names the
+secret's alias `current`, never a number and never `latest`: `pin` writes the version the
+alias is to point at in `placement.json` (`githubInfrastructureKeyVersion`,
+`githubDeployerKeyVersion`, `githubReleaseKeyVersion`), after Secret Manager confirms the
+version is enabled, and runs `org render`; the pull request's apply points the alias at
+it, and every reader switches at once. `add` refuses a project that lacks the secret
+rather than creating it, because the secret is the bootstrap's and the apply keeps it. The
+project comes from `placement.json` (`projects.root`); `--project` and `--container`
+override. Neither takes an environment.
+A hosting organization's repository refuses both, naming the root organization its
+placement records (`root`); in an application's repository these names are refused, and in
+an infrastructure repository an application's `[env] [VARIABLE]` is. The rotation, in one
+place for every organization, is the root organization's `README.md`, "The GitHub Apps'
+keys".
+
+## bedrock migration check
+
+`migration check` reads the schema migrations directory, and the seed directory beside it
+(`schema/devseed`), by the sequence rule the migrate command needs: six-digit indexes, one
+up file per index, at most one down, contiguous from the lowest present to the highest,
+every `.sql` file a migration. It reads the whole directory, not a pull request's changes.
+Each directory prints its count and its span, a sound one as one sequence; a problem is
+listed as `bedrock check` lists it, and the command exits 1.
+
+```sh
+bedrock migration check                        # from anywhere inside the application repository
+bedrock migration check --app . --dir infrastructure
+```
+
+```
+schema/migrations: 12 migration(s), 000001 to 000012, one sequence
+schema/devseed: no migrations
+```
+
+It is the rule's third reading. `bedrock check` applies it in every build, and `bedrock
+render` before the first push; the pull-request workflow's `migrations` job runs `go run
+github.com/impulseframework/bedrock@<pin> migration check` with the bedrock the placement pins,
+beside its own rule that a pull request only adds to `schema/migrations`. A gap already on
+the default branch, which a diff against the base branch never sees, fails the next pull
+request there, and `bedrock migration renumber` is the fix: before the first release it
+packs the whole sequence, and the refusal says so while the checkout has no release tag.
+
+## bedrock migration renumber
+
+`migration renumber` moves the migrations this branch added, up and down files together,
+to follow the default branch's highest index with no gap, keeping their order. A schema
+migration the default branch holds is never touched once the repository has a release
+tag: a migration that ran somewhere is never rewritten. Git says which files are the
+branch's own, and the default branch is read from origin's copy of it when the repository
+has one, else from the local branch, so fetch first.
+
+The freeze starts at the first release. Before it nothing has run the migrations but
+developers' emulators and pull-request environments, which are disposable (a pull-request
+environment that ran the old numbering is destroyed and made again: close and reopen the
+pull request), so until the repository has a release tag the renumber packs the whole
+schema sequence from 000001 with no gap, committed migrations included, the way it packs
+the seed directory: a committed file moves down only, around the indexes the default
+branch took since the branch was cut. The tags are the checkout's, so fetch them too (a
+clone has them; CI checks out with the whole history). The pull-request workflow's
+`migrations` job and the pipeline's migration guard hold the same line: before the first
+release a pull request may rename, rewrite or remove a committed migration while the
+sequence stays whole, and from the first release on a committed migration never changes,
+a consolidation (`bedrock migration consolidate`, below) being the one change that
+removes committed files. `go generate ./...` runs it before the
+application's own generators through the owned `cmd/generate/bedrock.go`, whose directive
+is `go run <module>@<pinned version> migration renumber`: the Go toolchain builds the
+pinned bedrock from the module proxy the first time and caches it, so neither a developer
+nor the CI job installs bedrock for it. A tracked file moves with `git mv`;
+an untracked one is renamed on disk. A branch cut from a patch line
+(`patch/<major>.<minor>.x`, nearer to the branch in the history than the default branch
+is) follows the line instead, since a line is behind the default branch on purpose; the
+pipeline's guard compares such a pull request with the line too (Cloud Build's
+`_BASE_BRANCH`), and the pull-request trigger covers the lines beside the default branch.
+
+The seed directory beside the migrations is renumbered against its own sequence, and as
+its files are editable, a committed seed file the branch removed leaves no gap: the seed
+files after it move down, and the branch's own follow, around the indexes the default
+branch took since the branch was cut. A committed seed file only moves down: when the
+default branch's additions would push one up, or leave a gap below them, the directory is
+left alone with a note that says to merge the default branch first and run the renumber
+again.
+
+```sh
+bedrock migration renumber          # by hand
+go generate ./...                   # through the rendered cmd/generate/bedrock.go, before the generators
+```
+
+It closes the holes the pipeline's guard refuses a pull request for: an index the
+default branch took since the branch was cut (the branch's migration moves up), a gap
+(the branch's migration moves down), and a removed seed file (the seed files after it
+move down). Nothing to do prints nothing.
+
+## bedrock migration consolidate
+
+`migration consolidate` folds the schema migrations, as the default branch holds them,
+into one up file and one down file carrying the latest index and the name `Consolidated`
+(`NNNNNN_Consolidated.up.sql`), removes the folded files and stages the change for the
+pull request. The up file is the up files in order, each under a comment naming the file
+it came from and closed with a semicolon; the down file is the down files in reverse
+order. Identical by construction, data migrations included: a database holds one number,
+the highest migration applied, and a run applies every file with a higher number in
+order, comparing no content, so a database at the latest index applies nothing after the
+fold, a fresh database (a pull-request environment, a new environment, a developer's
+emulator) runs the one file and gets the same schema, and the migrate command sends a
+file's statements as one batch per kind, one schema operation instead of one per file.
+The author reviews the diff and may tidy the fold by hand (an index created and dropped
+in the history). An older release deployed afterwards (a restore, a patch cut from an
+older tag) is harmless: its files are all at or below the database's number.
+
+```sh
+bedrock migration consolidate          # on a branch cut from the default branch
+```
+
+```
+schema/migrations: 000001_Init, 000002_Audit, 000003_Sites folded into 000003_Consolidated (up, down)
+  000002_Audit had no down file; the down file reverses the others.
+Consolidated 3 migration(s) of refs/heads/master at 1a2b3c4 into schema/migrations/000003_Consolidated.up.sql: ...
+```
+
+A consolidation is a pull request of its own, cut from the default branch: the command
+refuses a change under the directory and a migration of the branch's own, and leaves a
+sequence of one file alone. A branch cut from a patch line folds the line's sequence
+instead; a consolidation never travels a patch line, since it changes nothing visible.
+The seed directory is not folded.
+
+What accepts the pull request: the pull-request workflow's `migrations` job and the
+pipeline's migration guard both read a schema directory holding exactly the folded file
+(and its down file) at the index where the committed sequence ended, with every
+committed file gone and none modified, as a consolidation, the one change that removes
+committed migrations. The fold is a concatenation and is trusted as such: a fold gone
+wrong fails the fresh database the pull request's `go` job builds from it, or a test, and
+production never executes a fold (a database at the index applies nothing). The guard
+then reads each environment's migration version from its live database (the first
+generation's name, then the generations a restore made) and refuses while any is below
+the index, since a database below the fold would apply the whole fold over its tables:
+this environment's as the deploy identity, which holds database admin on it, and every
+other's (`_MIGRATION_DATABASES`, which the stack renders from the environments' states)
+through the `migrations_reader` database role, which the application's first migration
+creates with select on the `SchemaMigrations` table alone (`impulse check`
+`migrations-reader` holds every application to it; `impulse upgrade` adds the migration
+to a sequence that predates it) and which `2-env` (an environment's own instance) and
+`2-spn` (the shared instance) grant the first environment's deploy identity on the
+application's databases, bounded to each. An environment the guard cannot read through
+the role lacks the migration or the grant, and the refusal says so; the read is retried
+on the next build. Last, the migrate step reads the database in front of it before a
+fold runs and refuses one below the index, so a restore between the merge and the deploy
+is caught where it happens; a fresh database applies the fold whole (one the migrate
+command has never run on has no `SchemaMigrations` table yet, which reads as no version,
+as a pull request's does on its first preview build), and one at the index or above
+applies nothing.
+
+## bedrock migration version, rerun and force
+
+The migrate command of every Impulse application answers three flags beside `-seed`:
+`-version` prints what each migrations table (schema, data) says about the database and
+exits; `-force <n>` and `-force-data <n>` set a table to a version, clean (`-1` for no
+version), print the row before and after, and exit. None of them applies a migration, and
+a force refuses `-seed` and `-version`. They are the instrument for the states the
+migration runner refuses to guess at: a database the old library left dirty with no
+progress recorded, an in-flight operation Spanner no longer has, a file changed in its
+applied part. A migration that failed at a statement and recorded its progress needs none
+of them: the next run of the same release continues from the failed statement once the
+cause is fixed.
+
+From GitHub, with no cloud credential, a person with write on the repository runs them on
+an environment below production through the operations workflow's `migration` job, which
+`bedrock migration` dispatches as the person signed in to gh (the Run workflow button on
+the Actions tab starts the same job, with `action` set to the operation):
+
+```sh
+bedrock migration version tst --release v1.4.0              # print the database's migration version
+bedrock migration rerun tst --release v1.4.0                # run the release again; the migrate command continues from where it stopped
+bedrock migration force tst 40 --release v1.4.0             # set the schema version to 40, then let the release continue
+bedrock migration force tst 2 --release v1.4.0 --table data # the same for the data migrations table
+bedrock migration force tst none --release v1.4.0           # no version at all (the migrate command's -1)
+```
+
+The job runs in the GitHub Environment named after the target, exchanges its token for
+the environment's operations identity as the restore job does, and runs the environment's
+version trigger for the release with `_MIGRATE_ACTION`, `_MIGRATE_TABLE`,
+`_MIGRATE_VERSION` and `_REQUESTER`. `deploy migrate` reads them after the usual steps
+have run (the release check, the record gate, the image, the stack): `version` runs the
+migrate command once with `-version`, and the run stops before the service, the traffic
+shift and the record, so nothing in the environment changes; `rerun` is the release run
+again, the command running as it always does; `force` runs the command with `-force <n>`
+(or `-force-data <n>`), then runs it as it always does (with `-seed` where the build
+seeds), and the release continues to the service, the traffic shift and the record, which
+carries the force (the table, the version, the requester). A version that is missing or
+not an integer, an unknown action or table, or a force without a requester is refused
+before the command runs; a force whose second run fails leaves the run failed like any
+failed migration, with the runner's message. The command runs on the build worker, so its
+lines are the build log's; the workflow reads them back from Cloud Logging by the build's
+id and the migration steps' names, through the view over the bucket the stack's
+`logging.tf` fills with the application's builds (a sink on its triggers' ids; the
+operations identity holds `roles/logging.viewAccessor` on that view and nothing wider, so
+it reads neither the application's own logs nor another application's builds), and
+prints them in the run and in its summary, so a failed migration's message reaches the
+person who started the run without a console. Production has no door and no view: its
+procedure is under When the migration fails, below. The command itself changes nothing:
+it checks the environment (one of the placement's, not production, wired with a project),
+the release (a tag that exists) and, for a force, the version, then dispatches and prints
+where to watch.
+
+## bedrock patch
+
+`patch` is the new name of `bedrock hotfix`, which still runs it: a patch release of the
+version production runs, whatever the reason. A fix a person makes because something is
+broken is a patch release; routine maintenance (library and version updates) a team makes
+in its window is a patch release; a security update is either, by severity. The framework
+names the path and not the reason: the window, the actor, who approves and when are the
+team's configuration (the placement carries `maintenanceWindow` for it), never bedrock's.
+The path, end to end: read the window; `patch status` (wait unless the same release is
+live everywhere, nothing is pending on the line and nothing is owed); `patch start`; a
+pull request against the line, merged on CI under the organization's rulesets; the line's
+release pull request, the tag, the version trigger through tst, stg and prd; `patch merge
+<tag>`.
+
+`patch status` is the known read of the line's state, so nobody interprets the records
+bucket or the repository by hand: the maintenance window the placement declares; the
+release each environment runs, from its newest live deployment record (the stack's state
+names the records bucket); the patch line of the release production runs, whether its
+branch exists, and whether a patch release is pending on it (the branch has commits past
+its newest release: a release pull request in flight, or changes no release carries yet);
+every patch release the default branch does not carry, with its merge-back pull request,
+merged or owed; and the last line, whether a patch release may start.
+
+```
+Maintenance window: Tuesdays 02:00-04:00 UTC (placement.json maintenanceWindow; the team's to act on, bedrock acts on it nowhere).
+tst: v0.1.4 live since 2026-10-15T20:00:00Z (build b1).
+stg: v0.1.4 live since 2026-10-15T20:30:00Z (build b2).
+prd: v0.1.4 live since 2026-10-15T21:00:00Z (build b3).
+Line: patch/0.1.x at 9f3c2e1, which is its newest release v0.1.4; nothing pending.
+Merge-backs: none owed; master carries every release.
+Ready for a patch release: yes.
+```
+
+`patch start <release>` starts the patch line of a release: the branch
+`patch/<major>.<minor>.x` at the release's commit, on which release-please releases
+fixes as the line's next patch versions while the default branch moves on. The pipeline's
+release check accepts a tag at the tip of such a line whose base on the default branch
+carries a release tag of the same line. The line's next patch must be free for the
+patch, so a feature release on the default branch advances the minor, below 1.0 as
+above it: `check` refuses release-please's `bump-patch-for-minor-pre-major`. When the
+default branch has already cut a later patch of the line (production runs v0.1.21 while
+v0.1.22 is out), the branch starts at a commit on the release's commit whose message names
+the line's next release for release-please (its `Release-As` footer, the patch after the
+highest one cut), so the line's first release skips to it; the manifest stays the
+release's, since release-please counts the line's commits from the manifest's release on
+the branch, and set to a version the line does not hold it would count the line's whole
+history and let its feature commits bump the minor.
+
+A patch release is based on the release production runs, and it deploys like any release:
+through tst and stg, then prd, each after the one before holds it live. What matters in
+an environment that ran a later release is its database. When the later release applied
+no migration and no seed file, the patch release deploys into that environment as it is: its
+migrate command finds a database at a version it knows, and the environment runs the patch release
+until the held-up release resumes. When the later release did move the database, the
+environment holds a file the patch release does not carry, and the release check refuses the
+patch there, naming the file; the environment is restored to the patch release first (staging's own build does
+it, as the staging rehearsal says; tst is restored with `bedrock restore tst`), from an
+empty database or from production's backup, since a restore run replaces the database
+and skips the check. At production's door the patch release must be on the
+line production runs, and that is checked first; a patch release from an older line that
+happens to carry every file would roll production's application back. Production is
+never restored by a run, so a patch release behind production's release on its own line is
+told to start the line from the release production runs. `patch start` prints the rule, and warns
+when the release is not the repository's latest, which GitHub can tell; what production
+runs, only its deployment record can.
+
+`patch merge <release>` brings a released patch to the default branch. It creates the
+branch `merge-back/<release>` at the release's commit (the tag's, so the merge-back
+carries exactly what shipped and not unreleased commits on the line) and opens a pull
+request from it into the default branch, titled `fix: <release>` (the conventional-commit
+line the squash merge carries and release-please reads; the author may edit it) with the
+release's notes as its body. Conflicts, such as release-please's manifest and changelog
+when the default branch has released since the line's base, or code the default branch
+has reworked, are resolved by commits on that branch, which is unprotected; the squash
+merge deletes it, and the patch line is never the pull request's head, so it is never
+deleted and never receives a conflict commit. Never a merge commit, and never a pull
+request from the line's tip itself. The command refuses a release that is not on a
+patch line or that the default branch already carries, and reports an existing
+merge-back branch or pull request for the release instead of making a second.
+
+The merge-back guard holds the rule that no regular release is cut while a patch release
+is not merged back. The stack's release trigger runs it on every push to the default
+branch, before release-please opens or updates the branch's release pull request and
+before the merge of that pull request would make the tag: every release tag the default
+branch cannot reach (a line's tags never are, since the merge-back is a squash) must have
+a merged pull request from its merge-back branch, the line's newest release covering the
+older ones, since the line is one branch. Otherwise the trigger stops, naming the tag and
+the command (`bedrock patch merge <tag>`, then the merge of its pull request). A further
+patch release on the line is allowed meanwhile: a push to a line never runs the guard.
+The number rule stays: the line's patch numbers never disturb the minor the default branch
+is staging.
+
+A fix on a patch line gets its pull-request build like any change: the pull-request
+trigger covers the lines beside the default branch, and the build's migration guard
+compares the pull request with the line (Cloud Build's `_BASE_BRANCH`), which is behind
+the default branch on purpose. The build also looks ahead for the line's next release:
+`ValidateRelease` reads each environment's live deployment record as that environment's
+plan identity (the identity the build already plans the environment as; `2-env` grants it
+the read of its own environment's records) and says, environment by environment, whether
+the patch release would be taken or refused there, naming the file the database holds that the
+pull request does not carry, or the line production runs, so the developer learns before
+the merge that a restore comes first, and where. In an environment the placement's seed
+list names (the placement in the pull request's tree), the preview reads the seed rule
+first: when the environment's record holds a seed file that is not in the tree as
+applied, the release's build will restore the environment itself and take the patch release,
+and the preview says so, naming the file; the schema migrations are compared only when
+the seed matches. The preview warns and never refuses.
+
+The restore is a run of the environment's version trigger for the release, carrying the
+instruction `_RESTORE` (`empty`, or `production-backup` for the environment on
+production's instance) and `_REQUESTER`. Everything that changes the environment happens
+inside that run, in the pipeline's order: the release is validated (the record gate
+holds; the patch check is skipped, since the database is about to be replaced), the
+image is built, the stack's plan replaces the database (and, in the first environment,
+the file stores' buckets) and the apply deletes the Firestore database's documents, the jobs are
+created, the migrations apply
+(and the seed, where the placement's seed list names the environment), the revision
+deploys, traffic moves, and the record carries the reason and the requester. Before the
+database goes, the application is put into maintenance (`deploy maintenance on`): the
+release's own image serves the maintenance page with all traffic while the database is
+away, the task queue is paused and purged, and the serving build's job executions are
+canceled; the queue resumes once the release serves (`deploy maintenance off`, which also
+resumes a queue an earlier run's maintenance left paused, so a restore run that failed
+after maintenance on is healed by the next release that deploys; a pull-request build
+leaves the environment's queue as it is, since a restore may be in maintenance while
+the pull request builds). The run refuses this form of the instruction in production, whose database is restored to a backup alone. `bedrock restore` starts it from GitHub (below).
+For the environment on production's instance the database is not emptied but restored
+from the most recent backup of production's live database (the generation its deployment
+record names; after a restore to a backup, the one the generation was restored from while it has
+none of its own; a backup Spanner is still taking, a release's started minutes earlier, is
+waited for, before the maintenance page goes up), at production's schema: the plan step drops it and restores it under
+its own name as the apply identity, and the migrations production's backup predates then
+apply. The environment's file objects are kept, and its Firestore documents are deleted
+as in every restore.
+
+## When the migration fails
+
+A migration file that fails leaves the database at that file's version, dirty, and the
+migrate command's message, in the build log and in the operations workflow run's summary
+when the run was started from GitHub, says which of three cases it is. Each case names
+the workflow's `action` input and the `bedrock migration` command that dispatches it.
+
+1. **The migration stopped at a statement and can continue.** The message reads `<file>
+   stopped at statement <n> of <m> (<statement>): <cause>; fix the cause and rerun,
+   which continues from statement <n>, or force a version`: the runner recorded how far
+   the file got. Usually the statement validated existing rows (a `NOT NULL`, a check
+   constraint, a unique index) and a row failed it. Fix the rows, then run the release
+   again: action `rerun`, `bedrock migration rerun <env> --release <tag>`. The migrate
+   command continues from the failed statement, applies the rest of the file and the files
+   after it, and the release deploys. Nothing is repeated: the statements before it are
+   applied and recorded, and the failed one had not applied.
+2. **The migration cannot continue.** The message says the database is dirty with no progress
+   recorded (a database the old library left at cut-over), that a DDL operation it
+   recorded is no longer there, or that the applied part of a file changed since. A
+   person decides what the database really holds. First the state: action `version`,
+   `bedrock migration version <env> --release <tag>`, which prints `schema: version 41,
+   dirty` (and the data table's row) and changes nothing. Then the database: which of the
+   tables, columns and indexes the file creates exist. Then the version the database is
+   at: the version before the file when none of it applied, the file's own version when
+   all of it did; action `force` with that version, `bedrock migration force <env> <n>
+   --release <tag>` (`--table data` for the data migrations table, `none` for no version).
+   The migrate command sets the row, prints it before and after, then runs the migrations
+   from there, and the release deploys; its record carries the force and who asked. A
+   force applies no statement itself: a file whose applied part changed is forced to the
+   version before it and applied again whole, so its statements must be safe to repeat.
+3. **The database is at a version the build does not carry.** The release check refuses
+   the run, naming a file the database holds that the release does not: a patch release behind
+   an environment that ran a later release. No force helps. The environment is restored
+   to the release: action `restore`, `bedrock restore <env> <release>`, which replaces
+   the database and runs the migrations the release carries (bedrock restore, below).
+
+In production the door is narrower. No developer credential reaches `prd`, and the
+operations identity there serves one action: `run`, which `bedrock rerun prd <release>`
+dispatches (bedrock rerun, below). That is the release's tag build again, from the start,
+with no instruction, and it waits for its approval in Cloud Build as every production
+release does; so a migration that stopped at a statement continues from it once the
+cause is fixed, and the record names who asked and who approved. The version and the force do not reach
+production, whose logs are read in the console: the platform operator runs those two with
+their own credential, through the environment's version trigger, since that is where the
+release's migrate command runs, on the build worker as the deploy identity. The trigger
+run takes the same substitutions the door passes, and the pipeline does the rest as
+everywhere, the record naming the operator:
+
+```sh
+# The version: the migrate command prints it and nothing else deploys.
+gcloud builds triggers run <prefix>-prd-<region code>-<app>-version --tag <release> \
+  --region <region> --project <project> --substitutions _MIGRATE_ACTION=version,_REQUESTER=<you>
+# A force, then the migrations and the release.
+gcloud builds triggers run <prefix>-prd-<region code>-<app>-version --tag <release> \
+  --region <region> --project <project> \
+  --substitutions _MIGRATE_ACTION=force,_MIGRATE_TABLE=schema,_MIGRATE_VERSION=40,_REQUESTER=<you>
+```
+
+The command's lines are in the build log, under the `RunMigrations` step, which the
+operator reads in the console or with `gcloud builds log <build> --region <region>
+--project <project>`. Nobody runs the trigger by hand for a rerun, in production or
+anywhere: `bedrock rerun` is its door.
+
+## bedrock restore
+
+`restore <env> [<release>] [--reason <why>] [--before <release> | --at <moment> | --backup <name>] [--of <database>]`
+returns an environment's database, started from GitHub: developers authenticate to GitHub
+and nowhere else, and nobody sets up a cloud tool to operate an environment. It is the
+database step after a release that went wrong: the code's rollback (`bedrock rollback`,
+below) comes first, and when the database is wrong too, or the migration itself was the
+fault, the restore follows in a run of its own. The two are never one run. There are two
+kinds.
+
+**A restore to a backup**, in any environment, production included. `--before <release>`
+restores that release's pre-release backup, the database as it was before that release's
+migrations (every release build in an environment on the placement's `releaseBackups`
+starts one as of its cut, kept fourteen days); `--at <moment>` restores a backup made as
+of the moment (RFC 3339), of the live database or, with `--of <database>`, of an earlier
+generation whose history holds the moment (a generation's history begins when it was
+restored, so a moment before the last restore is in the generation that restore left);
+`--backup <name>` restores any backup on the instance by its resource name, a forensic
+backup to undo a restore, say. `bedrock backups <env>` lists what there is. The command
+prints the statement (what the database returns to, on which release, asked for by whom
+and why), asks for the environment's name typed, and dispatches the repository's
+operations workflow as the person signed in to gh. The workflow's job reads the
+environment's deployment records for the live release, which stays unless the command
+named one, and, for `--before`, the release's cut from its first run as a release, prints
+them, refuses a moment whose data holds a migration above the release's (the newest
+record at or before the moment lists what the database held then; the migrate command
+would refuse the restored database as ahead of its files after the database step, with
+the environment left in maintenance), naming the migration, the release that applied it
+and the two ways on (a moment before it, or that release run again first), and runs
+the environment's version trigger for the release with the backup (or `@<moment>`) as
+`_RESTORE`, the generation as `_RESTORE_DATABASE`, the reason and the requester, waiting
+for the build to its end: production's build waits for its approval in Cloud Build as a
+release does, and thirty minutes without one the job cancels it. The build, as the deploy
+identity: the resolve step says what returns; the application goes into maintenance
+whatever the window; the stack plan, as the apply identity, finds the chosen backup (or
+starts one as of the moment, kept fourteen days), refuses one that does not exist or
+belongs to another application before anything is started, waits for it to be READY,
+then starts the forensic backup of the live database (`<db>-forensic-<stamp>`, thirty
+days; a backup start Spanner refuses because it is taking another waits for its turn),
+restores the chosen backup into the database's next generation (`<db>-2`, then `-3`),
+writes the generation beside the deployment records (`<app>/database/<env>/<n>.json`),
+imports the restored database into the stack and plans with `database_generation =
+<n>`; the apply points the service at it; the release's migrations run on it, which is
+nothing when the backup is at the release's schema and the release's own files when it
+is ahead; the release deploys and takes the traffic; the record names the requester, the
+approver, the reason, the backup restored and the moment its data is from, the forensic
+backup, the database restored into and the one kept, with the forensic backup standing
+as the run's backup, which `bedrock backups` lists for a later restore to this release's
+last data. The
+live database stays, drop-protected, as the forensic copy: writes made after the
+backup's moment are in it alone. No database an earlier run left is ever put back into
+service, and nothing is dropped: a restore to the wrong place is followed by another
+restore, from whichever generation holds the moment. Every later plan, a pull request's
+included, reads the generation its records name, so the stack keeps pointing at the
+restored database and the earlier generations stay protected; their removal is a later
+item.
+
+**The environment's own restore**, below production. Staging runs a release against
+production's data before production does: a release that carries migrations production
+has not applied restores staging from production's newest backup in its own build (the
+staging rehearsal, decided by the resolve step from the versions the records say tst and
+production applied), so between releases staging sits at production's release, and the
+failure expected there is a migration meeting production's data. `restore stg` with no
+source is the manual way to bring staging's data current between releases, migrations or
+not, and the way back to production's release after a failed release there. So an
+environment restored from production's backup (one on production's instance, off the
+seed list) may leave the release out: the workflow's job reads production's live release
+from production's deployment records, says which, and runs it; a release named is run as
+named, and the job says whether it is production's. The first environment and a seeded
+one restore to an empty database, which has no production state to return to, so they
+name their release. The build lifts the database's protection (and the first
+environment's file stores') with an apply it records before the replace, since every
+environment protects them (the stack README, "Retiring a secret or a file store"). The
+command checks that the environment is not production (whose
+database is restored to a backup alone), that a release named exists, and that the
+placement records the environment's project (`projects`, the id and the number, which
+`bedrock org register` writes into the application's first placement), then dispatches
+the operations workflow (`.github/workflows/operations.yml`, rendered and owned by
+bedrock) as the person signed in to gh, and prints where to watch it; the Run workflow
+button on the Actions tab starts the same job. The workflow lists itself: GitHub lists a
+workflow once a run of it exists or once a push to the default branch adds or changes its
+file, and the push that creates the repository does not always do the latter, so the
+workflow's one push-triggered job (`registered`) runs on the push that adds or changes
+the file and does nothing else; a repository whose workflow GitHub does not list (`bedrock
+restore` says so) merges the workflow this bedrock renders, and that push lists it. The
+job runs in the GitHub Environment
+named after the target environment, which the organization's `1-org` layer declares so
+that it deploys from the default branch alone (the workflow file a restore runs is the
+committed one; a reviewer for an environment is the repository's setting to add). It
+holds no key: it exchanges GitHub's short-lived token for the environment's operations
+identity through the environment's workload identity pool (`2-env`), whose provider
+trusts tokens of the organization's repositories alone, from the operations workflow
+file, run in that Environment, and whose binding on the identity narrows that to the
+application's own repository. With that identity, which may start the environment's
+triggers and read the builds they start and nothing else (`1-org`'s
+`cloudBuildTriggerRunner`), the job runs the environment's version trigger for the
+release with `_RESTORE` and `_REQUESTER`, and waits for the build to its end, an
+approval in Cloud Build included. The build does the work as the deploy identity, as
+for any release; the GitHub side never holds a deploy right. The workflow run names who
+started it, Cloud Build records the operations identity, and the deployment record
+carries the requester and the restore. An environment the placement records no project
+for is not wired: the job stops before touching anything and says what to record.
+
+## bedrock rollback
+
+`rollback <env> --reason <why> [--to <release>]` returns an environment to an earlier
+release with nothing of the database, started from GitHub. It is the first answer to a
+release that went wrong, in any environment: a schema change migrates forward in a way
+the running code still works with, so the earlier release runs on the database as the
+release left it. The run applies no stack either: the environment's infrastructure stays
+as the release it leaves made it, and the earlier release deploys under its own revision
+templates, read off the plan of its stack (the stack README, "Cloud Run"), so the
+earlier binary runs under its own configuration and nothing the newer release added is
+destroyed. When the database is wrong too, `bedrock restore` returns it, in a run
+of its own, after this one. A release that cannot migrate that way is marked breaking
+(its outlets no longer answer the environment's release), goes under maintenance,
+migrates, deploys and comes out; a problem found after it is a restore, and the writes
+since the release are lost with it.
+
+**The command** checks the environment and the inputs (a reason is required and may not
+carry `|`; `--to` names a release that exists), prints the statement (what returns to
+what, asked for by whom and why), asks for the environment's name typed, and dispatches
+the repository's operations workflow as the person signed in to gh with the action
+`rollback`, the reason and the release (`--to`, or none). The command changes nothing
+itself.
+
+**The workflow's job** runs in the GitHub Environment named after the environment; no
+Environment waits for a reviewer, since the build the job starts waits for its approval
+in Cloud Build where the environment requires one, as a release does, and the record the
+run writes names the approver. The job reads the environment's newest deployment records
+(through the version trigger's `_RECORDS_BUCKET`; the operations identity reads the
+bucket) for the live release, which the environment leaves, and, unless named, the
+release to return to (the release live before the live one), prints the statement with
+them, and runs the environment's **rollback trigger**
+(`<prefix>-<env>-<region>-<app>-rollback`, in every environment, disabled for events and
+run by this job alone; never the release trigger) for the release returned to with
+`_ROLLBACK` (the release left), `_REASON` and `_REQUESTER`. The build waits for its
+approval in Cloud Build as a release does; thirty minutes without one and the job
+cancels it, so a rollback nobody approved is not left waiting.
+
+**The build**, as the deploy identity, is the earlier release's build again: the resolve
+step prints the statement first and switches the migrations off; the release check, the
+guard and the image build run as for any release (the image is reused when the commit
+built one); the stack is planned for the release's revision templates and not applied, so
+the environment's infrastructure stays as the release it leaves made it, the database at
+its generation as it is; no backup is taken and nothing is restored; the release deploys the way a release
+deploys, behind the maintenance page where the return is breaking for the environment's
+clients and never waiting for a window; traffic moves; and the record names the
+requester, the approver, the reason and the release left, and lists the migrations the
+database holds, by the record live when the rollback ran, since the rollback applied
+none, so the release guard and the staging rehearsal read the environment where it is.
+
+## bedrock backups
+
+`backups <env>` lists, in the summary of an operations workflow run, what an
+environment's database can be restored to: every run that went live there, newest
+first, with the release, the kind of run (a release, a rollback and the release it left,
+or a restore and what it restored), when, its cut and its backup, which for a release's
+run is the pre-release backup that holds the database as it was before that release's
+migrations (fourteen days) and for a restore's run the forensic backup of the data the
+restore replaced (thirty days), a rollback's run having none; and every generation of
+the database a restore made, from which backup, when, the generation it left as the
+forensic copy and that copy's forensic backup. `restore --before <release>` reads the
+release's first run as a release, never a rollback's or a restore's record of its
+version. A generation's own history reaches back the
+placement's `spannerRetention` while the generation exists; the backups are the fixed
+points. The command dispatches the workflow's `list` action as the person signed in to
+gh and prints where to read the summary; the job reads the deployment records as the
+operations identity, and nothing on the developer's machine touches the cloud. From the
+listing, `bedrock restore` takes `--before <release>`, `--backup <name>` or `--at
+<moment>` (with `--of <database>` for a moment in an earlier generation).
+
+## bedrock maintenance
+
+`maintenance off <env>` takes an application out of the maintenance a failed run left it
+in: a run that put the maintenance page up and then stopped (a restore refused at its
+plan, a canceled build) leaves every region's traffic on the maintenance revision and
+the task queue paused. The command dispatches the workflow's `maintenance` action as the
+person signed in to gh; the job reads the environment's live release from its deployment
+records and runs its build with `_MAINTENANCE=off`, which the resolve step turns into the
+skip facts: every step stands down, and the last one moves each service's traffic back
+to the revision the maintenance revision displaced (named by the label the maintenance
+step put on it, `bedrock-displaced`; for a maintenance revision from a build before the
+label, the service's latest ready revision when that is another one), says what the
+application comes back to (the environment's database READY and never restored, or
+restored by the stopped run, which left it without its memberships, since those come with
+the stack's apply, so the application cannot start on it until `bedrock rerun` finishes
+the run; or still being restored, about twenty minutes here) and resumes the queue the
+earlier run left paused. Nothing deploys and no record is written; production's
+build waits for its approval in Cloud Build as a release does. The other way out is to
+run the release again (`bedrock rerun`), which deploys and ends the maintenance on the
+way, and is the answer when the failed run should be finished rather than undone.
+
+## bedrock rerun
+
+`rerun <env> <release>` runs a release again in an environment, production included,
+through the same door as a restore: the command checks that the release exists and that
+the placement records the environment's project, dispatches the operations workflow with
+the `run` action as the person signed in to gh, and prints where to watch it. The job
+exchanges its token for the environment's operations identity in the environment's
+GitHub Environment, as a restore does, and runs the version trigger for the release with
+`_REQUESTER` alone: no restore, no migration operation. The build is the release's tag
+build again, from the start, as the deploy identity: the image is built, the stack
+applied, the migrations run (a migration that stopped at a statement continues from it
+once the cause is fixed), the revision deploys, traffic moves, and the record names who
+asked and, where the build waited for an approval, who approved it. Nothing of a rerun is a restore, so production is reached like any environment:
+its operations identity exists for this action alone, the workflow and the pipeline
+refuse the restore instruction and the migration operations there, and a rerun in
+production waits for its approval in Cloud Build as every production release does. The
+migration job's `rerun` option (`bedrock migration rerun`) was named first and runs the
+release again below production with the migrate command's lines printed in the run; the
+release's own action is `run`, and `bedrock rerun` is its command. Nobody runs a trigger
+or submits a build by hand: every build starts from a trigger, and a release is run again
+through this door.
+
+## bedrock release
+
+`release` runs the application's release trigger again on the default branch's head,
+through the same door as a rerun. The trigger lives in the first environment alone and
+runs on every push to the default branch, as the release identity: the merge-back guard,
+then release-please's `github-release`, which tags and publishes the release a merged
+release pull request is owed, and `release-pr`, which opens or refreshes the next release
+pull request. A push the platform failed to build (Cloud Build ended the build before its
+first step ran) leaves that pull request untagged, and nothing short of the next push ran
+the trigger again. The command names no environment, since the trigger has one home, and
+no release, since it does not exist yet: it checks that the placement records the first
+environment's project, dispatches the operations workflow with the `release` action as
+the person signed in to gh, and prints where to watch it. The job exchanges its token
+for the first environment's operations identity in that GitHub Environment and runs the
+trigger on the branch with no substitution; the tag it makes runs its builds in every
+environment as a tag always has, the approval gates included. With nothing pending the
+build runs and cuts nothing, so the button is safe to press whenever someone wonders.
+Anyone who can merge to the default branch may start it, in Actions or through the
+command: every merge runs the trigger anyway. Nobody runs the trigger by hand.
+
+## bedrock teardown and bedrock destroy
+
+`teardown <env>` takes an environment's stack down to what it keeps, and `destroy <env>`
+destroys it whole; with `--all` either takes every environment in promotion order and then
+destroys every pull-request stack under the integration environment's prefix, the way the
+sweep destroys a closed pull request's: its builds' jobs, the stack, then its state object,
+so nothing of it is kept and no later run walks an empty state; a stack whose state holds
+nothing (only initialized, or destroyed already) is skipped with a line and its object goes
+the same way. Both run by a person at their own computer with
+their own sign-in (`gcloud auth application-default login`), driving tofu in the stack
+directory against the environment's state prefix the way the stack trigger's first apply does,
+and both ask for the environment's name typed back before anything
+runs (`--yes` stands in where there is no terminal). The same two run through the pipeline
+for a person who is not an organization owner: the operations workflow's `teardown` and
+`destroy` actions (the environment's name typed into the run's `confirm` input, in place of
+the prompt) run the environment's stack trigger, 2-env's, which survives a teardown, with
+the action (`_STACK_ACTION`, with `_REQUESTER` naming the GitHub actor), and its step runs
+`bedrock deploy stack teardown` or `destroy` as the deploy identity, which becomes the apply
+identity (the one that holds what the stack needs): the state and the records are read as
+it, tofu drives the stack as it, the refusals and the plan's check are the hand command's,
+and the record is written as it, naming the actor and, outside the first environment,
+who approved the build in Cloud Build, where the workflow waits for the approval the
+environment's builds wait for (thirty minutes, then it cancels the build). Both refuse while `2-net` routes a
+host to the environment's backend service, since Google refuses the backend's deletion
+while the load balancer uses it and OpenTofu keeps everything an excluded resource depends
+on: the hosts come out of `2-net` first, through `bedrock org teardown <app>` (that
+application's hostnames alone, in the environments named or all of them; the listeners and
+the other applications stay), `bedrock org teardown` (every application's), or the
+application's removal from the organization's `placement.json` in a pull request.
+
+A teardown destroys what a pipeline makes again (the Cloud Run services and jobs with
+their invoker grants, the endpoint groups and backend services, the Cloud Build triggers
+and the sweep's schedule, the scheduled routes' jobs and identity, the Cloud Armor policy,
+the request-log exclusion) and keeps what holds data or a name (the Spanner database and
+every generation of it, the file stores with their policies, the secret containers with
+their accessors, the identities with their grants, the Firestore database with its indexes,
+fields and rules, the Firebase key, the migrate log bucket, the Cloud Tasks queue with its
+grants, and the stack's id, so the environment's records and names stay its own). A kept
+resource that depends on a destroyed one goes with it (the migrate-log sink names the
+version trigger and the services in its filter), since tofu keeps an excluded resource's
+dependencies; the next apply makes it again, and the command's summary names it.
+In production it applies the stack with `teardown=true` first, recording in the state that
+the services' deletion protection is lifted; then it plans the destroy with every kept
+resource excluded, reads the plan back and holds it against what it means to destroy
+(anything beyond or short of it stops the run with nothing applied), applies it, and
+writes a record beside the stack's id (`<app>/stacks/<env>/teardown.json`: what went, when,
+by whom, and the release that was live; the environment's team group writes under
+`<app>/stacks/`, and an Owner of the project or the organization holds the bucket through
+Cloud Storage's default grants, so the person running the command can, and so can the apply identity through the pipeline). A run that finds nothing of a
+teardown's left to destroy writes the record when the stack has none since its live release
+(an earlier run's write failed after its apply), and says so. Bringing the environment back is
+the operations workflow's `apply` action, which runs the environment's stack trigger and
+applies the stack again (the services and the triggers), then `bedrock rerun <env> <release>`
+through them, then `bedrock org serve <app> [<env>...]` from the organization's checkout, which
+puts the hostnames back on a pull request once the release is live.
+
+A destroy takes everything, after an apply with `destroy=true` recording every
+protection lifted: in every environment the database's deletion and drop protection, the
+file stores' force-destroy, the secret containers' deletion protection and the Firestore
+database's delete protection, and in production the services' deletion protection. Before
+anything is destroyed it takes a final backup of each Spanner database
+the stack holds, as of the run and kept 366 days (the most Spanner allows), named after the
+database and the moment (`<database>-final-20261023-1710`), and waits for it (a backup runs
+twenty minutes or more, and the database must stand until it is taken; Spanner takes one
+backup of a database at a time, so a run that finds the schedule's in progress waits for
+that one first); the record names the backups, and `--no-backup` leaves them out when
+nothing of the data is to be kept beyond the backups already taken. The operations
+workflow's `destroy` action takes them always. The stack's id object goes with the stack,
+so the pipeline's readers see an environment never applied; the deployment records stay in
+the records bucket under `<app>/<env>/<id>/`, read by nothing; the final backups and the
+Spanner backups the pipeline and the schedules took stay on the instance until their
+retention ends (the release backups fourteen days, the schedules' ninety); Google keeps the
+names of the task queue, the Firebase key and the migrate log bucket for a while, and a
+stack applied again takes an id of its own. Nothing of either command is undone by bedrock.
+
+## bedrock domain
+
+`domain add <domain>` puts a domain registration into the network layer's placement,
+where the layer's `domains.tf` registers it through Cloud Domains. `domain check` says
+whether the apps domain, and each vanity domain, resolves to its zone in the network layer
+and, where it does not, prints what is missing and where to add it.
+
+```sh
+bedrock domain add example.dev   # the default for a new domain: 2-net registers it
+bedrock domain check             # from the organization's infrastructure repository root
+```
+
+The applications' domain (`appsDomain` in the organization's placement) takes one of three
+shapes, and the check finds which one from the live answers; nothing in the placement says
+so:
+
+- **Registered by 2-net, the default.** A new organization buys its apps domain through
+  Cloud Domains in the network layer: one placement entry, registered and pointed at the
+  zone by the next apply, with no registrar step. Cloud Domains accepts no transfer in, so
+  a domain the client already owns takes one of the next two shapes. A registration lives
+  and dies with its project: it cannot move to another project, and deleting the project
+  loses the domain past a thirty-day restore window. So the default suits a permanent
+  organization alone; an organization that will be torn down, a laboratory among them,
+  registers no domain and delegates one registered at the company's registrar, as the next
+  two shapes describe.
+- **Delegated at the apex.** A domain as it is registered (its apex, such as
+  `example.com`) with nothing else on it, registered anywhere: its name servers at the
+  registrar are set to the zone's, once.
+- **Delegated as a label.** A domain that already carries a website or mail is never
+  delegated whole. The applications live under a label of it (one more name in front,
+  such as `apps.example.com`), and the client's DNS provider gets one NS record set for
+  the label; everything under it is then the network layer's.
+
+The apps domain itself is never served by records at a provider elsewhere: its
+pull-request environments need the wildcard, so it is delegated, whole or as a label. A
+customer's own domain may be (a vanity domain kept at the customer's DNS provider, below):
+named records, one per hostname, never a wildcard.
+
+A production application often serves on a domain of its own, the client's brand domain,
+beside its hostname under the apps domain. Such a domain is a vanity domain: the
+organization's placement declares it (`vanityDomains`, a map keyed by the domain: bare
+lowercase domains, none the apps domain nor under or above it or one another; at most 38
+characters, so the names 2-net derives fit). A customer's domain reaches the application
+in one of three ways, the customer's choice, which the entry says: the apex delegated
+(`"<domain>": {}`), when the domain carries nothing else, the apex-delegation shape above
+applied to the application's domain, with the same hand step at the registrar, once; a
+label delegated (`"app.<domain>": {}`), one NS record set at the customer's DNS provider;
+or the domain kept at the customer's DNS provider (`"<domain>": {"dns": "customer"}`),
+which stays authoritative for it, its mail and every other record untouched, and carries
+the records bedrock prints, an A record per hostname the applications declare on the domain
+at the load balancer's address and the certificate's authorization CNAME, named records,
+never a wildcard, which is what makes the apex available to a customer with mail on the
+domain. 2-net serves a delegated vanity domain with a zone of its own (the apex and the
+wildcard at the load balancer's address, the certificate's authorization record), renders
+no zone and no record for a kept one, and holds for each a DNS authorization, a managed
+certificate for the domain and one label below it, and two entries in the one certificate
+map; the host rules come from the organization's record of what the stack serves, as for
+any hostname. The application
+declares the hostnames it serves on the domain in its own placement, per site and
+environment (`hostnames.<site>.vanity`, The application's placement: the domain itself for
+one site, a label of it such as `console.<domain>` for the others), in practice in
+production; the first declared is the site's canonical hostname there, its apps-domain
+hostname keeps answering, and the next revision's `-next` twin and the pull-request
+environments stay on the apps domain, where the wildcard certificate is. The
+organization records the vanity hostnames with the others
+(`bedrock org register <app> --next`, `bedrock org hostnames <app>`) and refuses one that
+is neither one label under the apps domain nor a declared vanity domain or one label
+under it. A delegated vanity domain may also be bought through Cloud Domains in 2-net, as
+the apps domain may (`bedrock domain add`): the registration then points at the domain's
+zone, and a domain bought before it was declared keeps the zone it had while parked, moved
+under the same name; a kept domain is never registered there. A domain that carries other
+DNS (mail, a website at the apex that is not the load balancer's) is never delegated whole:
+`domain check` refuses it, as it refuses such an apps domain, and names the two ways out, a
+label of it (`app.<domain>`) declared as the vanity domain instead, or the domain kept
+where it is.
+
+`domain check` runs from the infrastructure repository's root (or `--dir`) once 2-net is
+applied. It reads each domain's zone in the network project (`projects.net` in
+`placement.json`) through the Cloud DNS API with the run's Google credentials (`gcloud
+auth application-default login`, reading the project's zones), and resolves the domain as
+the world sees it: the apps domain first, then each vanity domain, a delegated one the
+same way, each report after a blank line, and it exits 1 when any domain is missing
+something. A vanity domain kept at the customer's DNS provider has no zone to read: the
+check takes the load balancer's address from the apps zone and the domain's authorization
+record from Certificate Manager (`roles/certificatemanager.viewer`), resolves each hostname
+the organization records on the domain and the authorization's name, passes when every one
+answers our value, and otherwise prints the records to add at the provider as its form
+takes them (`@ A 203.0.113.10`, `www A 203.0.113.10`, `_acme-challenge CNAME ...`), with
+the note that a CAA record set at the domain must admit `pki.goog`; every other record of
+the domain is the customer's and is not read. When a delegated
+domain answers the zone's name servers, it passes. Otherwise it
+prints the step and the place, each record on its own line as it is pasted: for a domain
+2-net registers and whose registration is not active yet, the registrant's verification
+mail, followed within fifteen days or the domain is suspended; for a domain 2-net registers
+whose registration names name servers that are not the zone's (it answers another set, or
+the servers it is delegated to do not answer for it), as after the zone was made again, the
+step in Cloud Domains that points the registration at the zone (`gcloud domains
+registrations configure dns <domain> --cloud-dns-zone=<zone> --project=<network project>`,
+or the console's Cloud Domains page, the domain, Edit DNS details), since the apply never
+changes the name servers of a registration that exists; for an apex, the zone's
+name servers to set at the registrar where the domain is registered, as bare host names
+(`ns-cloud-c1.googledomains.com`, since a registrar takes host names; at Squarespace
+Domains: the domain's DNS settings, Domain Nameservers, Use Custom Nameservers, up to 48
+hours to take effect); for a label, the NS records to add at the DNS provider that serves
+the domain it belongs to, each as the provider's form takes it: the host relative to that
+domain, the type, and the value without the trailing dot a zone file writes
+(`apps NS ns-cloud-c1.googledomains.com`; Squarespace, for one, refuses the dot as a
+character), as is the authorization record when it is to be added at a provider
+(`_acme-challenge.apps CNAME ...`); a record the zone itself holds is shown as the
+zone-file line it is. An apex that is not delegated and answers records that are not
+the zone's is refused, with the way out named: a label of it as the apps domain for the
+apps domain; for a vanity domain, a label of it declared in its place, or the domain kept
+at its provider. The check also
+resolves the record that proves the domain to Certificate Manager and says when the
+certificate is still waiting on it. It exits 1 when anything is missing or refused.
+
+In a root organization (`"kind": "root"` in the placement; bedrock org, below) `domain
+check` reads each domain's zone in the root project (`projects.root`; the apply makes it,
+and it holds the domain's delegation alone: no address, no certificate) and resolves the
+domain the same way, with the same step printed for a domain as registered (the registrar)
+and for a label of a domain served elsewhere (the NS records at its DNS provider), and the
+same refusal of a domain that carries other DNS, with a label of it to hold instead. Then,
+once the domain is delegated, it asks the world about each name handed onward
+(`domains.<domain>.labels`) and says whether the name answers the four name servers of its
+zone in the hosting organization; that the servers do not answer for it yet (the
+application's zone there not applied, or the servers recorded not its; `bedrock domain
+check` in that organization's repository prints them); that it answers nothing yet (an
+answer cached before the record set was added); or what it answers instead (a record set
+changed within the hour, or a wrong entry to correct). Every domain delegated and every
+label handed is the check passing; while a domain is not delegated its labels are reported
+as waiting on it. A placement with no domain yet has nothing to check, and the command says
+so. `domain add` has no place in a root organization, which registers nothing.
+
+A domain 2-net registers has a registrant contact (`registrant_contact` in
+`2-net/terraform.tfvars`) that is the client's, never that of a contractor who builds or
+runs the foundation, with a mailbox a person reads: the verification mail and every notice
+about the domain go there. `bedrock org check` reads each registration back through Cloud
+Domains and reports, before anything else, a registration still waiting on the
+verification, with the mailbox and the date its link must be followed by, then each
+registration's state and expiry date (bedrock org, below). The registration lives in the network project and cannot move
+to another project; deleting the project loses access to the domain, which is one reason
+1-org puts a lien on every project it creates (a mark that refuses the project's deletion
+until it is removed). If the client wants the domain at another registrar, it transfers it
+out:
+
+- sixty days after the registration at the earliest, to any registrar but Squarespace
+  Domains, which already holds the domain at the registry on Cloud Domains' behalf;
+- after Cloud Domains unlocks the domain, adding a year of registration at the new
+  registrar's price;
+- the name servers do not change in a transfer, so the zone keeps answering;
+- once it is done, the registration leaves `registrations` and the state, with
+  `prevent_destroy` on the registration in 2-net's `domains.tf` lifted for that one apply.
+
+Cloud DNS gives a zone its name servers when it creates the zone, and a zone made again can
+land on a different set, which the registration, the certificate's authorization record and
+any delegation made by hand would no longer point at. So 2-net's apps zone, its vanity
+zones and every zone a registration points at carry `prevent_destroy`: a recreation is
+refused by default and is a
+deliberate change of three renders and one hand step, which 2-net's README describes under
+"Making a zone again". The organization's placement takes `"zoneReplacement": true` and
+`bedrock org render` writes the zones without the rule; the change that recreates the zone
+is rendered with the value still set; by hand, everything that pointed at the old name
+servers is pointed at the new ones, `bedrock domain check` printing each step; and the
+value is cleared and rendered, which writes the rule back. The files are never edited by
+hand. While the value is set, `bedrock org check` names it and what is left to do, and a
+`bedrock domain check` that passes on every domain says it can be cleared now; neither
+fails on it.
+
+## bedrock org
+
+`org` renders and checks the organization foundation from the organization's placement.
+
+```sh
+bedrock org bootstrap ../imr-root-infrastructure --prefix imr --github-organization impulseframework   # the root organization, the one thing made by hand: one command, as the break-glass account
+bedrock org bootstrap ../imf-root-infrastructure --no-cloud --prefix imf --github-organization impulseframework --public-library impulse   # a root organization without a cloud: libraries alone, kept on GitHub
+bedrock org new ../infrastructure --placement placement.json   # a hosting organization's foundation rendered from its placement (bedrock org create writes one)
+bedrock org preflight                                           # the break-glass account's three roles, which the bootstrap checks itself
+bedrock org render                                              # after a placement change
+bedrock org check                                               # the committed layers against the placement
+bedrock org register quill ../quill                             # an application joins the foundation; its first placement.json is written into its checkout
+bedrock org create rgb                                           # in a root organization: a hosting organization recorded, for the apply trigger to create on the merge
+bedrock org plan                                                # what the plan trigger runs on a pull request
+bedrock org apply                                               # what the apply trigger runs on a push to the default branch
+bedrock org teardown                                            # the applications out of service: 2-net's hosts and listeners, then every application torn down
+bedrock org teardown <app> [<env>...]                            # one application's hostnames out of 2-net ahead of bedrock teardown from its checkout
+bedrock org serve [<app> [<env>...]]                             # the way back: the hostnames (or the listeners and every host) return to 2-net on a pull request
+bedrock org hostnames <app>                                     # the hostnames the application's stacks serve, read from their states and recorded for 2-net after a label change
+bedrock org retire <app>                                        # a torn-down, destroyed application leaves: its repository archived and out of 1-org's state, its entry out of the placement
+bedrock org destroy                                             # every project of the organization deleted, by hand, after the prefix typed back
+```
+
+`org new` renders a hosting organization's six layers, each with its `.tf` files, its
+README and its seeded `terraform.tfvars`, and at the root the README, the journal, the
+ignore rules and the OpenTofu version, then prints the hand steps that come before the
+organization's record and after its creation. 0-bootstrap carries the two triggers
+(`0-bootstrap/cloud-build.tf`): one plans the layers a pull request changes, the other
+applies the layers a push to the default branch changes, each running `bedrock org plan`
+or `bedrock org apply` after `bedrock org check`. Everything the creation decides (the
+folders, the boot project's suffix, the state bucket) is `REPLACEME` in the seeded values
+until `org create` and the creation record it: a hosting organization's placement is
+written by `org create` in its root organization's repository, and the creation renders
+the repository from it, so `org new` is a render of a placement that exists, never a
+seed by hand. The triggers' runs fetch the bedrock the placement pins (`bedrockVersion`,
+and for a release `bedrockSha256`): `org new` records the bedrock running it when that is
+a release or a commit installed with `go install`, `org create` copies the root
+organization's pin, and `bedrock upgrade`, run in the repository, moves the pin and
+renders the layers with the bedrock it names; `org render`, `org check` and `org register`
+refuse a placement pinned to another bedrock than the one running them.
+
+A placement may name a second kind of organization: `"kind": "root"`, a root
+organization, which holds no application and no environment, and has no terraform: the
+DNS zones, the GitHub Apps' keys and the Cloud Build authorization for every organization
+in the Google Cloud organization, and the creation of each hosting organization. The zones
+are how a customer's shared domain serves applications hosted in more than one bedrock
+organization: the customer delegates the domain (`mydomain.com`, or a label of it such as
+`apps.mydomain.com`) once, to a zone of the root organization, and each application's
+name under it (`acme.mydomain.com`) is handed onward, as one NS record set in that zone, to
+the zone the application's hosting organization serves it from as a vanity domain
+(`vanityDomains` there, the environment names nested under the application's:
+`stg.acme.mydomain.com`), so a second application lands in another hosting organization
+with nothing moving at the customer's registrar. One root organization per Google Cloud
+organization that hosts applications, and one GitHub organization per root organization,
+which the hosting organizations under it share (their placements name the same
+organization, Bot Account and apps, filled in by the creation). The root organization
+is the one thing made by hand, by one command, `org bootstrap`, run once as the break-glass
+account; every hosting organization under it is created from it by pull request, the first
+like every later one. The root organization is bedrock's own bookkeeping: its
+`placement.json` says what it is, and its two Cloud Build triggers keep it true by API,
+through the engine the bootstrap made it with (`org plan` on a pull request, which says
+what the merge would change; `org apply` on the merge, which makes it so and creates the
+hosting organizations recorded), where a hosting organization's triggers plan and apply
+OpenTofu layers.
+
+`org bootstrap <dir>` makes the root organization, placement and files, in one run at a
+terminal with the break-glass account's Application Default Credentials (`gcloud auth
+application-default login`): `--prefix` and `--github-organization`; `--organization` and
+`--billing-account` when the account sees more than one (it asks otherwise); `--domain`
+for each domain delegated to it, `--key-operator` for each member who rotates a key,
+`--region` (us-central1 unless named), `--default-branch`, `--approving-reviews`,
+`--label` and `--app-prefix`, the three GitHub Apps' name prefix. It checks the three
+roles `org preflight` checks first, then looks before each step and makes what is
+missing, so a run that stopped finishes on the next run in the same directory, whose
+`placement.json` records everything made. In order: the Bot Account's token, read from
+`GITHUB_TOKEN` or asked for without echo (a classic personal access token of the `repo`,
+`read:user` and `read:org` scopes; the bootstrap checks that it is the account's and the
+account an owner of the GitHub organization); the organization's folder at the
+organization node, named after the prefix; the root project `<prefix>-root-gbl-core-
+<suffix>` under it, linked to the billing account with its APIs enabled, and the state
+bucket `<prefix>-root-gbl-state-<suffix>`; the token's secret, its first version pinned
+(`githubTokenVersion`), every connection naming its alias `current`; the three GitHub Apps,
+infrastructure, deployer and release, made in the browser from the manifests bedrock
+declares (a page the command serves on the computer: Create, then Install for all
+repositories, for each; `--no-browser` prints the address) or brought
+(`--infrastructure-app` with `--infrastructure-key`, and the deployer's and release's
+pairs) and held to the same declaration, each key going from GitHub into its secret and
+its version pinned; the Cloud Build installation found through the infrastructure app;
+the repository `<prefix>-root-infrastructure`, private in the GitHub organization, with
+the placement and the rendered README as its first commit; then everything the apply keeps
+true, through the same engine the apply trigger runs; last what Google gave it as the
+creator, Owner on the root project and Folder Editor on the folder, off; and the check. No key and no token touches the computer's disk. The IAM grants
+above the folder are the bootstrap's own, never a hand step: Folder Creator at the
+organization node and Billing Account Administrator on the billing account for the
+creating identity `<prefix>-create-gbl-tofu`, Organization Policy Administrator at the node
+for the applier and Organization Policy Viewer for the planner (Google grants those two
+there and nowhere lower; with them the root organization sets the organization-policy
+baseline on each hosting organization's folders, the rendered README's "The
+organization-policy baseline"), and its own working grants, which it takes off at the end.
+What it leaves by hand is the break-glass account's Folder Admin on the
+folder, which Google gives a creator, and the repository at its first commit, from which
+every change goes by pull request.
+
+What the apply keeps true, from `placement.json`, section by section: the root project's
+APIs; the runner identities `<prefix>-root-gbl-planner` and `<prefix>-root-gbl-applier`
+and the creating identity, with their roles on the root project and read roles on the
+folder, nothing higher (the applier impersonates the creating identity for a creation
+alone); the four secrets, `<prefix>-root-gbl-github-<app>-key` for each app and
+`<prefix>-root-gbl-github-token`, each one's alias `current` at the version the placement
+pins (`githubInfrastructureKeyVersion`, the two other keys' and `githubTokenVersion`), and
+their policies: the key
+operators' adding and reading, the runners' reads, and each created hosting
+organization's boot identity's policy administration (`secretPolicyAdmin`, a role of the
+root project: a secret's IAM policy and nothing else); one public zone per domain
+(`<prefix>-root-gbl-dns-<domain with hyphens>`, DNSSEC on) and one NS record set per
+label handed onward, an hour's time to live, nothing else in the zone; the Cloud Build
+connection `<prefix>-root-<region code>-github`, the repository's link under it and the
+two triggers `<prefix>-root-<region code>-plan` and `<prefix>-root-<region code>-apply`,
+whose steps are the trigger's own (the pinned bedrock fetched, `bedrock org check`, then
+the command); and the repository's settings and the ruleset on its default branch (pull
+requests alone, `approvingReviews` approving reviews, the plan trigger's check passing,
+the infrastructure app bypassing). Two things it reports and never changes: the creating
+identity's grants above the folder, made by the bootstrap, and a zone whose domain was
+taken out of `domains`, which stays standing until a person deletes it in the root
+project, since every name under the domain still points at its name servers (the rendered
+`README.md`, "Making a zone again"). Its placement carries the fields every organization
+has, one region (the root project's), `domains`: each domain with the labels handed
+onward (`labels.<label>`: the hosting organization's prefix and the four name servers of
+the application's zone there, as `bedrock domain check` prints them in that
+organization's repository; a label may carry a dot, as in `east.acme`, and none is above
+or below another), and the keys' two lists: `keyOperators`, the IAM members (`user:`,
+`group:`) who add a key's version and read it back for the check, and
+`hostingOrganizations`, each hosting organization's prefix, boot project and, once
+created, folder; `org create` lists an organization, and the creation's hand-off records
+its folder. A hosting organization's placement names it (`root`: the prefix and the root
+project) and carries no `ciLargeRunner` field: the larger runner, its runner group and
+the organization variable are the root organization's, which its apply makes.
+
+`org create <prefix>`, in a root organization's repository, records a hosting organization
+for the apply trigger to create on the merge. Run once, it writes
+`organizations/<prefix>/placement.json`, a hosting placement for a person to fill in with
+what is the new organization's own to decide (`appsDomain`, `spanner.config`, two regions
+with the primary the root organization's, `teamGroups`, `contactDomains`, and
+`entitlementDurations`, `labels` and `vanityDomains` as wanted); run again, it fills in
+what the root organization supplies (the Google Cloud organization and billing account,
+the GitHub organization with its Bot Account, default branch and three App IDs, the
+Cloud Build authorization, the break-glass account, the bedrock pin and `root`), chooses
+the boot project's four-hex suffix, lists the organization in `placement.json`
+(`hostingOrganizations`) and renders, printing what the merge creates. The merge's `org
+apply` creates each listed organization without a folder yet as the root organization's
+creating identity (`<prefix>-create-gbl-tofu`, made by its bootstrap, which granted it
+Folder Creator at the organization node and Billing Account Administrator on the billing
+account): the folder at the organization node, the `terraform` folder, the boot
+project with its billing link and APIs, the boot identity with its roles on the folder
+and the break-glass account's Folder Admin on it, the state bucket, the boot identity's
+policy administration of the four shared secrets; then, against the new bucket, the first
+applies of the new organization's 0-bootstrap and 1-org, as the creating identity, with
+1-org's `project_ids` and `project_numbers` recorded in the new placement and the layers
+rendered again, and Billing Account User on the billing account for the new organization's
+boot and org identities, which 1-org needs the day it links a project it creates; then the
+public zone of the apps domain in the net project, made as the creating identity and
+recorded in the new placement as `appsZone`, which 2-net adopts with an import block (Cloud
+DNS asks whoever makes a zone for a name under a verified domain to own the domain in
+Google's webmaster verification; the root organization's apply verifies the creating
+identity itself, by its token as a TXT record at the domain's apex in the zone it keeps,
+and nobody is made an owner by hand); then the
+repository `<prefix>-infrastructure`, private in the GitHub
+organization, with the rendered foundation as its first push, which the new apply trigger
+runs on, every layer as its own identity; then the creating identity's grants off
+everything it made (Owner on each project, Folder Admin and Folder Editor on each folder,
+its roles on the organization's folder), a marker in the root organization's state bucket
+(`applied/created/<prefix>`), and the hand-off, a pull request in the root organization's
+repository from the branch `create/<prefix>` recording the folder in `placement.json`, the
+placement as created, and the label of the apps domain handed onward to the zone
+(`domains`), from which the root organization's apply writes the NS record set, branch and
+pull request both as the infrastructure app, whose declaration carries Pull requests for
+it. Every step looks before it makes, so a creation
+that stopped
+finishes on the next push, and a created organization is left alone. `org plan` says on
+the pull request what its merge creates. Left by hand, after the creation: the consent
+screens and the role groups as the hosting README says; its spend budget the creation made
+on its folder from its record (`monthlyBudget`), and the root organization's apply keeps it
+beside its own on the whole billing account, with the billing export's dataset in the root
+project (the root `README.md`, "Spend budgets and the billing export"). `org check` in any organization
+lists each grant on the organization's folder to a principal outside it (neither the
+break-glass account nor an identity in one of its projects), beside the leftover grants of
+a hand setup, in a root organization too. A domain is a bare lowercase name, none under another
+listed, and at most 46 characters, so the zone's name fits; the organization's own domain
+is one like any other, and the live domain check decides whether it is delegated whole or
+by a label; each may declare the records its zone carries (`records`, in the root README). The placement refuses the
+fields of the hosting model (`appsDomain`, `spanner.config`, `teamGroups`, `applications`
+and the rest), and a hosting organization's refuses `domains`. `org preflight` checks the
+three roles the bootstrap needs (below), and nothing for a hosting organization, which its
+root organization creates; `org new`, `org register`, `org place`, `org teardown`, `org
+serve`, `org hostnames` and `org retire` refuse a root organization, since there is
+nothing for them to act on; `org destroy` deletes the root project, and with it the
+secrets, the zones, the connection, the triggers, the identities and the state bucket,
+takes the creating identity's grants off the organization node and the billing account
+and its spend budget off the account, and deletes the folder, refused while a hosting organization is recorded as created
+(destroyed first, in its own repository, and its entry taken out), so a root organization
+is destroyed once no domain is delegated to it; and `domain check` reads its domains and
+labels (bedrock domain, above). Handing a label onward is two pull requests: the hosting
+organization's, which declares the name as a vanity domain and applies 2-net, whose
+`bedrock domain check` then prints the zone's four name servers; and the root
+organization's, which records them under the label, whose merge makes the record set. The
+rendered `README.md` carries both ("Handing a label onward"), with how a name resolves
+and the steps for delegating a domain to the organization.
+
+A root organization also keeps libraries: repositories that deploy nowhere, listed in its
+`placement.json` under `libraries`, each with its name (`repository`), whether it is public
+(`public`; private when left out), the checks a pull request into its default branch must
+pass (`checks`, each by the name a pull request shows it under: a job's name, or for a job
+of a reusable workflow the calling job's id, a slash and the called job's name) and, for a
+repository transferred into the organization, `adopted`. A library is the root
+organization's and not a hosting organization's because the root organization owns the
+GitHub organization, so a library two hosting organizations' applications share has one
+home. The engine keeps each by GitHub's API, with no terraform and no state: the
+repository, made when it is missing; its visibility; its merge settings; the ruleset
+`default branch` on its default branch, the root repository's own with the entry's checks
+in place of the plan, each reported by GitHub Actions; once for all of them, the
+organization's ruleset `version tags`, under which the release app alone creates, moves or
+deletes a tag named `v*` or `*/v*`; and the release app's credentials where a library's
+release workflow reads them, the organization secrets `RELEASE_PLEASE_APP_CLIENT_ID` and
+`RELEASE_PLEASE_APP_PEM`, which the library repositories alone read, and the organization
+variable `RELEASE_APP_LOGIN`. bedrock writes no file in a library: its workflows are its
+own. Since a name in `checks` is only as good as those workflows, every plan and check
+reads the checks GitHub Actions reported on the latest pull request into each library: a
+required check that pull request did not report is a finding, since every pull request
+will wait for it, and the checks it reported that the entry does not require are a note,
+since only a person can tell a helper job from a test nobody listed. A library taken off
+the list is never deleted: the plan says so, and the apply takes the release app's
+credentials from it. In a root organization with a cloud the release app's key is sealed
+into its organization secret from the version the placement pins in Secret Manager, and
+sealed again when the pin moves; the first library adds permissions to the infrastructure
+and release apps, which `org check` names until they are granted.
+
+A root organization without a cloud names no Google Cloud organization (`organizationId`)
+in its placement, and nothing of Google's exists for it: it holds libraries alone and is
+kept on GitHub. `org bootstrap <dir> --no-cloud` makes it, run by an owner of the GitHub
+organization with no Google credentials and no token: `--prefix` and
+`--github-organization`, `--library` and `--public-library` for the libraries it starts
+with, or a `placement.json` written by hand in the directory, which lists the libraries
+with their checks and names everything. It makes the apps the placement calls for in the
+browser, the infrastructure app always and the release app once a library is listed (no
+deployer app and no Bot Account: both serve Cloud Build); the repository, private; then,
+through the engine, the repository's settings and ruleset, its environment `bedrock`, each
+library, the version tags' ruleset and the release app's credentials; and last the first
+commit, `placement.json`, the README and the workflow `.github/workflows/bedrock.yml`. The
+workflow is to this organization what the two triggers are to the other kind: its plan job
+runs `org check` and `org plan` on a pull request and posts what the merge would change
+as the infrastructure app, its apply job runs `org apply` on a merge, one at a time, and
+a weekly job runs `org check --issue`, which keeps one issue in the repository with what
+it found, opened by the first finding and closed when there is none. A trigger's steps are
+the trigger's own and a workflow's are a file in the repository, so three things keep the
+app's key from a pull request: the plan runs on `pull_request_target`, whose steps are the
+default branch's, with the pull request's files read as data and never run; the bedrock
+that runs is the one the placement pins, checked as the triggers check it; and the key is
+a secret of the environment `bedrock`, which admits the default branch alone, so a
+workflow on any other branch is never handed it. The workflow file is owned: `org render`
+writes it and `org check` compares it. The keys are GitHub secrets, which GitHub never
+gives back: the run that makes an app seals its key and no later run holds it; a
+bootstrap run again acts with a key generated anew on the infrastructure app's settings
+page (`--infrastructure-app`, `--infrastructure-key`); `bedrock secret add
+github-infrastructure-key` or `github-release-key` proves a new key signs as the app and
+seals it; and `org secrets check`, with no argument there, says where each key is, who
+reads it and when it was last sealed. `org destroy` there deletes no project: it takes
+the release app's credentials, the version tags' ruleset, the infrastructure app's key
+and the plan the repository's ruleset requires off GitHub, and leaves every repository
+and the apps.
+
+A root organization is set up by the bootstrap, and a hosting organization under it by
+pull request. Each step opens with the place it happens; the rendered READMEs carry the
+commands (the root `README.md`, "Bootstrapped by one command" and "Creating a hosting
+organization"; a hosting organization's `README.md`, "Created by the root organization"):
+
+1. In the Google Cloud console, as a super administrator of the Workspace: the
+   break-glass account, a Google account with no person behind it, holding Organization
+   Administrator and Folder Creator at the organization node and Billing Account
+   Administrator on the billing account (granted by a billing administrator of the
+   Google Cloud organization the account belongs to, when that is another one).
+2. On GitHub, as an owner of the organization: the organization itself, its Bot Account
+   with a classic personal access token (`repo`, `read:user`, `read:org`), and Google's
+   Cloud Build GitHub App installed on the organization for all repositories as the Bot
+   Account (GitHub prerequisites, below).
+3. In a terminal, as the break-glass account: `gcloud auth application-default login`,
+   then `bedrock org bootstrap <dir> --prefix <prefix> --github-organization <login>
+   --monthly-budget <units>`, with the token in `GITHUB_TOKEN` or typed when asked, and
+   a browser for the three GitHub Apps. From here the root organization's two triggers
+   run on its repository, and the delegation of each domain is the customer's (`bedrock
+   domain check`).
+4. In the Billing console, as the break-glass account, once per billing account: the
+   billing export (standard usage cost, detailed usage cost and pricing), pointed at the
+   dataset `billing` in the root project, which the bootstrap made; `bedrock org check`
+   reports a finding until the tables land.
+5. In the Workspace Admin console: one team group per environment of the hosting
+   organization to come (`teamGroups`).
+6. In the root organization's repository: `bedrock org create <prefix>`, the record
+   filled in (its spend budget among the rest, `monthlyBudget`), `bedrock org create
+   <prefix>` again, and the pull request. The merge creates the organization, repository
+   and all, budget included, and opens the hand-off pull request, whose merge records
+   its folder.
+7. In each environment project's Google Cloud console: the consent screen, with the
+   audience Internal, before the first application's OAuth client is made there.
+8. In the Workspace Admin console, for each application before its first sign-in: its
+   role groups, `<group prefix><role>@<domain>`, each set so that its members can view
+   its member list, since the sign-in reads a person's groups with the person's own
+   token and Google leaves out a group whose member list the person may not view.
+9. After the first apply of 2-net: `bedrock domain check`.
+
+The organization's placement names its GitHub Bot Account (`githubBotAccount`):
+the login of a GitHub user that belongs to the GitHub organization as an owner and acts for
+no person, so nobody's leaving breaks what runs as it. Its classic personal access token
+(the `repo`, `read:user` and `read:org` scopes; Cloud Build accepts no fine-grained token)
+is what every Cloud Build connection authorizes with: the root organization's bootstrap
+reads it from `GITHUB_TOKEN` or asks for it without echo, checks that it is the account's
+and the account an owner, and stores it as the secret `<prefix>-root-gbl-github-token` in
+the root project, pins the version (`githubTokenVersion`) and records the secret's alias
+`current` (`cloudBuildTokenSecretVersion`) beside the Cloud Build GitHub App's installation
+(`cloudBuildInstallationId`); the apply keeps the alias at the pinned version, so the token
+rotates like a key before it expires (`bedrock secret add github-token`, `org secrets
+check`, `secret pin`, the pull request) and every connection switches at the apply; the
+creation copies both into a hosting organization's placement, whose 0-bootstrap grants its
+own projects' Cloud Build service agents the token's read, so every connection, the root
+project's, each boot project's for the layers' triggers and each environment's for the
+applications', is rendered from the one authorization. The field is required: a placement
+without it is refused.
+
+The placement's `approvingReviews` is the number of approving reviews a pull request needs
+before it merges, on every application repository's default branch and patch lines and on
+the infrastructure repository's default branch. Left out, it is one. 0 is allowed: a writer
+merges alone once the checks pass. A negative number is refused when the placement is read.
+While the count is above 0, an approval given before the last push is dismissed and one
+given after it is needed. 1-org renders the count into `github.tf`, never into
+`terraform.tfvars`, and `bedrock org check` compares that file with the render, so a
+developer with write on an application repository cannot lower it, and lowering it for the
+infrastructure repository takes a merge that met the count in force.
+
+The organization's two regions (`regions`, the primary first) and its Spanner
+configuration (`spanner.config`, the instance 2-spn creates for stg and prd) are chosen
+together: the configuration is a multi-region one whose two read-write regions, where the
+replicas that take writes are, are the two Cloud Run regions, so each region's service
+writes to a replica in its own region and either region can lose the other. bedrock knows
+these configurations: `nam10` (us-central1 and us-west3), `nam6` and `nam11` (us-central1
+and us-east1), and `nam7`, `nam12` and `nam16` (us-central1 and us-east4). A placement
+naming one whose read-write regions are not its two regions, or one bedrock does not know,
+is refused, and the refusal names the configurations that fit the regions. An
+environment's own instance (2-env's `spanner_instances` in its `terraform.tfvars`, by
+default the first environment's) is regional in the primary region, where the primary
+service runs, or on a multi-region configuration that fits the regions; 2-env's plan
+refuses any other. The placement's `outlierDetection` is the thresholds of the backend
+service 2-env renders for the pull-request environments, and those an application's first
+placement takes (The application's placement, above, names each field); its `cloudArmor`
+is the Cloud Armor policy an application's first placement starts with, which an
+environment turns on in the application's `terraform.tfvars` (the organization's own
+backends carry none).
+
+`org preflight` is the check before the bootstrap, which the bootstrap repeats before it
+touches anything. The bootstrap runs as the break-glass account (`breakGlassAccount` in
+the placement), before any identity exists, so that account must hold three roles above
+the organization's folder. Run with the account's Application Default Credentials (`gcloud
+auth application-default login`) in a root organization's repository, it asks Google which
+of the permissions the bootstrap needs the caller holds: on the organization
+`placement.json` names (Cloud Resource Manager's `testIamPermissions`) and on its billing
+account (Cloud Billing's). The roles are Organization Administrator at the organization
+node, for the creating identity's Folder Creator there and the bootstrap's own working
+grants, which it takes off at the end; Folder Creator at the organization node, for the
+organization's folder; and Billing Account Administrator on the billing account, for the
+root project's link and the creating identity's administration of the account, with which
+each hosting organization's identities get their billing grants. Everything else happens
+under the folder, where the bootstrap is the creator. It prints one line per role, `holds`
+or `missing` with the permissions tested, and exits 1 when a role is missing, saying who
+grants it where, or when it could not check (no credentials, or an API that refused). A
+hosting organization has no preflight: its root organization creates it.
+
+`org secrets check` runs in the root organization's repository, which holds the GitHub
+Apps' keys: given a secret's name and a version's number, it reads the version with the
+run's Google credentials, signs a token with it as the app `placement.json` records and
+asks GitHub for the app itself, which GitHub answers for the app's own key alone. It prints
+the app GitHub answered with, the version the alias `current` is pinned to and the pin to
+make; a version that is not the app's key, or an App ID that is another app's, is refused
+with GitHub's answer, and nothing moves either way. For `github-token`, the Bot Account's
+token, it reads the version and asks GitHub whose it is: a personal access token (one a
+GitHub App issued is refused by its prefix), the Bot Account's (`githubBotAccount`), an
+owner of the GitHub organization. A hosting organization's repository refuses it, naming
+the root organization.
+
+`org render` rewrites the owned files from the placement, seeds the absent ones, and says
+what the triggers still lack in the placement; `org check` compares the owned files and
+exits 1 on drift. It also refuses, with the file and the reason, a `.tf` file in a layer
+that no render produces (one added by hand would run as the layer's identity) and an
+override file (`override.tf`, `*_override.tf`, which OpenTofu would merge into the layer);
+a person's inputs (`terraform.tfvars`, the lock file, the `*.auto.tfvars` bedrock writes)
+pass. Both triggers run `org check` before their command, so nothing a pull request adds to
+a layer by hand runs there. Before anything else, `org check` reports each
+domain 2-net registers (`registrations` in `2-net/terraform.tfvars`) as Cloud Domains
+holds it in the network project: first every registration whose registrant mailbox is not
+verified yet, naming the mailbox and the date the registrar's verification mail must be
+followed by (fifteen days after the registration, or the domain is suspended), then each
+registration's state and expiry date, an expiry within thirty days with the billing
+account to look at (renewal is automatic while it is active), and any other issue the
+registrar raises. It reads the registrations with the run's Google credentials
+(`roles/domains.viewer` on the network project); without any, or when Cloud Domains
+cannot be reached, it says so and never fails the check. `org check` then lists each grant
+a hand apply left still held, with its place: Owner held by a person (a `user:`
+member) on a project the placement records, Folder Admin or Folder Editor held by a person
+on a folder under the organization's folder, which Google gives whoever creates a project or
+a folder, and every role the break-glass account holds on the organization's folder or a
+project but the one it keeps, Folder Admin on the organization's folder. All of them are
+temporary by design and removed by hand once the apply trigger applies the layers
+(`0-bootstrap/README.md`, "Recovery, by hand"). The listing reads the
+projects' and folders' IAM policies with the run's Google credentials (`gcloud auth
+application-default login`); without any it says so, and it never fails the check.
+While the placement declares more databases on a Spanner instance than it holds (the
+count `org register` refuses on, for the shared instance and each environment's own), or
+the applications' databases take all of the integration environment's instance and leave
+no pull-request stack room for a database of its own, it says so without failing the
+check: an application `bedrock destroy` took down still stands in the placement and
+counts until `org retire <app>` lets it go, and the check gates every plan and apply.
+While an application is out of service in every environment (`outOfService`), the check
+says that `org retire <app>` is the step that lets its entry go once its stacks are
+destroyed, without failing: the entry stays until then, since 1-org never deletes a
+repository.
+Last it lists each API key in an environment project that carries no API restriction (the
+list of APIs that accept the key; a key with none is accepted by every API in the project
+that takes an API key), with the same credentials and on the same terms: Firebase's browser
+key, which initializing Identity Platform creates in each environment project, when
+Firebase has made it again since `bedrock org apply` restricted it, or any other key
+(`2-env/README.md`, "Identity Platform").
+
+The two Cloud Build triggers 0-bootstrap renders in the boot project plan and apply the
+layers. Their steps live in the trigger, which a pull request cannot change: the first
+reads the bedrock pin off `placement.json` in the checkout at run time and puts that
+bedrock in place (a release's linux/amd64 binary downloaded and verified against
+`bedrockSha256`; a commit pin, once git finds a branch of `impulseframework/bedrock` that
+reaches it, built with `go install` in the Go image, where Go's checksum database
+verifies it; the
+steps follow the pin's kind at render time, so a release pin renders no build step and a
+production organization's runs never pull the Go image), the
+next runs `bedrock org check`, which refuses a `.tf` file no
+render produces, and the last runs `bedrock org plan` or `bedrock org apply`. A change to
+the steps is rendered by a new bedrock, applied by a run on the old steps, and the next run
+is the first on the new ones: the steps lag one apply behind the repository, and since the
+pin is read at run time a pull request that moves it already runs the new bedrock under the
+old steps, so the one rule bedrock keeps is that a release works under the previous
+release's steps. Both triggers pass `_BEDROCK_STEPS`, the shape of their steps and the
+kind of pin they were rendered for, and the two commands say in the run's log when they
+run under another shape. The one move the lag does not cover is a pin that changes kind:
+0-bootstrap is applied by hand, never by a trigger, and the release shape's fetch step
+refuses a commit pin, since no step follows to build it, so `bedrock upgrade` applies
+0-bootstrap itself when it moves the pin across kinds, after `yes` typed back, before the
+pull request is opened ("bedrock upgrade"). No key exists
+anywhere: each trigger runs as a runner identity in the boot project (`<prefix>-org-gbl-
+planner`, `<prefix>-org-gbl-applier`) that holds no layer's roles and impersonates the
+layer identities of its kind (`roles/iam.serviceAccountTokenCreator`, granted by
+0-bootstrap on the two identities it owns and by 1-org on the ones it creates), so a plan
+runs with a plan identity's reads and an apply with the apply identity's writes.
+
+`org plan` is the plan trigger's command, on a pull request into the default branch. It
+reads the build through the Cloud Build API (`BUILD_ID`, `PROJECT_ID` and `LOCATION`, which
+the step passes): the pull request, its base and its commit; reads the files the pull
+request changes against its base through the repository's connection; and plans every
+layer whose `.tf`, `.tfvars` or lock file changed, and every layer when
+`.opentofu-version` changed, side by side, each in its own directory as the layer's plan
+identity (2-env once per environment, with its own state prefix), without the state lock. A
+layer with no state yet is not planned: it has never applied, its plan identity (which
+writes nothing) finds no state object under its prefix, and the run passes as planned after
+its first apply, which the merge's apply trigger makes as the apply identity.
+Once every plan has finished each gets its verdict: its `Plan:` line when it succeeded;
+passed, as planned after the layers before it apply, when it failed only because it reads
+outputs their plans create (an unsupported attribute an earlier plan shows as a new
+output), since the merge applies those first; failed otherwise. One comment per layer goes
+on the pull request as the deployer GitHub App, found by its first line and updated on a
+later push (`internal/layers`, whose tests run the verdict over every outcome); the plans
+stay in the run's log while the placement records no deployer app. It exits 1 when any plan
+failed.
+
+`org apply` is the apply trigger's command, on a push to the default branch. Without
+`_LAYER` it applies every layer changed since its last successful apply: a marker object
+per layer in the state bucket (`applied/<layer>`, `applied/2-env/<env>`) holds the commit
+of that apply, the files changed between it and the push are read through the connection,
+and a layer with no marker is applied. The layers apply in layer order (0-bootstrap, 1-org,
+2-shr and 2-spn, then 2-env for tst, stg and prd, then 2-net: 2-net's URL map names tst's
+pull-request backend, which 2-env tst makes), one at a time, each as its apply
+identity: every run's `tofu init` at its state prefix first, then, layer by layer, a plan,
+the apply of that plan and the marker, stopping at the first failure. The inits come first
+because the gcs backend writes a state the first time anything opens it: a layer that has
+never applied gets its empty state from its own init, and a later layer's read of it
+(`terraform_remote_state`) is a read; without the pass that read would be the write, at the
+other layer's prefix, which the reading layer's identity may not do (2-env tst reads 2-net
+and stg before either applies in a new organization). After each apply of 2-env it restricts Firebase's
+browser key ("Browser key (auto created by Firebase)") in the environment project to the
+two sign-in APIs, identitytoolkit.googleapis.com and securetoken.googleapis.com, as the
+layer identity: no layer can declare the key, since OpenTofu adopts a key only by the id
+Firebase assigns it and the Google provider finds no key by its name. A person applies one
+layer again with no change to it by starting the apply trigger with `_LAYER`, and for
+2-env `_ENVIRONMENT` (`gcloud builds triggers run <prefix>-boot-<region code>-layers-apply
+--region=<region> --project=<boot project> --branch=<default branch>
+--substitutions=_LAYER=2-env,_ENVIRONMENT=tst`; `0-bootstrap/README.md`, "The Cloud
+Build triggers"). The placement names what the runs work with: every project under
+`projects` (`boot` from the seed, the six others from 1-org's `project_ids`), the
+environment projects' numbers under `projectNumbers` (their Cloud Build service agents'
+read of the token), the Cloud Build GitHub authorization (`cloudBuildInstallationId`,
+`cloudBuildTokenSecretVersion`), the infrastructure GitHub App whose token 1-org's GitHub
+provider takes (`githubInfrastructureAppId`), the deployer app the plans are posted as
+(`githubDeployerAppId`), the root organization whose root project holds the apps' keys
+(`root`: its prefix and that project, where every reader names each secret's alias
+`current`) and the bedrock pin;
+`0-bootstrap/README.md` has the person's steps. A run of the triggers that plans or
+applies a layer whose project the placement does not record yet (REPLACEME) stops and says
+which ids to record; one that plans or applies 1-org without the infrastructure app
+recorded stops and says what records it. The first applies of 0-bootstrap and 1-org are
+the creation's, as the root organization's creating identity, before the identities
+exist; recovery is by hand, for 2-env
+by a member of the environment's team group under the layer administrator entitlement (the
+environment layer identity's roles on the environment project) and the layer state
+entitlement (its slot in the state bucket, on the boot project), running the layer as
+themselves, for the other layers as the break-glass account; an apply by hand leaves
+the layer's marker as it was, so the next push applies the layer again, with an empty plan
+when the hand apply was complete.
+
+`org teardown` takes the organization's applications out of service and keeps the
+foundation, in two runs by a person with their own sign-in. The first sets `teardown` in
+`placement.json`, renders 2-net with no host and `serving = false`
+(`2-net/applications.auto.tfvars`), writes the journal line and leaves the working tree for
+a pull request: its merge has the apply trigger take the hosts and the load balancer's
+listeners (the forwarding rules, the proxies, the URL maps and the sink) out of 2-net, while
+the address, the certificate and its DNS authorization stay, so the IP never changes and no
+certificate is issued again; the hosts go first because a backend service cannot be deleted
+while the URL map names it. The second run, once 2-net's state routes nothing, tears every
+registered application down to what it keeps the way `bedrock teardown --all` does (each
+environment in promotion order, then the pull-request stacks, the summaries shown before
+the prefix is typed back) when the stacks live under `3-app/`, or, when each application
+carries its own stack, reads the state bucket and the records, says which environments
+still stand and the command to run from each checkout (or the operations workflow's
+`teardown` action in each, for a person who is not an organization owner), and writes the
+journal line once none does. The inverse is the same loop the other way: each stack applied again with the
+operations workflow's `apply` action per environment, `bedrock rerun <env> <release>` per
+environment, then `bedrock org serve`, which reads the state bucket and the records,
+refuses while a stack is still torn down, removes `teardown` from `placement.json`,
+renders 2-net with its listeners and every host back and leaves the pull request
+("bedrock teardown and bedrock destroy", above).
+
+`org teardown <app>` takes one application out of service, the others untouched: in the
+environments named or in every environment, it records them under `outOfService` in
+`placement.json`, renders 2-net without that application's hostnames there while the
+listeners and every other application's hosts stay, writes the journal line and leaves the
+working tree for a pull request; once the merge's apply has 2-net routing nothing to the
+application, `bedrock teardown` or `bedrock destroy` runs from its checkout. `org serve
+<app> [<env>...]` is its way back after the `apply` action and the rerun: it refuses an
+environment whose stack is still torn down (no release run since its teardown), removes
+the entry, renders the hostnames back and leaves the pull request the same way.
+`org hostnames <app>` records the hostnames an application's stacks serve now, after the
+application changed a site's label in its placement and its stacks were applied again: it
+reads the `net_hosts` output of the stack's state in every environment (every site's
+hostnames, their `-next` twins and the vanity hostnames, each with the backend service that
+serves it), records them as they are (`hostnames` in `placement.json`), refuses one another
+application serves or one that is neither one label under the apps domain nor a declared
+vanity domain (`vanityDomains`) or one label under it, renders 2-net with the host rules
+moved, writes the journal line and leaves the working tree for a pull request; its merge
+has the apply trigger move the rules, and until then the old hostnames answer and the new
+ones do not.
+An application still in its registration is refused: the completion records its
+hostnames the first time. `org check` holds the record on every pull request, so a label
+two applications declare is refused where it is recorded, never applied.
+
+`org retire <app>` takes an application that is out of service everywhere and whose stacks
+are destroyed out of the organization, by a person at their own computer with their own
+sign-in (`GITHUB_TOKEN`, or gh's token, for the archive and for 1-org's GitHub provider: an
+owner of the GitHub organization, or an admin of the repository). The repository outlives
+the application: the run archives it on GitHub (read-only, with its code, pull requests and
+releases; a person unarchives it in the repository's settings) and takes it, with the
+settings 1-org declared on it (its rulesets, its operations environments and their
+deployment policies), out of 1-org's state, since an archived repository refuses every
+change and the layer never deletes a repository (`prevent_destroy`); they stay on GitHub as
+they were. Then the entry leaves `placement.json` (`applications`, `registration`,
+`outOfService`, `hostnames`), the foundation renders without the application (and an
+application whose stack lived under `3-app/` loses that directory), the journal gets its
+line, and the working tree is left for a pull request whose apply deletes the application's
+cloud side: its identities and their grants, its registry entries, its secret containers'
+grants. It refuses an application still in service somewhere (`org teardown <app>` first,
+with its pull request applied), one 2-net's state still routes, and one whose stack still
+stands in an environment (`bedrock destroy --all` from its checkout, which takes the final
+backups of its databases and the data down). The code typed back gates the run (`--yes`
+stands in for it). A retired application is registered again as a new one.
+
+`org destroy` deletes every project of the organization and takes its spend budget off the
+billing account, by a person at their own computer with their own sign-in (the break-glass account, holding Owner on the organization's folder
+for the run; `GITHUB_TOKEN`, or gh's token, for
+1-org's GitHub provider: the infrastructure GitHub App's installation token, or an
+organization owner's). It says what goes, project by project, and asks for the prefix typed
+back before anything runs (`--yes` stands in for it where there is no terminal). It destroys
+1-org, its GitHub repositories taken out of the state first so that they stay with their
+code, pull requests and releases (the rulesets, the operations environments, the runner group
+and the organization variable go), then 0-bootstrap on a local copy of its state, since the
+state bucket goes with the boot project; in each an apply with `destroy=true` records the
+projects' deletion policy, that no API is disabled first (one a resource outside the layer's
+state uses would refuse) and lifts the folders' protection, and the destroy is tried
+again after a pause while it fails (a folder refuses for a while after its last project's
+deletion). Google keeps a deleted project for 30 days; its id never returns. The Spanner
+instance and every backup on it (the release backups, the schedules' and the final backups
+`bedrock destroy` took) go with the Spanner project and come back with it in those days,
+and are gone after. A layer whose state holds nothing is skipped. When 2-net registers domains the network project is kept,
+with its folder and the organization's, since a registration cannot move to another project,
+and 2-net is destroyed inside it first (on a copy rendered without the zones' `prevent_destroy`,
+the registrations out of its state), so the project holds the registrations and nothing else
+and the domains stop resolving until a zone stands elsewhere; the registrations are a person's
+to transfer out or give up. It refuses a layer rendered by an earlier bedrock, which declares no `destroy`
+variable, and ends with a line in `JOURNAL.md` and what starting over takes (the rendered
+`0-bootstrap/README.md`, "Destroying the organization"). In a root organization, which has
+no terraform, it deletes the root project (and with it the secrets, the zones, the
+connection, the triggers, the identities and the state bucket), takes the creating
+identity's grants off the organization node and the billing account, and deletes the
+folder, refused while a hosting organization is recorded as created: that one is destroyed
+first, in its own repository, and its entry taken out. The repository stays on GitHub with
+its code and pull requests, and the apps stay with their installations, so a bootstrap
+again brings them as brought apps, with their keys, or makes new ones; every domain
+delegated to the organization then points at servers that answer nothing, so it is
+destroyed once no domain is.
+
+`org register <code> <checkout>` adds an application: its code, the organization's naming
+decision under the one rule (one to six lowercase letters and digits starting with a
+letter, the segment every resource name carries), and its repository's name, read from
+the checkout's `go.mod` module path (a module under `github.com/<organization>` is its
+repository; a vanity import path, another organization's module or a module inside a
+repository is refused), go into `placement.json`'s applications, each layer's values are
+rendered from them (1-org's repositories, created by name and keyed by code, its
+`public-invokers.auto.tfvars` and its `applied_applications`, 2-env's list, 2-shr's
+repositories and its pushers and pullers, 2-spn's database admins, 2-net's hostnames with
+the wildcard for pull-request
+environments), and the pull requests the registration takes through the triggers are
+printed, since one pass in layer order does not follow the order the grants need: first
+1-org's repository with 2-env's identities, then 2-env again by starting the apply trigger
+by hand (each environment grants the next environment's deploy identity read on its records
+bucket, from state the first pass did not have), then 1-org's public-invoker grants with
+2-shr and 2-spn (grants on identities that exist now), then the application's own stack per
+environment, then 2-net with 1-org's required check (the stack's check trigger, which the
+first apply made; until then the application's pull requests merge on the CI jobs alone). How
+the stack's first apply starts is printed when `org register <app> --next` moves the
+registration to its grants, read from GitHub's workflow list for the repository and from
+whether anything is pushed to it yet: the operations workflow's `apply` action when GitHub
+lists the workflow; the same action once the push that merges the rendered stack lists it,
+when the repository has commits and GitHub lists no workflow yet (the workflow runs its
+`registered` job on the push that adds or changes its file, which lists it; the push that
+creates a repository does not always list the files it carries on its own); and while the
+repository is empty, that the application's first push to the default branch comes first,
+which lists the workflow the same way; a
+repository that cannot be read moves nothing. The output names the
+application by its repository and keeps the code to the commands. The
+placement records how far the registration has gone
+(`registration`: the application's step, `identities` while its repository and identities
+are declared and nothing else is rendered for it yet, `grants` while the grants on its
+identities are declared too and its hostnames are not, and no entry once complete), the
+layers render what that step may apply, and `org register <app> --next` moves to the next
+step: to `grants` once 2-env's state in every environment holds the application's
+identities, to complete once its stack has a state in every environment, each read from
+the state bucket and refused before. The completion records the hostnames the stack serves
+in every environment, read from its state's `net_hosts` output, under the placement's
+`hostnames` (by code and environment, each hostname with the backend service that serves
+it, every site's, their `-next` twins and the vanity hostnames): 2-net's host rules render
+from the record as it is, so the organization never invents a hostname; the application
+declares each site's label and vanity hostnames in its own placement (`hostnames`, "The
+application's placement"), the code by default, and a hostname another application serves,
+or one under no domain the placement declares (`appsDomain`, `vanityDomains`), refuses the
+step. An
+application registered before hostnames were recorded has no entry and renders by the
+default rule, its code under the apps domain. So every pull request of the sequence carries every
+rendered file, and `org check` passes on each. Register refuses the first application
+while the placement does not record the Cloud Build GitHub authorization, since the
+applications' triggers exist once 2-env holds the connection. It refuses an application
+a Spanner instance has no room for: the registered applications, one database each in
+every environment on the instance, counted against the databases the instance holds at
+its size (ten for every hundred processing units below a node, Google's rule). The
+instances are the shared one, with stg's and prd's databases by default
+(`2-spn/terraform.tfvars`, `processing_units`), and each environment's own, the
+integration environment's by default (`2-env/terraform.tfvars`, `spanner_instances`,
+which places each environment and sizes an own instance; 100 when unset). The sentence
+names the setting that grows the instance and `bedrock destroy` of an application no
+longer needed, which frees its databases; a refusal changes nothing. On the instance that
+holds the integration environment's databases every pull request's stack holds a database
+of its own too (unless it shares the environment's, `/gcbrun shared-db`), so the
+registration says what the applications take there and what is left for pull-request
+stacks across every application. The stacks' plans count again, against the instance
+itself, before a database is created (`deploy plan-environments`, `deploy pr-stack`).
+
+`org register` also makes the application's first `placement.json` (The application's
+placement, above), every field from the organization's placement and none asked of the
+person, pinned to the bedrock running it: a release with its linux/amd64 binary's
+checksum, read from the release's `checksums.txt` as `bedrock upgrade` reads it, or a
+commit installed with `go install`; a build from a checkout or a `(devel)` build is
+nobody's pin, and register refuses to run on one. The second argument is the
+application's checkout (`bedrock org register quill ../quill`, typically a sibling of the
+infrastructure repository's checkout), whose `go.mod` names the repository: register
+writes the file there as `infrastructure/placement.json`, where `bedrock render` reads
+it, and refuses when one is there already, since a placement is never overwritten.
+Register refuses, changing nothing, while the organization's
+placement lacks the state bucket (`stateBucket`) or an environment project's id or number
+(`projects`, `projectNumbers`), which the application's placement names.
+
+The application's GitHub repository is configured by `1-org`, with the GitHub provider,
+never by a bedrock command: the repository itself (private; squash the only merge method,
+the squashed commit titled from the pull request; the head branch deleted on merge; never
+destroyed by the layer), its three rulesets (a `v*` or `*/v*` tag created, moved or
+deleted by the release app alone, with no bypass for the repository's admins, which is
+what makes the pipeline's tag check sound; the default branch and the patch lines
+changed by pull request alone, with the branch up to date with its base, the application
+stack's check trigger in the first environment (reported by Google's Cloud Build GitHub
+App under `<trigger name> (<project id>)`, so no Actions job can imitate it) and the six
+fixed jobs of the application's CI
+workflow (`title`, `go`, `web`, `image`, `secrets`, `migrations`, read from impulse's `ci`
+package; `web` gates the per-workspace browser jobs, so a failed browser build blocks the
+merge) passing on its latest commit, never the pull-request build (the developer's preview
+on `/gcbrun`), `approvingReviews` approving reviews (one unless the placement says
+otherwise), squash the only merge and, when the placement names an infrastructure team,
+that team's approval of a change to the workflow and Cloud Build files), and the GitHub
+Environments the operations workflow runs in (every environment, production's for the
+rerun of a release and the rollback, each deploying from the default branch alone). The
+layer also adopts the infrastructure repository on its first apply (it exists before
+0-bootstrap; an import block brings it into the state), sets its merge settings as it does
+the applications', and rules its default branch: changed by pull request alone, the same
+reviews, squash the only merge, and the plan trigger's check
+(`<prefix>-boot-<region code>-layers-plan (<boot project id>)`) passing on the latest
+commit with the branch up to date with its base. The apply
+trigger's run applies it with the infrastructure GitHub App's installation token, minted in
+the run; a person applying by hand uses their own sign-in,
+`GITHUB_TOKEN` from `gh auth token`, after reading the plan; the placement names the release app by its
+App ID (`githubReleaseAppId`, from the app's settings page: a private app cannot be read
+by its slug) and also records the slug (`githubReleaseAppSlug`, the name in the app's
+address, `github.com/apps/<slug>`), which each application's placement names as the
+author of its releases, the default branch (`githubDefaultBranch`), the team
+(`githubInfrastructureTeam`, empty for none) and the larger runner the applications' CI
+runs the jobs their `//impulse:ci` lines choose on, the two test legs and the image build
+without a line (`ciLargeRunner`, a runner's name, a runner label or a runner group set as
+the organization's Actions variable `CI_LARGE_RUNNER`, which takes the infrastructure
+app's Variables organization permission; empty for the standard runner). With
+`ciLargeRunnerSize` (`8-core`, say) 1-org creates that runner itself: a GitHub-hosted
+runner of the name and size on GitHub's current Ubuntu, in a runner group of the
+application repositories alone, capped at `ciLargeRunnerMaximum` running at once (0 for
+GitHub's default), through the app's Self-hosted runners organization permission; GitHub
+bills it per minute by its size on the Team and Enterprise plans. The runner's group
+admits public repositories when the placement lists a public library (a group that did not
+would leave that library's jobs waiting for a runner), and is closed to them otherwise. A repository that existed before the layer
+declared it is adopted on the first apply: `bedrock org register` records `adopted` on the
+application's entry when GitHub has the repository, and an import block in 1-org adopts it
+into the state; a ruleset or Environment made on it by hand is imported first, and
+`1-org/README.md` lists the commands.
+bedrock's commands use the GitHub API only to act: `restore` dispatches a workflow,
+`patch` creates branches and pull requests, the pipeline talks back on a pull request. OpenTofu reads `*.auto.tfvars` after `terraform.tfvars`, which keeps what a person
+decides. Once `placement.json` records the environment projects' ids and numbers
+(`projects` and `projectNumbers`, from 1-org's `project_ids` and `project_numbers`
+outputs), `org render` prints the `projects` block an application's placement records
+for the operations workflow, which starts a restore or a rerun of an environment from
+GitHub (`bedrock restore`, `bedrock rerun`), and `org register` writes it into a new
+application's first placement; production's entry serves the rerun alone.
+
+## GitHub prerequisites
+
+Every repository the layers make is private, so the GitHub organization that holds the
+infrastructure repository and the applications' repositories must offer the four features
+below on private repositories. Which of them a private repository gets depends on the
+organization's GitHub plan, so its plan must include all four.
+
+- **Rulesets that GitHub enforces on private repositories.** `1-org` gives each
+  application's repository three rulesets, and the infrastructure repository's default
+  branch one. The branch rulesets require `approvingReviews` approving reviews (one
+  unless the placement says otherwise) and the checks passing on the latest commit. The
+  tag ruleset lets the release app alone create, move or delete a release tag, which is
+  what makes the pipeline's tag check sound; a ruleset GitHub shows but does not enforce
+  leaves the check unsound.
+- **Environments on private repositories.** The operations workflow runs a restore, a
+  rerun or a rollback in a GitHub Environment per environment, each deploying from the
+  default branch alone. No Environment requires reviewers: that rule needs GitHub
+  Enterprise on a private repository, and the approval is Cloud Build's instead.
+- **One GitHub organization per root organization.** The three GitHub Apps are
+  installed on the whole GitHub organization, and their private keys live in Secret
+  Manager in the root organization's root project, one secret per app for every bedrock
+  organization in the Google Cloud organization, read through an alias and rotated in one
+  place; no key is a GitHub secret, and no repository secret carries one.
+- **GitHub Apps owned by the organization.** The three apps are the root organization's
+  bootstrap's, made in the browser from bedrock's declaration of each, or brought and held
+  to it: the release app (Contents, Issues and Pull requests, read and write), the
+  deployer app (Checks, Deployments, Issues and Pull requests, read and write) and the
+  infrastructure app (`0-bootstrap/README.md`: repository Actions, Administration,
+  Contents, Metadata and Pull requests, organization Administration, Variables and
+  Self-hosted runners; Contents read and write is what the creation pushes a new
+  organization's repository with, and Pull requests what it opens the hand-off pull
+  request in the root organization's repository with), each installed on all
+  repositories; and Google's Cloud Build GitHub App,
+  installed on the organization for all repositories as the Bot Account before the
+  bootstrap, which finds the installation through the infrastructure app.
+
+And one account: the Bot Account (`githubBotAccount`, under bedrock org above), a
+GitHub user that is an owner of the organization and acts for no person, whose classic
+personal access token the bootstrap stores in the root project; every Cloud Build
+connection, the root project's, each hosting organization's boot project's for the layers'
+triggers and each environment's for the applications', authorizes with it.
+
+## The application's pipeline
+
+The pipeline a render writes runs on a release tag in every environment, in promotion
+order, the later ones by a person's approval where the placement says so, and on a pull
+request's `/gcbrun` comment in the first environment: the preview. Beside it the stack
+renders three triggers of its own in the first environment, which hold their steps in the
+trigger's text and run as the apply identity, so what applies Terraform for a pull request
+never runs from a file the pull request edits: the check trigger, on every push to a pull
+request (`bedrock check`, the stack planned and tested for every environment, the pull
+request's own stack applied again while a preview stands; the required check), the
+pr-stack trigger, on the same `/gcbrun` comment as the preview (the pull request's stack
+planned, guarded and applied, or destroyed on `/gcbrun down`, and what it applied written
+to the records bucket for the preview build), and the hourly sweep. A
+pull-request build stands its own environment up under `<app>-pr<N>` on the pull-request
+hostname, with its own database (or the environment's, on `/gcbrun shared-db`), and tears
+it down on `/gcbrun down` or by the hourly sweep once the pull request closes. The build
+talks back on the pull request: a deployment the sidebar shows, a comment with the release
+and the database mode; the stack's triggers talk back the same way with the plans'
+summaries and the guard's refusals. The pull-request build is the developer's
+preview, not a check the merge waits for: a pull request merges on the check trigger and the
+CI jobs (`1-org/github.tf` names them), so release-please's release pull request merges
+with no build, and a release's first build is the first environment's tag build. The
+trigger-held steps change with the stack's apply, one release behind the repository, and
+read the bedrock pin from the checkout's placement when they run, so a bedrock release
+works under the previous release's steps and a command says when it runs under older ones.
+
+The guards run before anything deploys: the migration guard (the sequence, one up file
+each, no gaps; a committed schema migration never changes once the repository has a
+release tag, before the first release it may; a seed file may; a consolidation is
+accepted by its shape and held until every environment's database is at or above its
+index; against the default branch for a pull request; a refusal names `bedrock migration
+renumber` as the fix), and the
+plan guard (a pull-request stack may only create and change what carries its own name,
+`<app>-pr<N>`, is a grant to its own accounts or bounded to its resources, or is created
+under names unknown until the apply, which touches nothing that exists), which holds because
+it runs in the pr-stack trigger, from steps the pull request cannot edit.
+
+A run that replaces the database (a restore run) puts the application into maintenance
+first: the release's own image starts as a revision with `APP_MAINTENANCE` set, which
+the framework's `maintenance` package turns into a maintenance page and 503 answers
+with no database opened; the pipeline probes it for the marker before any traffic moves,
+then the task queue is paused, the serving build's job executions are canceled, the old
+revision's requests finish, and only then is the database replaced. The queue resumes
+once the release's revision serves. A breaking release (one whose outlets no longer
+answer the release the environment runs, read from the release file beside the
+generated router) does the same inside the environment's maintenance window: the run
+builds its image and makes its jobs, waits inside the build for the window
+(`placement.json`, `maintenance`), then goes into maintenance, migrates, deploys and
+moves traffic; the whole-build timeout is Cloud Build's 24-hour ceiling for that wait,
+and every step keeps its own timeout (Maintenance windows, above).
+
+## Development
+
+The tool is the Go module at this repository's root, with `main.go` beside this file:
+`go build -o bedrock .` there. It requires impulse (`github.com/impulseframework/impulse`)
+by version, like any other module, never by a path to the working tree: `go install`
+refuses a module whose `go.mod` has a replace directive, and a commit pin is installed
+that way. A change to both commits and pushes impulse first, then moves bedrock to it with
+`GOWORK=off go get github.com/impulseframework/impulse@<commit>` at the repository root.
+To try the two together before pushing, name an untracked workspace file with `GOWORK`,
+outside the repository root. Its packages: `internal/derive` reads the application into
+a model, `internal/render` writes the stack from templates (goldens under
+`internal/render/testdata/<application>`), `internal/check` compares, `internal/release` is the tool's own distribution (its
+release assets, their checksums, the verified fetch), `internal/deploy`
+holds the pipeline's steps over the Cloud Build, Cloud Run, Artifact Registry and Cloud
+Storage APIs, `internal/org` renders the foundation, `internal/secret`, `internal/patch`,
+and `internal/migration` hold the operations, and `internal/cli` is the
+command surface. Every rendered file carries a comment naming what it comes from; a
+change to a template is a change to the goldens, and the render test reads every golden
+file, comments included.

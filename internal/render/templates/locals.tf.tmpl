@@ -1,0 +1,621 @@
+locals {
+  # The application code, fixed for this stack. It is the key 2-env registered
+  # the identities and the repository link under, and the segment every name
+  # below carries.
+  app = "{{.App}}"
+{{- if .MultiSite}}
+  # The sites, in the generators' order, and what the stack knows of each: its hostname
+  # label under the apps domain (the one placement.json declares for the site under
+  # hostnames, <code>-<site> by default), the binary its service runs (the image builds
+  # one per site and starts the first by default; each service names its own as the
+  # container's arguments, cloud-run.tf), whether its main package speaks
+  # h2c ({{.ServerPackage}}), and the variables its service alone carries (the bundle the
+  # image holds for the site). The code names what the sites share; the site's name is
+  # the second segment of every per-site resource name.
+  sites = [{{range $i, $s := .Sites}}{{if $i}}, {{end}}"{{$s.Name}}"{{end}}]
+  site_settings = {
+{{- range .Sites}}
+    {{.Name}} = {
+      label  = "{{.Label}}"
+      binary = "{{.Binary}}"
+      h2c    = {{.H2C}}
+      env    = {{if .Bundle}}{ {{.Bundle.Name}} = "{{.BundlePath}}" }{{else}}{}{{end}}
+    }
+{{- end}}
+  }
+  # The first site's label: what names the stack's things that take one hostname (the
+  # build argument hostname, the pipeline's _HOSTNAME).
+  label = local.site_settings[local.sites[0]].label
+{{- else}}
+  # The site's hostname label under the apps domain, the first label of every hostname
+  # and of a pull-request stack's service: the one placement.json declares for the site
+  # (hostnames), the code by default. The code names every resource; the label names
+  # the site on the network.
+  label = "{{.Label}}"
+{{- end}}
+
+  org = data.terraform_remote_state.org.outputs
+  env = data.terraform_remote_state.env.outputs
+
+  prefix     = local.env.prefix
+  project_id = local.env.project_id
+  name       = "${local.prefix}-${var.environment}"
+
+  is_prd = var.environment == "{{.Production}}"
+
+  # The promotion order, and for each environment the plan identity a pull-request
+  # build plans that environment's stack as (env=identity), read from its 2-env
+  # state; empty until 2-env there makes it. The triggers pass both to every build.
+  environments    = {{.EnvList}}
+  plan_identities = join(",", [for env in local.environments : "${env}=${try(data.terraform_remote_state.envs[env].outputs.applications[local.app].plan_identity_email, "")}"])
+  # Each environment's deployment-records bucket (_RECORDS_BUCKETS): a pull-request
+  # build against a patch line reads each environment's live record as that
+  # environment's plan identity, to say where the patch release will be refused.
+  records_buckets = join(",", [for env in local.environments : "${env}=${try(data.terraform_remote_state.envs[env].outputs.records_bucket, "")}"])
+
+  # The application's database in every other environment, env=resource name, under the
+  # first generation's name (a restore puts a database into the next generation, -2, -3,
+  # which the reader probes). The migration guard reads each environment's migration
+  # version from it on a consolidation pull request, through the migrations_reader
+  # database role the application's first migration creates, which 2-env (an
+  # environment's own instance) and 2-spn (the shared instance) grant {{.Integration}}'s
+  # deploy identity on the application's databases; the tag build's migrate step reads
+  # its own environment's the same way, as database admin.
+  migration_databases = join(",", [for env in local.environments : "${env}=projects/${try(data.terraform_remote_state.envs[env].outputs.spanner_instance.project, "")}/instances/${try(data.terraform_remote_state.envs[env].outputs.spanner_instance.name, "")}/databases/${local.prefix}-${env}-gbl-${local.app}-db" if env != var.environment])
+
+  # A pull-request stack: this code in {{.Integration}} with var.pull_request set, into
+  # its own state. Its resources carry the short name {{.App}}-pr<N>, the pull request's
+  # name, which the pr-stack trigger's plan guard holds every one of them to, and it
+  # shares {{.Integration}}'s secret containers, identity registration and registry.
+  is_pr   = var.pull_request != 0
+  pr_name = "${local.app}-pr${var.pull_request}"
+{{- if .MultiSite}}
+  # Each site's pull-request hostname label and Cloud Run service name, the same word,
+  # {{.App}}-pr<N>-<site>: 2-env's pull-request backend picks the service by the
+  # hostname's first label, so the pull request's name serves there, not the site's
+  # label, which names an environment's hostnames alone.
+  site_pr_hosts = { for site in local.sites : site => "${local.pr_name}-${site}" }
+  pr_host       = local.site_pr_hosts[local.sites[0]]
+{{- else}}
+  # The pull-request stack's hostname label and Cloud Run service name, the same word,
+  # the pull request's name: 2-env's pull-request backend picks the service by the
+  # hostname's first label, so the pull request's name serves there, not the site's
+  # label, which names an environment's hostnames alone.
+  pr_host = local.pr_name
+{{- end}}
+{{- if .TraceSampling}}
+
+  # Which spans the processes record: every one in a pull-request stack and in
+  # {{.Integration}}, where every request should be traceable; beyond them the
+  # edge's choice, a request Google's edge sampled and nothing else.
+  trace_sampling = local.is_pr || var.environment == "{{.Integration}}" ? "all" : "edge"
+{{- end}}
+
+  # The runtime accounts' IDs: by the convention, or the short name. The
+  # migration has none: the pipeline runs the migrate command on the build
+  # worker as the deploy identity from 2-env (local.identities).
+  app_account  = local.is_pr ? "${local.pr_name}-app" : "${local.name}-gbl-${local.app}-app"
+{{- if .Jobs}}
+  jobs_account = local.is_pr ? "${local.pr_name}-jobs" : "${local.name}-gbl-${local.app}-jobs"
+{{- end}}
+
+  # The same accounts as members and as resource names, spelled out rather than
+  # read from the account resources, so a plan knows every membership before
+  # the accounts exist: the pull-request build's guard reads the pull request's
+  # name off each planned change, and a member known only after apply would
+  # stop the first build of every pull request.
+  app_email         = "${local.app_account}@${local.project_id}.iam.gserviceaccount.com"
+  app_member        = "serviceAccount:${local.app_email}"
+  app_account_name  = "projects/${local.project_id}/serviceAccounts/${local.app_email}"
+{{- if .Jobs}}
+  jobs_email        = "${local.jobs_account}@${local.project_id}.iam.gserviceaccount.com"
+  jobs_member       = "serviceAccount:${local.jobs_email}"
+  jobs_account_name = "projects/${local.project_id}/serviceAccounts/${local.jobs_email}"
+{{- end}}
+{{- if .Scheduled}}
+
+  # The invoker identity Cloud Scheduler calls the scheduled routes as
+  # (scheduler.tf), spelled out the same way. An environment's stack alone
+  # creates it: a pull-request stack has no scheduler jobs.
+  scheduler_account = "${local.name}-gbl-${local.app}-sched"
+  scheduler_email   = "${local.scheduler_account}@${local.project_id}.iam.gserviceaccount.com"
+{{- end}}
+
+  # The environment before this one in the promotion order ({{.EnvsComma}}) and
+  # its deployment-records bucket: the pipeline runs a release here only after
+  # that environment holds a live record of it. The first environment has none.
+  previous_environment    = {{.PreviousEnvMap}}[var.environment]
+  previous_records_bucket = try(data.terraform_remote_state.previous_env[0].outputs.records_bucket, "")
+
+  # The service runs in the organization's two regions{{if .Jobs}}; the job process's
+  # job in the primary only (a job runs once, from one place){{end}}. Keyed by
+  # region code because the code is what names the regional resources.
+  regions = {
+    (local.env.region_code)           = local.env.region
+    (local.env.secondary_region_code) = local.env.secondary_region
+  }
+  primary_region_code = local.env.region_code
+  primary_region      = local.env.region
+{{- if .MultiSite}}
+
+  # Each site's service per region, keyed <site>-<region code>: what the Cloud Run
+  # services, the endpoint groups and the pipeline's _SERVICES are made from.
+  services = {
+    for pair in setproduct(local.sites, keys(local.regions)) : "${pair[0]}-${pair[1]}" => {
+      site   = pair[0]
+      code   = pair[1]
+      region = local.regions[pair[1]]
+    }
+  }
+{{- end}}
+{{- if .MaxInstancesMap}}
+
+  # The most instances the service runs per region in this environment: the
+  # placement's cap (maxInstances), which bounds what the environment can cost
+  # when traffic rises; null in an environment the placement does not cap,
+  # which leaves Cloud Run's default.
+  max_instances = lookup({{.MaxInstancesMap}}, var.environment, null)
+{{- end}}
+
+  # What 2-env registered for this application.
+  identities = local.env.applications[local.app]
+  instance   = local.env.spanner_instance
+
+  # The image path prefix 2-shr publishes for this application
+  # (image_paths: <registry hostname>/<shr project>/<repository>); the
+  # pipeline appends /<image>:<tag>. Null until 2-shr knows the application.
+  registry = try(data.terraform_remote_state.shr.outputs.image_paths[local.app], null)
+
+{{- if .MultiSite}}
+
+  # Each site's hostnames in this environment, the canonical first (var.hostnames{{if .Vanity}}: the
+  # first vanity hostname placement.json declares for the site there, else its apps-domain
+  # hostname, which follows the vanity ones{{end}}), or
+  # the pull-request stack's one per site; hostnames is every site's, the first site's
+  # first: what the stack serves as a whole.
+  site_hostnames = local.is_pr ? { for site, host in local.site_pr_hosts : site => ["${host}.{{.P.AppsDomain}}"] } : var.hostnames[var.environment]
+  hostnames      = flatten([for site in local.sites : local.site_hostnames[site]])
+{{- if .Vanity}}
+  # The next revision's hostnames, per site and as a whole, the first label with -next:
+  # what the hook before traffic calls while the old revision still serves. None for a
+  # pull-request stack, and none on a vanity domain: the next revision's check stays on
+  # the apps domain, where the wildcard certificate is.
+  site_next_hostnames = { for site in local.sites : site => local.is_pr ? [] : [for host in local.site_hostnames[site] : replace(host, "/^([^.]+)\\./", "$1-next.") if endswith(host, ".{{.P.AppsDomain}}")] }
+{{- else}}
+  # The next revision's hostnames, per site and as a whole, the first label with -next:
+  # what the hook before traffic calls while the old revision still serves. None for a
+  # pull-request stack.
+  site_next_hostnames = { for site in local.sites : site => local.is_pr ? [] : [for host in local.site_hostnames[site] : replace(host, "/^([^.]+)\\./", "$1-next.")] }
+{{- end}}
+  next_hostnames      = flatten([for site in local.sites : local.site_next_hostnames[site]])
+{{- else}}
+
+  hostnames = local.is_pr ? ["${local.pr_host}.{{.P.AppsDomain}}"] : var.hostnames[var.environment]
+{{- if .Vanity}}
+  # The next revision's hostnames, the first label with -next: what the hook before
+  # traffic calls while the old revision still serves. None for a pull-request stack,
+  # and none on a vanity domain: the next revision's check stays on the apps domain,
+  # where the wildcard certificate is.
+  next_hostnames = local.is_pr ? [] : [for host in local.hostnames : replace(host, "/^([^.]+)\\./", "$1-next.") if endswith(host, ".{{.P.AppsDomain}}")]
+{{- else}}
+  # The next revision's hostnames, the first label with -next: what the hook before
+  # traffic calls while the old revision still serves. None for a pull-request stack.
+  next_hostnames = local.is_pr ? [] : [for host in local.hostnames : replace(host, "/^([^.]+)\\./", "$1-next.")]
+{{- end}}
+{{- end}}
+{{- range .Methods}}
+
+  # From {{$.EnvTemplate}}: {{(.Variable "RedirectURL").Name}} is the browser-facing
+  # callback of {{.Label}}, the route the generated router ({{$.RouterDir}})
+  # registers as {{.Callback.Method}} {{.Callback.Path}}, on the {{if $.MultiSite}}{{.Site}} site's{{else}}environment's{{end}} canonical host.
+  {{.Var "REDIRECT_URL"}} = "https://${local.{{if $.MultiSite}}site_hostnames["{{.Site}}"]{{else}}hostnames{{end}}[0]}{{.Callback.Path}}"
+{{- if .Microsoft}}
+  # The front-channel logout the app registration names, {{.Logout.Method}} {{.Logout.Path}}.
+  {{.Var "LOGOUT_URL"}} = "https://${local.{{if $.MultiSite}}site_hostnames["{{.Site}}"]{{else}}hostnames{{end}}[0]}{{.Logout.Path}}"
+{{- end}}
+{{- end}}
+{{- range .Personas}}
+
+  # The {{.Auth}} auth's {{.Name}} registration is the persona method, the sign-in of the
+  # test environments through the persona provider placement.json names (persona): the issuer in a
+  # pull-request stack and in {{$.Integration}}, where the method is registered, and empty
+  # beyond them, where it is not and the login page never offers it; the deployment's
+  # client ID at the provider, the placement's client ID root with the pull request or
+  # the environment appended; and the callback, the route the generated router
+  # ({{$.RouterDir}}) registers as {{.Callback.Method}} {{.Callback.Path}}, on the {{if $.MultiSite}}{{.Site}} site's{{else}}environment's{{end}} canonical host.
+{{.Locals}}
+{{- end}}
+
+  # The database the site opens: the environment's own, a pull request's own,
+  # or in shared mode (var.shared_database) {{.Integration}}'s, which the pull-request
+  # stack then only reads by name and grants its app identity on.
+  own_database  = !(local.is_pr && var.shared_database)
+  # The database by generation (var.database_generation): the first is named
+  # for the environment and the application, and each rollback restores a
+  # backup into the next, "-2", then "-3" (spanner.tf). The current one is what
+  # the site, the migrate command and the grants use.
+  database_base = local.own_database && local.is_pr ? "${local.pr_name}-db" : "${local.name}-gbl-${local.app}-db"
+  database_name = var.database_generation == 1 ? local.database_base : "${local.database_base}-${var.database_generation}"
+  # How far back Spanner keeps the database's row versions, from
+  # placement.json (spannerRetention; seven days, the most Spanner allows,
+  # unless it says otherwise): how far back a backup as of a moment and a
+  # point-in-time rollback reach.
+  spanner_retention = {{.RetentionMap}}
+{{- if .FileStores}}
+
+  # Where the file stores live: with the database. {{.Integration}}'s instance
+  # is regional, so its buckets are regional too, named by the region's code;
+  # the shared instance's configuration spans the organization's two regions,
+  # so the buckets there are dual-region over the same two, named after the
+  # configuration (2-env's spanner_instance output carries it). A stack
+  # rendered by an older bedrock named them gbl in the primary region; the
+  # first apply with this one replaces them, which is why the rename came
+  # while no application held files.
+  spanner_config      = local.env.spanner_instance.config
+  files_regional      = startswith(local.spanner_config, "regional-")
+  files_region        = trimprefix(local.spanner_config, "regional-")
+  files_location_code = local.files_regional ? { for code, name in local.regions : name => code }[local.files_region] : local.spanner_config
+  files_location      = local.files_regional ? local.files_region : lookup({ nam = "US", eur = "EU", asia = "ASIA" }, regex("^[a-z]+", local.spanner_config), "US")
+{{- end}}
+{{- range .FileStores}}
+
+  # {{.Title}} ({{.Variable.Declaration}}): the environment's, named for the
+  # environment, where the database is, the application, the store and the
+  # environment project's number, which makes the name unique. A pull-request
+  # stack with its own database has its own; one sharing {{$.Integration}}'s
+  # database uses {{$.Integration}}'s bucket, since the rows it reads name
+  # objects there (storage.tf grants its identities on it).
+  {{.Resource}}_bucket_name = "${local.name}-${local.files_location_code}-${local.own_database && local.is_pr ? local.pr_name : local.app}-{{.Suffix}}-${local.env.project_number}"
+{{- end}}
+{{- if .TasksQueue}}
+
+  # The task queue ({{.TasksQueue.Declaration}}), by name and as the Cloud Tasks API
+  # names it: {{.Integration}}'s for a pull-request stack, which enqueues on it (tasks.tf).
+  tasks_queue_name = "${local.name}-${local.primary_region_code}-${local.app}-tasks-${random_id.stack.hex}"
+  tasks_queue      = "projects/${local.project_id}/locations/${local.primary_region}/queues/${local.tasks_queue_name}"
+{{- end}}
+{{- if .FirestoreDatabase}}
+
+  # The Firestore database ({{.FirestoreDatabase.Declaration}}), by id; a pull-request
+  # stack has its own.
+  firestore_database_id = local.is_pr ? "${local.pr_name}-fs" : "${local.name}-gbl-${local.app}-fs"
+{{- if .FirebaseAPIKey}}
+  # The browser's web API key ({{.FirebaseAPIKey.Declaration}}), by name (firestore.tf); a
+  # pull-request stack has its own.
+  firebase_key_name = local.is_pr ? "${local.pr_name}-firebase-${random_id.stack.hex}" : "${local.name}-gbl-${local.app}-firebase-${random_id.stack.hex}"
+{{- end}}
+{{- end}}
+{{- if .Jobs}}
+
+  # The job process's template job ({{.Jobs.Dir}}), in the primary region, by name
+  # and as the Cloud Run API names it; each build's job is named after it with the
+  # build's version, and the service carries this name as {{.JobsTemplateVariable}}
+  # (jobs_template_env below), which the framework names that job from.
+  jobs_job_name = local.is_pr ? "${local.pr_name}-jobs" : "${local.name}-${local.primary_region_code}-${local.app}-jobs"
+  jobs_job      = "projects/${local.project_id}/locations/${local.primary_region}/jobs/${local.jobs_job_name}"
+{{- end}}
+
+  # ---------------------------------------------------------------------------
+  # What the code declares, read from {{.ConfigDir}} by bedrock render; each entry
+  # names the field it comes from.
+  # ---------------------------------------------------------------------------
+
+  # Secrets: the fields of {{.ConfigDir}} tagged secret:"true" or secret:"generated".
+  # One container per variable per environment, named
+  # {{.Prefix}}-<env>-gbl-{{.App}}-<kebab of the variable without its APP_ prefix>. No
+  # versions here: someone adds the value (Secret Version Adder) and
+  # var.secret_versions pins which one runs, or, for a generated secret, the
+  # pipeline adds the first version and derives the pin at each build
+  # (var.generated_secret_versions; secret-manager.tf, "Generated secrets").
+  #
+  # readers: which runtime identity mounts it. The service; and the migrate
+  # command, which also constructs the data level, reads the generated password
+  # of each auth's first administrator (migrate_secrets, below), which it seeds
+  # the administrator user with while the auth's users table holds no rows, and
+  # the mailbox's app password, which the data level opens the mail sender with.
+  # So the deploy identity, which runs the migrate command, holds accessor on
+  # those containers alone and on no other runtime secret: the session library
+  # reads the cookie key (falling back to an ephemeral one), the client secrets
+  # and the people's credentials only when a browser signs in, which a
+  # migration never does.
+  secrets = {
+{{- range .Secrets}}
+    {{.Variable.Name}} = {
+      name    = "{{.Name}}"
+      level   = "{{.Variable.Level}}"
+      source  = "{{.Variable.File}} {{.Variable.Declaration}}"
+      purpose = "{{$.Purpose .}}"
+      # generated: the tooling makes the value (secret:"generated"); nobody types it.
+      generated = {{.Generated}}
+    }
+{{- end}}
+  }
+
+  # The container each secret lives in, by the naming convention: this
+  # environment's, which a pull-request stack shares with {{.Integration}} and never creates.
+  secret_ids = { for key, s in local.secrets : key => "${local.name}-gbl-${local.app}-${s.name}" }
+
+  # The secrets the tooling makes (secret:"generated"): their entry in
+  # var.secret_versions is the word generated, and their version the number the
+  # pipeline's plan step derived and passed as var.generated_secret_versions.
+  generated_secrets = { for key, s in local.secrets : key => s if s.generated }
+
+  # The secrets the migrate command reads (readers, above): the generated
+  # password of each auth's first administrator and the mailbox's app password,
+  # by variable, and the pinned version of each the command runs with, read
+  # back by the pipeline from the applied stack (cloud-build.tf,
+  # _MIGRATE_SECRETS). A secret with no version yet (a plan by hand) is left
+  # out, and the command runs without it.
+  migrate_secrets = toset([{{range $i, $s := .MigrateSecrets}}{{if $i}}, {{end}}"{{$s.Variable.Name}}"{{end}}])
+
+  # The versions this environment runs: the placement's pins (a number, or
+  # latest) for the secrets someone puts in place, and the derived numbers for
+  # the generated ones. A generated secret the build passed no number for (a plan
+  # run by hand) is not mounted, as a secret with no pin is not.
+  declared_versions = lookup(var.secret_versions, var.environment, {})
+  secret_versions = merge(
+    { for key, v in local.declared_versions : key => v if v != "generated" },
+    { for key, v in var.generated_secret_versions : key => v if contains(keys(local.generated_secrets), key) },
+  )
+
+  # Only a secret with a pinned version is mounted.
+  mounted_secrets = {
+    for key, s in local.secrets : key => merge(s, { version = local.secret_versions[key] })
+    if contains(keys(local.secret_versions), key)
+  }
+{{- if .Jobs}}
+
+  # The job process's share: the secrets at the levels it constructs ({{.JobsLevels}}).
+  # It runs the application's own code, and what that code reads the derivation
+  # cannot know, so it gets the levels' secrets the way the site does; the
+  # migrate command, whose work is known, gets none.
+  jobs_secrets         = { for key, s in local.secrets : key => s if contains({{.JobsLevelList}}, s.level) }
+  jobs_mounted_secrets = { for key, s in local.mounted_secrets : key => s if contains(keys(local.jobs_secrets), key) }
+{{- end}}
+
+  # Build-time secrets (var.build_secrets): what the image build reads in this
+  # environment, NAME = pinned version, their containers named like the runtime
+  # secrets' (the variable without its APP_ prefix, in kebab case). A
+  # pull-request stack reads {{.Integration}}'s and creates none.
+  build_secrets    = lookup(var.build_secrets, var.environment, {})
+  build_secret_ids = { for name in keys(local.build_secrets) : name => "${local.name}-gbl-${local.app}-${lower(replace(trimprefix(name, "APP_"), "_", "-"))}" }
+
+  # Environment variables the infrastructure knows, by configuration level
+  # ({{.CoreLevel.File}}: {{.CoreLevel.Name}}, {{.CoreLevel.Description}}; {{.DataLevel.FileBase}}: every process that
+  # opens the database; {{.SiteLevel.FileBase}}: {{.SiteLevel.Description}}). A process receives the
+  # levels it constructs and nothing above them.
+  core_env = {
+    # {{.ServiceName.Declaration}}{{if .ServiceName.Required}} (required){{end}}: the name the process reports in logs.
+    {{.ServiceName.Name}} = local.app
+    # {{.LoggingProject.Declaration}}: request logs ship to Cloud Logging here.
+    {{.LoggingProject.Name}} = local.project_id
+{{- if .TraceSampling}}
+    # {{.TraceSampling.Declaration}}: which spans are recorded (local.trace_sampling).
+    {{.TraceSampling.Name}} = local.trace_sampling
+{{- end}}
+    # {{.Version.Declaration}} is not set here: the pipeline bakes {{.Version.Name}}
+    # into the image at build (a Dockerfile ENV from the tag), so a deploy
+    # never edits the template's variables and this stack stays their owner.
+  }
+
+  data_env = {
+    # {{.Database.Struct}}, all required: the database identity.
+{{.DatabaseEnv}}
+{{- if .DirectoryEnv}}
+    # The directory registrations' settings the session library reads when it makes
+    # each registration, at construction, so every data-level process gets them.
+{{.DirectoryEnv}}
+{{- end}}
+{{- if .AdministratorEnv}}
+    # The first administrator of each auth whose roles the application assigns: the
+    # sign-in name the migrate command seeds the administrator role membership under
+    # while the auth's users table holds no rows.
+{{.AdministratorEnv}}
+{{- end}}
+{{- if .PublicURL}}
+    # {{.PublicURL.Declaration}}: the application's address as a browser reaches it, the
+    # canonical hostname{{if .MultiSite}} of the first site (each site's service carries its own,
+    # site_env){{end}}; every link the auths mail opens the login page under it.
+    {{.PublicURL.Name}} = "https://${local.hostnames[0]}"
+{{- end}}
+{{- if .Mailbox}}
+    # {{.Mailbox.Declaration}}: the Google Workspace mailbox the auths' mail is sent as
+    # (var.mail_mailbox), empty until the organization names one, when the
+    # application writes its mail to the log and sends nothing.
+    {{.Mailbox.Name}} = var.mail_mailbox
+{{- end}}
+{{- if .MailFrom}}
+    # {{.MailFrom.Declaration}}: the address the auths' mail is from when it is not the
+    # mailbox (var.mail_from), an alias of the mailbox's account; empty sends from
+    # the mailbox.
+    {{.MailFrom.Name}} = var.mail_from
+{{- end}}
+{{- range .CodeDefaults}}
+    # {{.Declaration}} is left to its code default ({{.Default}}).
+{{- end}}
+  }
+{{- if .Directory}}
+
+  # The directory registrations' settings the served site needs and a migration
+  # does not. They live at the data level in the code, but a process that never
+  # signs anyone in has no use for them, so the migrate command goes without.
+  site_directory_env = {
+{{- range .Methods}}
+    # The {{.Auth}} auth's {{.Name}} registration: the client id, public half of the
+    # registration, per environment; the redirect URL, built from the canonical
+    # hostname{{if .Groups}}; how far the groups read reaches, direct or nested{{end}}.
+{{.SiteEnv}}
+{{- end}}
+  }
+{{- end}}
+{{- if .Persona}}
+
+  # The persona registrations' settings the served site reads and a migration does
+  # not: the issuer, set where the method is registered, the deployment's client ID
+  # and the callback (the locals above).
+  site_persona_env = {
+{{- range .Personas}}
+{{.SiteEnv}}
+{{- end}}
+  }
+
+  # What the pipeline registers with the persona provider after traffic (deploy
+  # persona register) and removes at a teardown (deploy persona remove), per persona
+  # method: the provider, the application's client ID root (the deployment's client
+  # ID is the root with the pull request or the environment appended), the site whose
+  # canonical hostname the callback is on, the callback's path and the cast in the
+  # checkout. The triggers carry it as _PERSONA (persona_substitution) in {{.Integration}}, where
+  # the method is registered, and as nothing elsewhere; the pipeline reads it back from the
+  # stack as applied (the substitutions output), so a release that adds or removes the method
+  # registers what it carries in that very run, where the trigger lags by one.
+  persona_registrations = [
+{{- range .Personas}}
+    {
+      auth         = "{{.Auth}}"
+      registration = "{{.Name}}"
+      issuer       = "{{.Issuer}}"
+      clientIdRoot = "{{.ClientIDRoot}}"
+      site         = "{{.Site}}"
+      callbackPath = "{{.Callback.Path}}"
+      castFile     = "{{.CastFile}}"
+    },
+{{- end}}
+  ]
+  persona_substitution = var.environment == "{{.Integration}}" ? jsonencode(local.persona_registrations) : ""
+{{- end}}
+
+{{- if .MultiSite}}
+
+  # Each site's own variables (cloud-run.tf): the bundle the image holds for it
+  # (site_settings){{if .PublicURL}} and its address as a browser reaches it, the site's canonical
+  # hostname, which every link its auths mail opens under{{end}}.
+  site_env = { for site in local.sites : site => merge(local.site_settings[site].env{{if .PublicURL}}, { {{.PublicURL.Name}} = "https://${local.site_hostnames[site][0]}" }{{end}}) }
+{{- end}}
+{{- if .Jobs}}
+
+  # {{.JobsTemplate.Declaration}}: the job process's template job (cloud-run.tf), which
+  # the pipeline copies per build into <template>-<version key> on that build's
+  # image. The framework's job driver (resource/jobs/cloudrun), whose settings the
+  # {{.JobsTemplate.Level}} level embeds, reads it with the version the image bakes in and
+  # names the job of its own build from the two, so each revision starts the job of
+  # its build, and a traffic rollback to an earlier revision starts that revision's.
+  # A pull-request stack's is its own template.
+  jobs_template_env = {
+    {{.JobsTemplateVariable}} = local.jobs_job
+  }
+{{- end}}
+{{- if .FileStores}}
+
+  # The file stores (storage.tf), each as the gs:// URL of its bucket, for the
+  # processes that construct its level and run the application's own code:
+{{- range .FileStores}}
+  # {{.Variable.Declaration}}, {{.Label}} ({{.Variable.Level}} level).
+{{- end}}
+  files_env = {
+{{.FileStoreEnv}}
+  }
+{{- if .JobsFileStoreEnv}}
+
+  # The stores among them whose level {{.Jobs.Dir}} constructs.
+  jobs_files_env = {
+{{.JobsFileStoreEnv}}
+  }
+{{- end}}
+{{- end}}
+{{- if .TasksQueue}}
+
+  # {{.TasksQueue.Declaration}}: the task queue (tasks.tf), for the processes that
+  # construct the {{.TasksQueue.Level}} level and run the application's own code.
+  tasks_env = {
+    {{.TasksQueue.Name}} = local.tasks_queue
+  }
+{{- end}}
+{{- if .FirestoreDatabase}}
+
+  # {{.FirestoreDatabase.Declaration}}: the Firestore database (firestore.tf), for every
+  # process that constructs the {{.FirestoreDatabase.Level}} level{{if .MigrateReadsFirestore}}, the migrate command too:
+  # the level opens the database when it is constructed, and the release's role
+  # migration signals the running instances through it{{end}}.
+{{- if .FirebaseAPIKey}}
+  # {{.FirebaseAPIKey.Declaration}}: the web API key the browser presents to sign in
+  # (firestore.tf), a public value by design, beside it.
+{{- end}}
+  # {{.FirestoreProject.Declaration}}: the database's project, this environment's; the
+  # Spanner project is the shared instance's in an environment that shares one.
+  firestore_env = {
+    {{.FirestoreProject.Name}}  = local.project_id
+    {{.FirestoreDatabase.Name}} = google_firestore_database.firestore.name
+{{- if .FirebaseAPIKey}}
+    # The provider marks the key string sensitive; it is the public value every
+    # browser receives, and marked it would make the substitutions output below
+    # sensitive whole, which the pipeline reads for the migrate command.
+    {{.FirebaseAPIKey.Name}} = nonsensitive(google_apikeys_key.firebase.key_string)
+{{- end}}
+  }
+{{- end}}
+
+{{- if .Scheduled}}
+
+  # {{.SchedulerVariable}}: the invoker identity's email, which the framework requires
+  # of the token on every call to a scheduled route (scheduler.tf). No configuration
+  # level declares it: the framework reads it itself. A pull-request stack leaves it
+  # unset, so its scheduled routes refuse every call.
+  scheduler_env = local.is_pr ? {} : {
+    {{.SchedulerVariable}} = local.scheduler_email
+  }
+{{- end}}
+
+  # {{.SiteLevel.FileBase}}: {{.Port.Name}} is set by Cloud Run itself (reserved; setting it is an
+  # error){{if .SiteImageVars}} and {{.SiteImageVars}} is where the image put the bundle, a build
+  # detail the Dockerfile owns. Neither is set here.{{else if .MultiSite}}; each site's bundle variable is its service's alone
+  # (site_settings, cloud-run.tf), since the image holds one bundle per site. Neither
+  # is set here.{{else}}. It is not set here.{{end}}
+  service_env = merge(local.core_env, local.data_env{{if .Directory}}, local.site_directory_env{{end}}{{if .Persona}}, local.site_persona_env{{end}}{{if .FileStores}}, local.files_env{{end}}{{if .TasksQueue}}, local.tasks_env{{end}}{{if .FirestoreDatabase}}, local.firestore_env{{end}}{{if .Scheduled}}, local.scheduler_env{{end}}{{if .Jobs}}, local.jobs_template_env{{end}})
+
+  # {{.Migrate.Dir}} reads {{.MigrateLevels}} and nothing above them: what the pipeline
+  # runs the migrate command with on the build worker (cloud-build.tf,
+  # _MIGRATE_ENV). The release's own variable is the image's, which the
+  # pipeline sets from the build.
+  migrate_env = merge(local.core_env, local.data_env{{if .MigrateReadsFirestore}}, local.firestore_env{{end}}, {
+    {{.ServiceName.Name}} = "${local.app}-migrate"
+  })
+
+  # The databases the migrate command reaches, by resource name (cloud-build.tf,
+  # _MIGRATE_DATABASES): deploy migrate reads each as the deploy identity until its
+  # grants above are in effect, since IAM makes a grant this build's apply created
+  # effective seconds to minutes later.
+  migrate_databases = concat(
+    ["projects/${local.instance.project}/instances/${local.instance.name}/databases/${local.database_name}"],
+{{- if .MigrateReadsFirestore}}
+    ["projects/${local.project_id}/databases/${google_firestore_database.firestore.name}"],
+{{- else}}
+    [],
+{{- end}}
+  )
+{{- if .Jobs}}
+
+  # {{.Jobs.Dir}} reads {{.JobsLevels}} and nothing above them: the job process, the
+  # application's own code as a Cloud Run job.
+  jobs_env = merge(local.core_env{{if .JobsReadsData}}, local.data_env{{end}}{{if .JobsFileStoreEnv}}, local.jobs_files_env{{else if .JobsFileStores}}, local.files_env{{end}}{{if .JobsReadsTasks}}, local.tasks_env{{end}}{{if .JobsReadsFirestore}}, local.firestore_env{{end}}, {
+    {{.ServiceName.Name}} = "${local.app}-jobs"
+  })
+{{- end}}
+
+  # Every resource carries these. terraform_source_path is the stack's state slot
+  # in the organization's bucket (3-app/{{.App}}) written as a label value, which
+  # admits no slash (Secret Manager and Cloud Run refuse it); source_repo is the
+  # application repository's name, from the placement; organization is the
+  # bedrock organization's prefix, which tells its projects from another's in
+  # the same GCP organization.
+  base_labels = {
+    terraform             = "true"
+    terraform_source_path = "3-app-{{.App}}"
+    source_repo           = "{{.P.Repository}}"
+    organization          = "{{.P.Prefix}}"
+    environment           = var.environment
+    application           = local.app
+{{.LabelLines}}
+  }
+  # A pull-request stack also carries its number, for the sweep and the bill.
+  labels = merge(local.base_labels, local.is_pr ? { pull_request = tostring(var.pull_request) } : {})
+}

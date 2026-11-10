@@ -1,0 +1,221 @@
+# {{.SourceRepo}}
+
+The root organization of the `{{.GithubOrganization}}` GitHub organization, kept
+by bedrock. `{{.Prefix}}` is its prefix, and this repository is its record:
+`placement.json` at the repository root says what the organization is, and the
+workflow in `{{.WorkflowFile}}` keeps it true, by GitHub's API, on every pull
+request and every merge.
+
+This root organization has no cloud. Nothing of Google's exists for it: no
+project, no bucket, no Cloud Build. It holds libraries alone, repositories that
+deploy nowhere, and everything it keeps is on GitHub. There is no terraform here
+either, and no state file: each run reads what stands on GitHub and compares it
+with the placement.
+
+The running log is [JOURNAL.md](JOURNAL.md). A step taken by hand gets a line
+there first.
+
+## What this organization keeps
+
+For the GitHub organization:
+
+- this repository: its merge settings (squash alone) and the ruleset on
+  `{{.GithubDefaultBranch}}`, which takes changes by pull request alone, with
+  {{.ApprovingReviewCount}} approving review(s), once the check
+  `{{.PlanJobName}}` has passed;
+- the environment `{{.RootEnvironment}}` of this repository, which admits the
+  branch `{{.GithubDefaultBranch}}` alone and holds the infrastructure app's
+  key ("The GitHub Apps and their keys", below);
+- the GitHub Apps it acts as, held to what bedrock declares for each.
+
+For each library the placement lists ("Libraries", below):
+
+- the repository, made when it is missing, public or private as its entry
+  says;
+- its merge settings, the same as this repository's;
+- the ruleset `default branch` on its default branch: pull requests alone, the
+  same reviews, and the checks its entry names;
+- the release app's credentials, where its release workflow reads them.
+
+And once for all the libraries: the organization's ruleset `version tags`, under
+which the release app alone creates, moves or deletes a tag named `v*` or
+`*/v*`.
+
+bedrock writes no file in a library. A library's workflows are its own, written
+by the people who keep it.
+
+## Bootstrapped by one command
+
+The organization was made by `bedrock org bootstrap`, run once at a terminal by
+an owner of the GitHub organization. It needs no Google credentials and no
+token: what it does on GitHub it does as the infrastructure app it makes. In
+order:
+
+1. It makes the GitHub Apps in your browser, from the manifests bedrock
+   declares: Create, then Install for all repositories, for each. The
+   infrastructure app always; the release app when the placement lists a
+   library.
+2. It makes this repository, private, with an initial commit.
+3. It makes the organization as the placement says, through the same engine the
+   workflow runs: this repository's settings and ruleset, the environment with
+   the infrastructure app's key sealed into it, each library, the version tags'
+   ruleset, and the release app's credentials sealed where the libraries read
+   them. Each key goes from GitHub's answer into its secret and is never written
+   to this computer's disk.
+4. It pushes `placement.json`, this README and the workflow as the first commit.
+
+A run that stopped finishes on the next run with the same directory, with one
+thing to know: GitHub never gives a sealed key back, and a run holds a key only
+while it is the run that made the app. A later run acts with a key you hand it.
+On the infrastructure app's settings page (the organization's settings, GitHub
+Apps), generate a private key, then, in a terminal:
+
+```
+bedrock org bootstrap <dir> --infrastructure-app <its App ID> --infrastructure-key <the downloaded file>
+```
+
+and delete the file.
+
+## How the root organization is kept
+
+Every change goes by pull request: edit `placement.json`, run
+`bedrock org render`, commit both. The workflow has three jobs.
+
+- **`{{.PlanJobName}}`**, on a pull request into `{{.GithubDefaultBranch}}`:
+  it compares the owned files with what the placement renders
+  (`bedrock org check`), says what the merge would change on GitHub
+  (`bedrock org plan`) and posts that on the pull request. The ruleset requires
+  it.
+- **`{{.ApplyJobName}}`**, on a merge: it makes the organization as the merged
+  placement says (`bedrock org apply`). One apply runs at a time.
+- **`{{.CheckJobName}}`**, once a week and when started by hand (the Actions
+  tab, Run workflow): it compares the organization with the placement on its
+  own clock and keeps one issue in this repository with what it found, opened
+  when there is a finding and closed when there is none.
+
+Each job acts as the infrastructure app, with a token it mints from the app's
+key. Three things keep that key from a pull request:
+
+- The plan runs on `pull_request_target`, so its steps are the ones on
+  `{{.GithubDefaultBranch}}`. The pull request's files are read as data and
+  never run.
+- The bedrock that runs is the one `placement.json` pins (`bedrockVersion`): a
+  release, checked against the checksum pinned beside it (`bedrockSha256`), or
+  a commit on a branch of bedrock's repository, built where Go's checksum
+  database verifies it.
+- The key is a secret of the environment `{{.RootEnvironment}}`, which admits
+  the branch `{{.GithubDefaultBranch}}` alone. A workflow on any other branch,
+  whoever pushed it, is never handed the key.
+
+The workflow file is bedrock's: `bedrock org render` writes it and
+`bedrock org check` compares it, so a change made to it by hand fails the plan.
+`bedrock upgrade` moves the pin.
+
+## Libraries
+
+A library is one entry under `libraries` in `placement.json`:
+
+```json
+"libraries": [
+  {
+    "repository": "example-library",
+    "public": true,
+    "checks": [
+      "tests",
+      "lint / Run the linters"
+    ]
+  }
+]
+```
+
+- **`repository`** is the repository's name in `{{.GithubOrganization}}`.
+- **`public`** makes it public; left out, it is private. The apply brings the
+  repository to it either way, so read a pull request that sets it with care:
+  a repository made public shows its whole history.
+- **`checks`** are the checks a pull request into its default branch must pass,
+  each by the name a pull request shows it under: a job's name, or, for a job
+  of a reusable workflow, the calling job's id, a slash and the called job's
+  name (`lint / Run the linters`, above, is the job `Run the linters` of the
+  reusable workflow the job `lint` calls). GitHub Actions is the reporter of
+  each.
+- **`adopted`** (`true`) says the repository stood before the placement listed
+  it, one transferred into the organization. The apply brings its settings and
+  its ruleset to the entry like any library's. While the entry names no checks,
+  the plan prints the checks the ruleset it came with requires: copy them into
+  `checks`, then delete that ruleset on GitHub.
+
+Since bedrock writes no workflow, a name in `checks` is only as good as the
+repository's workflow files. Every plan and every weekly check reads the checks
+the latest pull request into each library reported and says two things: a
+required check that pull request did not report, which is a finding, since
+every pull request will wait for it; and the checks it reported that the entry
+does not require, which is a note, since only a person can tell a helper job
+from a test nobody listed.
+
+A library taken off the list is not deleted. The plan says so, the apply takes
+the release app's credentials from it and its version tags out of the rule,
+and the repository stays as it is until a person archives it on GitHub.
+
+## The larger runner
+
+`ciLargeRunner` in `placement.json` names the runner the libraries' workflows run their
+long jobs on. The apply sets it as the organization variable `CI_LARGE_RUNNER`, which a
+workflow reads where it chooses its runner
+(`runs-on: ${{"{{"}} vars.CI_LARGE_RUNNER || 'ubuntu-latest' {{"}}"}}`). With `ciLargeRunnerSize`
+(`8-core`, say) the apply creates that runner itself: a GitHub-hosted runner of the name
+and size in the runner group `applications`, with at most `ciLargeRunnerMaximum` running
+at once. The group admits public repositories when the placement lists a public library;
+a group that did not would leave a public library's jobs waiting.
+
+GitHub bills a larger runner per minute, for a public repository too, and a pull request
+from a fork runs on it once its workflows are approved. The variable is bedrock's: one set
+by hand is removed by the next apply while the placement names no runner.
+
+## Releases
+
+A library's release workflow acts as the release app, the one actor the
+`version tags` ruleset lets make a release's tag. bedrock keeps what that
+workflow reads, for the library repositories alone:
+
+- the organization secret `{{.ReleaseClientIDOrgSecret}}`, the app's client
+  ID;
+- the organization secret `{{.ReleaseKeyOrgSecret}}`, its private key;
+- the organization variable `{{.ReleaseLoginVariable}}`, its login, the author
+  a release workflow accepts a release from.
+
+A repository that is not a library reads neither secret.
+
+## The GitHub Apps and their keys
+
+| app | what it does | where its key is |
+|---|---|---|
+| `{{.AppName "infrastructure"}}` | creates and configures the organization's repositories, as this repository's workflow | the secret `{{.EnvironmentKeySecret}}` of this repository's environment `{{.RootEnvironment}}` |
+| `{{.AppName "release"}}` | cuts the libraries' releases; made when the placement lists a library | the organization secret `{{.ReleaseKeyOrgSecret}}`, read by the libraries alone |
+
+`placement.json` records each app's App ID. `bedrock org check` holds each app
+to what bedrock declares: owned by `{{.GithubOrganization}}`, the declared
+permissions and no other, installed for all repositories.
+
+GitHub keeps a secret's value and never gives it back, so a key is rotated by
+making a new one. On the app's settings page (the organization's settings,
+GitHub Apps), generate a private key; then, in a terminal in a clone of this
+repository:
+
+```
+bedrock secret add {{.InfrastructureKeyName}} --from-file <the downloaded file>
+bedrock secret add {{.ReleaseKeyName}} --from-file <the downloaded file>
+```
+
+whichever app the key is of. The command proves the key signs as the app, then
+seals it into its secret. The infrastructure app's key writes its own secret.
+The release app's is written with your own token (`GITHUB_TOKEN`, or `gh`'s, as
+an owner of `{{.GithubOrganization}}`) or as the infrastructure app, with a key
+of that app (`--infrastructure-key <its file>`). Delete the file, then delete
+the old key on the app's settings page. `bedrock org secrets check` says where
+each key is, who reads it and when it was last sealed.
+
+## Contributing
+
+Changes to the organization are changes to `placement.json`, by pull request.
+Read the plan the pull request's check posts before approving: it is what the
+merge does.
