@@ -3,11 +3,11 @@ module github.com/impulseframework/bedrock
 go 1.27.3
 
 require (
-	cloud.google.com/go/domains v0.17.0
-	cloud.google.com/go/iam v1.14.0
+	cloud.google.com/go/domains v0.18.1
+	cloud.google.com/go/iam v1.15.1
 	cloud.google.com/go/orgpolicy v1.22.1
-	cloud.google.com/go/resourcemanager v1.17.0
-	cloud.google.com/go/secretmanager v1.22.0
+	cloud.google.com/go/resourcemanager v1.18.1
+	cloud.google.com/go/secretmanager v1.23.1
 	cloud.google.com/go/storage v1.70.0
 	github.com/go-playground/errors/v5 v5.4.0
 	github.com/google/go-cmp v0.7.0
@@ -17,7 +17,7 @@ require (
 	github.com/zclconf/go-cty v1.19.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/mod v0.42.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/term v0.47.0
 	google.golang.org/api v0.310.0
