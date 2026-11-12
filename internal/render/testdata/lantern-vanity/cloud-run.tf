@@ -54,7 +54,7 @@ resource "google_cloud_run_v2_service" "app" {
       # each service's arguments replace that default with its own (locals.tf,
       # site_settings; Dockerfile). Arguments and not the command, so that the
       # placeholder image the services are created with keeps its own entrypoint
-      # (/server, which ignores its arguments) and starts: the first apply succeeds
+      # (which does not read its arguments) and starts: the first apply succeeds
       # before the pipeline's first deploy owns the image.
       args = [local.site_settings[each.value.site].binary]
 
@@ -63,8 +63,11 @@ resource "google_cloud_run_v2_service" "app" {
         # (github.com/impulseframework/impulse/resource/server), which speaks HTTP/1.1 and unencrypted HTTP/2 on
         # one listener, so Cloud Run talks HTTP/2 to the container and the 32 MiB
         # bounds of HTTP/1 request and response bodies no longer apply. The
-        # maintenance revision runs the same image, so it speaks it too. A site on
-        # another server keeps an HTTP/1 port (locals.tf, site_settings).
+        # maintenance revision runs the same image, so it speaks it too, and so
+        # does the framework's welcome image, which a first placement names as the
+        # placeholder (one that speaks HTTP/1.1 alone answers 502 at this port
+        # until the first release). A site on another server keeps an HTTP/1 port
+        # (locals.tf, site_settings).
         name           = local.site_settings[each.value.site].h2c ? "h2c" : null
         container_port = 8080
       }

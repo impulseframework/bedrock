@@ -121,7 +121,7 @@ variable "hostnames" {
 variable "placeholder_image" {
   description = "Image every Cloud Run service and job is created with. The pipeline owns the image from the first deploy on (lifecycle ignore_changes), so this is only what runs before the first release."
   type        = string
-  default     = "us-docker.pkg.dev/cloudrun/container/hello"
+  default     = "ghcr.io/impulseframework/welcome:v1"
 }
 
 variable "cloud_armor" {

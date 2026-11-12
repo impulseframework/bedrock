@@ -18,7 +18,7 @@
   "appsDomain": "impulseframework.dev",
   "hostedDomain": "impulseframework.com",
   "stateBucket": "imp-boot-gbl-state-REPLACEME",
-  "placeholderImage": "us-docker.pkg.dev/cloudrun/container/hello",
+  "placeholderImage": "ghcr.io/impulseframework/welcome:v1",
   "defaultBranch": "master",
   "repository": "quill",
   "releaseApp": "impulseframework-release",

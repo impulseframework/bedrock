@@ -245,8 +245,10 @@ and what its absence means:
   backend writes to and its reads of the organization's layers read from. From the
   organization's `stateBucket`. Required.
 - `placeholderImage`: the image the services and the job are created with before the
-  first deploy, after which the pipeline owns the image. Cloud Run's public sample,
-  `us-docker.pkg.dev/cloudrun/container/hello`. Required.
+  first deploy, after which the pipeline owns the image. The framework's welcome image,
+  `ghcr.io/impulseframework/welcome:v1` (The welcome image, below); a placement written
+  before that image names Cloud Run's public sample,
+  `us-docker.pkg.dev/cloudrun/container/hello`, and keeps it. Required.
 - `defaultBranch`: the branch pull requests target and releases are cut on. From the
   organization's `githubDefaultBranch`. Required.
 - `repository`: the application repository's name, the `source_repo` label every
@@ -3227,6 +3229,76 @@ builds its image and makes its jobs, waits inside the build for the window
 moves traffic; the whole-build timeout is Cloud Build's 24-hour ceiling for that wait,
 and every step keeps its own timeout (Maintenance windows, above).
 
+## The welcome image
+
+Between an application's registration and its first release its sites have no image of
+their own, and the stack creates every Cloud Run service with the image the placement
+names as `placeholderImage`. A first placement names the framework's welcome image,
+`ghcr.io/impulseframework/welcome:v1`: one small program, the `welcome` directory of this
+repository, which answers every request, at every path, with one page saying that the
+site is set up and that its application has not had a release yet. The first deploy
+takes its place.
+
+It serves on the port Cloud Run gives it (`PORT`), on one listener that speaks HTTP/1.1
+and unencrypted HTTP/2. The stack names the container port `h2c` for a site whose main
+package imports the framework's server and leaves it an HTTP/1 port for any other, so
+the image that stands in for both speaks both; Cloud Run's public sample, the
+placeholder before this image, speaks HTTP/1.1 alone, and a site on the framework's
+server answered 502 at its hostnames until its first release. The page is a whole
+document: its style, its script and its icon are written into it, it asks for nothing
+from anywhere, and it is served under a content policy that admits that one style and
+that one script by their hashes and nothing else, never to be indexed or kept
+(`noindex`, `no-store`). It follows the device's light or dark setting, and stands still
+where motion is turned off. It keeps nothing in the browser. One small switch at its foot,
+off as the page opens, turns on a word that each ripple draws out of the last word of the
+page's definition and carries off.
+
+The image is the binary alone (`FROM scratch`), with an entrypoint and no default
+command, as the sample has: a multi-site application's stack creates each service with
+the site's binary as its container's arguments, and the entrypoint does not read them.
+There is no `/jobs` in it, as there is none in the sample: the stack creates its job
+with that command as the template of the jobs each build makes, and nothing runs the
+template.
+
+A tag is published once and never moved. `welcome/VERSION` is the record, one line: the
+version, which is the tag, and the SHA-256 of what the image is made of (every file of
+the directory but its tests and the record). The directory's test refuses a record whose
+hash is not the files', so a change to the program, the page or the Dockerfile says in
+the test's failure what to do: before the version has ever been published, record the
+new hash; after, raise the version there and in `derive.PlaceholderImage`
+(`internal/derive/placement.go`), which a test holds to the record. The workflow
+`.github/workflows/welcome-image.yml` publishes it: on a push to master that touches the
+image, or started by hand, it looks for the version's tag in the registry. When the tag
+is there it checks that the published image carries the hash the record names (the
+label `dev.impulseframework.welcome.sources`) and publishes nothing, and it refuses a
+record that names other sources for a published version. When the tag is not there it
+builds the binary with the module's Go (static, linux/amd64), builds the image, starts it
+with a site's binary as its arguments, asks it for the page over HTTP/1.1 and over
+unencrypted HTTP/2, and pushes it once it has answered both. Started by hand on a
+branch, it publishes the version that branch records, which is how a lab round gets the
+image a pull request names before the merge.
+
+A package starts private on GitHub, and Cloud Run reads a public image from GitHub's
+registry with no credentials, so an owner of the organization makes the package public
+once, after the first run: on GitHub, the organization's Packages, `welcome`, Package
+settings, Change visibility, Public. Every run of the workflow ends by asking the
+registry for the tag with no credentials, and warns while the answer is not the image.
+
+An application registered before this image keeps the image its placement names: the
+stack creates a service with the placeholder and never changes it afterwards (the
+revision template is the pipeline's from the first deploy on), so editing
+`placeholderImage` in such a placement reaches only the services the stack has yet to
+create.
+
+To build and run it by hand:
+
+```sh
+CGO_ENABLED=0 GOFLAGS=-trimpath GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /tmp/welcome-image/welcome ./welcome
+podman build --file welcome/Dockerfile --tag welcome /tmp/welcome-image
+podman run --rm --publish 127.0.0.1:8080:8080 welcome
+curl --http2-prior-knowledge http://127.0.0.1:8080/
+```
+
 ## Development
 
 The tool is the Go module at this repository's root, with `main.go` beside this file:
@@ -3243,6 +3315,7 @@ release assets, their checksums, the verified fetch), `internal/deploy`
 holds the pipeline's steps over the Cloud Build, Cloud Run, Artifact Registry and Cloud
 Storage APIs, `internal/org` renders the foundation, `internal/secret`, `internal/patch`,
 and `internal/migration` hold the operations, and `internal/cli` is the
-command surface. Every rendered file carries a comment naming what it comes from; a
+command surface. `welcome` is the welcome image's program, a second command of the
+module that imports the standard library alone (The welcome image, above). Every rendered file carries a comment naming what it comes from; a
 change to a template is a change to the goldens, and the render test reads every golden
 file, comments included.

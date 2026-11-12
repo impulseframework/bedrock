@@ -264,6 +264,12 @@ linters:
           - gosec
         path: _test\.go
         text: G(703|204)
+      # The welcome image's test starts the test binary itself as the program, with the
+      # arguments a Cloud Run service would pass it, which the program does not read.
+      - linters:
+          - gosec
+        path: welcome/main_test\.go
+        text: G702
       # The migration renumber asks git about the repository it runs in (the default
       # branch's tree, the tracked files) and moves tracked files with git mv: running
       # git with the repository's own paths is the command's purpose.

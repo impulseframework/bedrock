@@ -13,4 +13,4 @@ secret_versions = {
 }
 
 # Defaults that are decisions, restated so they are visible here:
-#   placeholder_image = us-docker.pkg.dev/cloudrun/container/hello
+#   placeholder_image = ghcr.io/impulseframework/welcome:v1

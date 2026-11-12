@@ -59,7 +59,7 @@ cloud_armor = {
 
 # Defaults that are decisions, restated so they are visible here:
 #   hostnames                    = beacon-tst.
-#   placeholder_image            = us-docker.pkg.dev/cloudrun/container/hello
+#   placeholder_image            = ghcr.io/impulseframework/welcome:v1
 #   mail_mailbox                 = ""
 #   mail_from                    = ""
 #   cloud_armor_sign_in_count    = 30

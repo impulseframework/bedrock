@@ -100,7 +100,7 @@ cloud_armor = {
 
 # Defaults that are decisions, restated so they are visible here:
 #   hostnames                     = harbor-tst. / harbor-stg. / harbor.impulseframework.dev
-#   placeholder_image             = us-docker.pkg.dev/cloudrun/container/hello
+#   placeholder_image             = ghcr.io/impulseframework/welcome:v1
 #   staff_directory_group_lookup  = "direct"
 #   staff_directory_group_prefix  = "staff-"
 #   staff_directory_hosted_domain = "impulseframework.com"

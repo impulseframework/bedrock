@@ -265,6 +265,10 @@ from `2-env`'s state.
   image only while a serving revision uses it, and an old revision needs the
   shared registry's copy to start again. The service and the job are created
   with a placeholder image.
+  Until the first deploy every hostname answers with what the placeholder
+  image serves (`placeholder_image`): the framework's welcome image, which a
+  first placement names, says that the site is set up and that its application
+  has not had a release yet, over HTTP/1.1 and HTTP/2 alike.
   From the first deploy on, the revision template is the pipeline's
   (`ignore_changes`): this stack keeps each service standing (its name, its
   ingress, its protection) and says in its `revision_templates` output what
@@ -1178,7 +1182,7 @@ Per environment, after the first apply:
 | `jobs_resources` | CPU and memory of one run of the job process. | `object({ cpu, memory })` | `1`, `512Mi` | no |
 | `jobs_retries` | Retries of a failed run of the job process. | `number` | `0` | no |
 | `jobs_timeout` | How long one run of the job process may take. | `string` | `"1800s"` | no |
-| `placeholder_image` | Image the services and job are created with. | `string` | `us-docker.pkg.dev/cloudrun/container/hello` | no |
+| `placeholder_image` | Image the services and job are created with. | `string` | `ghcr.io/impulseframework/welcome:v1` | no |
 | `restore` | Set by a restore run alone: the database's protection (and tst's file stores') lifted at the apply before the plan that replaces them. | `bool` | `false` | no |
 | `retired` | The secrets and file stores a release retires, by variable: each one's protection lifted, so that the next release can remove it ("Retiring a secret or a file store"). | `list(string)` | `[]` | no |
 | `secret_versions` | Pinned secret version per environment per variable; the word `generated` for a generated secret. | `map(map(string))` | all empty | no |

@@ -1344,7 +1344,7 @@ func seedEnvironments(placed []string) []string {
 // its pipeline binary's checksum, or a commit pin with none): the prefix, the model's
 // environments, the regions, the domains, the state bucket, the default branch, the
 // release app's slug, the labels, the outlier detection thresholds and the environment
-// projects' ids and numbers, with Cloud Run's sample image to create the services with,
+// projects' ids and numbers, with the framework's welcome image to create the services with,
 // the application's code and its repository's name, and the first environment's database
 // seeded. Approvals, the
 // maintenance windows, the build machine and the instance caps are left to their

@@ -1,0 +1,930 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <meta name="color-scheme" content="light dark">
+    <title>Impulse Framework</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='%232459e6'/%3E%3C/svg%3E">
+    <style>
+      /* Layout: one centered column on a sheet of dot-grid paper. The name stands
+         above, drawn in one stroke weight: the word, and under its right end the
+         second word at a smaller size. The dot of the i bounces on the stem, and each
+         landing sends a ring out through the dots, which carries the letters with it
+         as it passes. One line of words sits beneath, then the definition, whose
+         last word rides the ring too. A small switch at the foot of the page turns
+         on a second word that comes out of that last word as a ring passes and is
+         carried a short way with the ring before it is gone. */
+      :root {
+        --ground: #eef1f5;
+        --ground-lift: #f9fafc;
+        --ink: #18202f;
+        --ink-soft: #56617a;
+        --hairline: #d3d9e3;
+        --dot: #b9c2d2;
+        --word: #1d2638;
+        --striker: #2459e6;
+        --cobalt-hi: #7da2ff;
+        --cobalt-lo: #1436a6;
+        --glint: rgba(255, 255, 255, 0.34);
+        --action: #7a3cf0;
+
+        /* No outside request is made, so every face is one the device already has. */
+        --display: ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", system-ui, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        --body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        --utility: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --ground: #0f1626;
+          --ground-lift: #18223a;
+          --ink: #e9edf5;
+          --ink-soft: #9aa6be;
+          --hairline: #26304a;
+          --dot: #2a3654;
+          --word: #e9edf5;
+          --striker: #7fa2ff;
+          --cobalt-hi: #d5e1ff;
+          --cobalt-lo: #3d60c8;
+          --glint: rgba(255, 255, 255, 0.7);
+          --action: #b08cff;
+          color-scheme: dark;
+        }
+      }
+
+      html {
+        height: 100%;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      body {
+        box-sizing: border-box;
+        min-height: 100%;
+        margin: 0;
+        padding-block: 2rem;
+        padding-left: max(16px, env(safe-area-inset-left, 0px));
+        padding-right: max(16px, env(safe-area-inset-right, 0px));
+        display: grid;
+        place-items: center;
+        background: radial-gradient(ellipse 70% 60% at 50% 38%, var(--ground-lift), var(--ground) 72%) var(--ground);
+        color: var(--ink);
+        font-family: var(--body);
+        font-size: 1rem;
+      }
+
+      /* The dot grid, drawn by the script at the end of the page. It sits behind
+         everything and takes no clicks of its own. */
+      .field {
+        position: fixed;
+        inset: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+
+      .stage {
+        position: relative;
+        width: 100%;
+        max-width: 40rem;
+        min-width: 0;
+        display: grid;
+        justify-items: center;
+        gap: 1.75rem;
+        /* A word carried off by a ring toward the window's edge is cut at the column's
+           side, so it never widens the page. */
+        overflow-x: clip;
+      }
+
+      /* The name is the page's heading. It is drawn letter by letter so each one can
+         ride a ring on its own. */
+      .mark {
+        width: 100%;
+        max-width: 36rem;
+        margin: 0;
+      }
+
+      .word {
+        display: block;
+        width: 100%;
+        height: auto;
+        overflow: visible;
+      }
+
+      .glyph {
+        fill: none;
+        stroke: var(--word);
+        stroke-width: 20;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      /* The second word stands back a step from the first. */
+      .sub .glyph {
+        stroke: var(--ink-soft);
+      }
+
+      .cobalt-hi {
+        stop-color: var(--cobalt-hi);
+      }
+
+      .cobalt-mid {
+        stop-color: var(--striker);
+      }
+
+      .cobalt-lo {
+        stop-color: var(--cobalt-lo);
+      }
+
+      .glint {
+        fill: var(--glint);
+      }
+
+      /* The dot of the i. At rest (and where motion is turned off) it sits where a
+         dot belongs; in motion it bounces on the stem, flattening a little as it
+         lands. The script reads this clock, so the cycle's length is written there too. */
+      .tittle {
+        transform-origin: 0 0;
+        animation: bounce 2.4s infinite;
+      }
+
+      @keyframes bounce {
+        0% {
+          transform: translateY(16px) scale(1.18, 0.8);
+          animation-timing-function: cubic-bezier(0.3, 0.6, 0.6, 0.9);
+        }
+        8% {
+          transform: translateY(1.3px) scale(1, 1);
+          animation-timing-function: cubic-bezier(0.3, 0.7, 0.6, 1);
+        }
+        50% {
+          transform: translateY(-34px) scale(0.97, 1.03);
+          animation-timing-function: cubic-bezier(0.4, 0, 0.7, 0.3);
+        }
+        92% {
+          transform: translateY(1.3px) scale(1, 1);
+          animation-timing-function: cubic-bezier(0.4, 0.1, 0.7, 0.4);
+        }
+        100% {
+          transform: translateY(16px) scale(1.18, 0.8);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .tittle {
+          animation: none;
+        }
+      }
+
+      .words {
+        display: grid;
+        justify-items: center;
+        gap: 0.9rem;
+        min-width: 0;
+        max-width: 36rem;
+        text-align: center;
+      }
+
+      p {
+        margin: 0;
+        max-width: 30rem;
+        line-height: 1.55;
+        text-wrap: pretty;
+      }
+
+      /* The one line of words runs as wide as the name above it, and where it has
+         to wrap, the two lines come out even. */
+      .lead {
+        max-width: 36rem;
+        font-size: 1rem;
+        text-wrap: balance;
+      }
+
+      /* The definition, in the face of a dictionary's small print. Its first word and
+         its last sentence are picked out in the blue of the i's dot, so the two read
+         together: impulse, it is what sets things in motion. */
+      .gloss {
+        box-sizing: border-box;
+        width: 100%;
+        max-width: 36rem;
+        margin-top: 0.7rem;
+        padding-top: 1.1rem;
+        border-top: 1px solid var(--hairline);
+        display: grid;
+        justify-items: center;
+        gap: 0.25rem;
+        color: var(--ink-soft);
+        font-family: var(--utility);
+        font-size: 0.8125rem;
+        line-height: 1.6;
+      }
+
+      /* The headword and the last sentence are larger than the gray definition
+         between them, in the blue of the i's dot. The sentence takes a line of its own. */
+      .gloss b,
+      .motto {
+        color: var(--striker);
+        font-size: 1.0625rem;
+        font-weight: 600;
+      }
+
+      .gloss p {
+        max-width: none;
+        text-wrap: balance;
+      }
+
+      /* The last word rides the ring. The script splits it into letters, and each
+         one shifts, tilts, grows and darkens while a ring's crest is on it. */
+      .mover span,
+      .action span {
+        display: inline-block;
+        transform-origin: 50% 65%;
+        will-change: transform;
+      }
+
+      /* The second word, in the one color on the page that is neither blue nor gray.
+         It is out of the page until the switch is turned on. Then, where rings run
+         (the script marks it live), it lies over the last word, unseen, and each ring
+         draws it out of that word and carries it off; it is a different word at each
+         landing of the dot, taken in turn from its data-words. Where motion is turned
+         off it stands under the last word, two letters to the right. */
+      .pair {
+        position: relative;
+        display: inline-block;
+      }
+
+      .action {
+        position: absolute;
+        top: 100%;
+        left: 2ch;
+        margin-top: 0.1em;
+        color: var(--action);
+        font-weight: 700;
+        white-space: nowrap;
+        pointer-events: none;
+      }
+
+      .action.live {
+        top: 0;
+        left: 50%;
+        margin-top: 0;
+        translate: -50% 0;
+      }
+
+      /* The one control: a small switch at the foot of the page. It opens in the
+         state its markup gives it, which is off. The script shows it, so a page
+         without the script has none. */
+      .switch {
+        position: fixed;
+        bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+        left: 50%;
+        translate: -50% 0;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.35rem 0.75rem 0.35rem 0.5rem;
+        border: 1px solid var(--hairline);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--ground-lift) 70%, transparent);
+        color: var(--ink-soft);
+        font-family: var(--utility);
+        font-size: 0.75rem;
+        line-height: 1;
+        cursor: pointer;
+      }
+
+      /* Its track and knob, drawn as one background: the knob at the left while it
+         is off, at the right, on the second word's color, while it is on. */
+      .switch::before {
+        content: "";
+        width: 1.5rem;
+        height: 0.85rem;
+        border-radius: 999px;
+        background: radial-gradient(circle at 0.425rem 50%, var(--ink-soft) 0 0.28rem, transparent 0.31rem) var(--hairline);
+      }
+
+      .switch[aria-pressed="true"] {
+        border-color: color-mix(in srgb, var(--action) 45%, var(--hairline));
+        color: var(--action);
+      }
+
+      .switch[aria-pressed="true"]::before {
+        background: radial-gradient(circle at calc(100% - 0.425rem) 50%, var(--ground-lift) 0 0.28rem, transparent 0.31rem)
+          var(--action);
+      }
+
+      .switch:focus-visible {
+        outline: 2px solid var(--striker);
+        outline-offset: 2px;
+      }
+
+      /* The formula never breaks across two lines. */
+      .formula {
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas class="field" aria-hidden="true"></canvas>
+
+    <main class="stage">
+      <!-- Each letter names its own middle (data-x, data-y, in the word's drawing
+           units), which is where the script asks how hard a passing ring pushes it. -->
+      <h1 class="mark">
+      <svg class="word" viewBox="0 0 660 256" role="img" aria-label="Impulse Framework">
+        <defs>
+          <radialGradient id="cobalt" cx="0.36" cy="0.3" r="0.8">
+            <stop class="cobalt-hi" offset="0" />
+            <stop class="cobalt-mid" offset="0.52" />
+            <stop class="cobalt-lo" offset="1" />
+          </radialGradient>
+        </defs>
+
+        <g transform="translate(30 92)">
+          <g class="glyph" data-x="0" data-y="42"><path d="M0 0V84" /></g>
+          <g class="glyph" data-x="98" data-y="42">
+            <path d="M38 0V84M38 30a30 30 0 0 1 60 0V84M98 30a30 30 0 0 1 60 0V84" />
+          </g>
+          <g class="glyph" data-x="238" data-y="42">
+            <path d="M196 0V128M196 42a42 42 0 1 0 84 0a42 42 0 1 0 -84 0" />
+          </g>
+          <g class="glyph" data-x="340" data-y="42"><path d="M310 0V54a30 30 0 0 0 60 0M370 0V84" /></g>
+          <g class="glyph" data-x="408" data-y="20"><path d="M408 -46V84" /></g>
+          <g class="glyph" data-x="463" data-y="42">
+            <path d="M486 14C480 4 470 0 462 0C448 0 440 9 440 21C440 34 450 38 464 42C478 46 488 51 488 63C488 75 478 84 464 84C453 84 444 80 439 70" />
+          </g>
+          <g class="glyph" data-x="558" data-y="42"><path d="M516 42H600A42 42 0 1 0 587.7 71.7" /></g>
+
+          <!-- The second word, in the same strokes at three tenths of the size, its
+               right edge on the e's. Its letters ride the rings as the others do, and
+               name their middles in the same units. -->
+          <g class="sub" transform="translate(319.2 124.8) scale(0.3)">
+            <g class="glyph" data-x="325.5" data-y="130.5"><path d="M42 -46a24 24 0 0 0 -24 24V84M0 0H40" /></g>
+            <g class="glyph" data-x="348.3" data-y="137.4"><path d="M72 0V84M72 30a30 30 0 0 1 51.2 -21.2" /></g>
+            <g class="glyph" data-x="375.3" data-y="137.4">
+              <path d="M229 0V84M145 42a42 42 0 1 0 84 0a42 42 0 1 0 -84 0" />
+            </g>
+            <g class="glyph" data-x="417.9" data-y="137.4">
+              <path d="M269 0V84M269 30a30 30 0 0 1 60 0V84M329 30a30 30 0 0 1 60 0V84" />
+            </g>
+            <g class="glyph" data-x="458.1" data-y="137.4"><path d="M421 42H505A42 42 0 1 0 492.7 71.7" /></g>
+            <g class="glyph" data-x="498.3" data-y="137.4">
+              <path d="M537 0V54a30 30 0 0 0 60 0V0M597 54a30 30 0 0 0 60 0V0" />
+            </g>
+            <g class="glyph" data-x="538.5" data-y="137.4"><path d="M689 42a42 42 0 1 0 84 0a42 42 0 1 0 -84 0" /></g>
+            <g class="glyph" data-x="568.2" data-y="137.4"><path d="M805 0V84M805 30a30 30 0 0 1 51.2 -21.2" /></g>
+            <g class="glyph" data-x="591.6" data-y="130.5"><path d="M880 -46V84M932 0L880 52M900 32L936 84" /></g>
+          </g>
+
+          <g transform="translate(0 -36)">
+            <g class="tittle">
+              <circle r="12.5" fill="url(#cobalt)" />
+              <ellipse class="glint" cx="-4.5" cy="-5.5" rx="3.6" ry="2.2" transform="rotate(-35 -4.5 -5.5)" />
+            </g>
+          </g>
+        </g>
+      </svg>
+      </h1>
+
+      <div class="words">
+        <p class="lead">The site is up and running, waiting for the first application release.</p>
+        <div class="gloss">
+          <p>
+            <b>impulse,</b> noun. A force applied over a short time
+            <span class="formula">(J = F &times; &Delta;t):</span>
+          </p>
+          <p class="motto">it is what sets things in <span class="pair"><span class="mover">motion</span><span class="action" aria-hidden="true" data-words="action progress momentum results" hidden>action</span></span>.</p>
+        </div>
+      </div>
+    </main>
+
+    <button class="switch" type="button" aria-pressed="false" title="Bring a word out of &ldquo;motion&rdquo; with each wave" hidden>action</button>
+
+    <script>
+      // The dot grid behind the page, and the word's part in it. Each time the dot
+      // of the i lands, a ring travels out from the top of the stem and pushes the
+      // dots it passes; the letters ride the same ring, each one as it reaches it. A
+      // click or a tap anywhere starts a ring too. The definition's last word rides the
+      // rings as well. With the switch at the foot of the page turned on, a second
+      // word comes out of it as a ring's crest crosses it and is carried along the
+      // ring's path a short way, fading as it goes. The page is whole without this script.
+      (() => {
+        const canvas = document.querySelector(".field");
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          return;
+        }
+
+        const root = document.documentElement;
+        const word = document.querySelector(".word");
+        const words = document.querySelector(".words");
+        const stage = document.querySelector(".stage");
+        const tittle = document.querySelector(".tittle");
+        const still = window.matchMedia("(prefers-reduced-motion: reduce)");
+        const dark = window.matchMedia("(prefers-color-scheme: dark)");
+
+        const TAU = Math.PI * 2;
+        const GAP = 28; // between dots, in CSS pixels
+        const DOT = 1.1; // a resting dot's radius
+        const GROW = 1.6; // what a ring adds to it at its crest
+        const PUSH = 6; // how far a ring moves a dot at its crest
+        const SPEED = 420; // a ring's speed, pixels a second
+        const BAND = 54; // half a ring's width, as the dots feel it
+        const LIFE = 3; // seconds until a ring has faded out
+        const PERIOD = 2400; // one bounce in milliseconds, as the stylesheet has it
+        const STEPS = 16; // colors between a thing at rest and the dot's blue
+        const ALPHA = [0.22, 0.55, 1]; // dots behind the words, near them, elsewhere
+
+        // The word's drawing: its width in its own units, where its letters start
+        // inside it, and the top of the i's stem, where the dot lands.
+        const WORD_UNITS = 660;
+        const WORD_LEFT = 30;
+        const WORD_TOP = 92;
+        const LANDING = { x: 30, y: 82 };
+        const WORD_BAND = 92; // a letter is wide, so it feels a ring over a wider band
+        const WORD_PUSH = 9; // how far a ring moves a letter at its crest, CSS pixels
+        const WORD_TINT = 0.8; // how far toward the blue a letter goes at the crest
+
+        // The definition's last word. Its letters are small, so they move less than
+        // the word's, and they go the other way in color: from the blue to the ink.
+        const ECHO_BAND = 64; // half a ring's width, as these letters feel it
+        const ECHO_PUSH = 4; // how far a ring moves one at its crest, CSS pixels
+        const ECHO_TILT = 10; // how far one leans at the crest, in degrees, each the other way from its neighbor
+        const ECHO_GROW = 0.42; // how much larger one stands at the crest
+        const ECHO_INK = 1.7; // how soon one reaches the ink as the crest comes on
+
+        // The second word, unseen at rest: a ring draws it out of the last word.
+        const ACTION_SHOW = 2; // how soon a ring is strong enough to bring a letter into full view
+        const ACTION_LEAD = 0.05; // seconds ahead of the crest that a letter starts to show
+        const ACTION_TIME = 0.6; // seconds a letter is carried before it is gone
+        const ACTION_REACH = 64; // how far it is carried in that time, CSS pixels
+        const ACTION_HOLD = 0.3; // the part of that time a letter stays in full view before it fades
+        const ACTION_GROW = 0.2; // how much larger a letter is where it vanishes
+        const ACTION_ROOM = 48; // the room under the words kept clear of bright dots for it, CSS pixels
+
+        const glyphs = Array.from(document.querySelectorAll(".glyph"), (el) => ({
+          el,
+          x: WORD_LEFT + Number(el.dataset.x),
+          y: WORD_TOP + Number(el.dataset.y),
+          small: el.closest(".sub") !== null,
+          moved: false,
+        }));
+
+        // A word split into letters that each take a transform of their own.
+        function split(el) {
+          const parts = [];
+          if (el) {
+            const text = el.textContent;
+            el.textContent = "";
+            for (const character of text) {
+              const span = document.createElement("span");
+              span.textContent = character;
+              el.append(span);
+              parts.push({ el: span, moved: false, lit: false });
+            }
+          }
+          return parts;
+        }
+
+        const mover = document.querySelector(".mover");
+        const letters = split(mover);
+        const action = document.querySelector(".action");
+        let shown = split(action);
+
+        // The words the second word takes in turn, one for each landing of the dot.
+        const sayings = action ? (action.dataset.words || action.textContent).split(/\s+/).filter(Boolean) : [];
+        let turn = -1;
+
+        // The switch at the foot of the page. Off, the second word is out of the page;
+        // on, each ring draws it out of the last word. It opens in the state its
+        // markup gives it (aria-pressed). Turning it on shows the first word at once,
+        // drawn out the way the ring from the i draws it, by a ring that moves nothing
+        // else.
+        const toggle = document.querySelector(".switch");
+        let enabled = Boolean(toggle) && toggle.getAttribute("aria-pressed") === "true";
+
+        function setEnabled(on) {
+          enabled = on;
+          toggle.setAttribute("aria-pressed", String(on));
+          action.hidden = !on;
+          turn = on ? 0 : -1;
+          say(sayings[0]);
+          if (on && !still.matches) {
+            const box = word.getBoundingClientRect();
+            const scale = box.width / WORD_UNITS;
+            const x = box.left + LANDING.x * scale;
+            const y = box.top + LANDING.y * scale;
+            const at = action.getBoundingClientRect();
+            const far = Math.hypot(at.left + at.width / 2 - x, at.top + at.height / 2 - y);
+            rings.push({ x, y, force: 0, carry: 1, born: performance.now() / 1000 - far / SPEED + ACTION_LEAD });
+          }
+        }
+
+        if (toggle && action && sayings.length > 0) {
+          toggle.hidden = false;
+          toggle.addEventListener("click", () => setEnabled(!enabled));
+        }
+
+        let width = 0;
+        let height = 0;
+        let lattice = [[], [], []];
+        let dotRamp = [];
+        let wordRamp = [];
+        let subRamp = [];
+        let echoRamp = [];
+        let rings = [];
+        let clock = null;
+        let lastPhase = null;
+        let frame = 0;
+
+        function channels(token) {
+          const n = parseInt(getComputedStyle(root).getPropertyValue(token).trim().slice(1), 16);
+          return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+        }
+
+        function rampBetween(from, to) {
+          const ramp = [];
+          for (let i = 0; i <= STEPS; i++) {
+            const t = i / STEPS;
+            const mix = from.map((c, j) => Math.round(c + (to[j] - c) * t));
+            ramp.push(`rgb(${mix[0]}, ${mix[1]}, ${mix[2]})`);
+          }
+          return ramp;
+        }
+
+        // The colors a dot and a letter pass through as a ring crosses them, read
+        // from the page's own palette so both follow light and dark.
+        function readPalette() {
+          const blue = channels("--striker");
+          dotRamp = rampBetween(channels("--dot"), blue);
+          wordRamp = rampBetween(channels("--word"), blue);
+          subRamp = rampBetween(channels("--ink-soft"), blue);
+          echoRamp = rampBetween(blue, channels("--ink"));
+        }
+
+        // The grid for the window as it stands, centered on it, each dot filed by how
+        // close it lies to the words: the nearer, the fainter, so the text reads clean.
+        function layOut() {
+          const ratio = Math.min(window.devicePixelRatio || 1, 2);
+          width = canvas.clientWidth;
+          height = canvas.clientHeight;
+          canvas.width = Math.round(width * ratio);
+          canvas.height = Math.round(height * ratio);
+          ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+
+          const box = words.getBoundingClientRect();
+          const quiet = { left: box.left, right: box.right, top: box.top, bottom: box.bottom + (action ? ACTION_ROOM : 0) };
+          lattice = [[], [], []];
+          for (let y = ((height / 2) % GAP) - GAP; y < height + GAP; y += GAP) {
+            for (let x = ((width / 2) % GAP) - GAP; x < width + GAP; x += GAP) {
+              const dx = Math.max(quiet.left - x, 0, x - quiet.right);
+              const dy = Math.max(quiet.top - y, 0, y - quiet.bottom);
+              const away = Math.hypot(dx, dy);
+              lattice[away < 12 ? 0 : away < 44 ? 1 : 2].push(x, y);
+            }
+          }
+        }
+
+        function draw(t) {
+          rings = rings.filter((ring) => t - ring.born < LIFE);
+          ctx.clearRect(0, 0, width, height);
+
+          const moved = [];
+          for (let level = 0; level < lattice.length; level++) {
+            const dots = lattice[level];
+            ctx.beginPath();
+            for (let i = 0; i < dots.length; i += 2) {
+              const x = dots[i];
+              const y = dots[i + 1];
+              let lift = 0;
+              let px = 0;
+              let py = 0;
+              for (const ring of rings) {
+                const age = t - ring.born;
+                const dx = x - ring.x;
+                const dy = y - ring.y;
+                const far = Math.sqrt(dx * dx + dy * dy);
+                const across = (far - age * SPEED) / BAND;
+                if (across > -1 && across < 1) {
+                  const fade = 1 - age / LIFE;
+                  const crest = ((Math.cos(across * Math.PI) + 1) / 2) * fade * fade * ring.force;
+                  lift += crest;
+                  if (far > 0.001) {
+                    px += (dx / far) * crest * PUSH;
+                    py += (dy / far) * crest * PUSH;
+                  }
+                }
+              }
+              if (lift < 0.03) {
+                ctx.moveTo(x + DOT, y);
+                ctx.arc(x, y, DOT, 0, TAU);
+              } else {
+                moved.push(x + px, y + py, Math.min(lift, 1), level);
+              }
+            }
+            ctx.globalAlpha = ALPHA[level];
+            ctx.fillStyle = dotRamp[0];
+            ctx.fill();
+          }
+
+          for (let i = 0; i < moved.length; i += 4) {
+            const lift = moved[i + 2];
+            ctx.globalAlpha = ALPHA[moved[i + 3]];
+            ctx.fillStyle = dotRamp[Math.round(lift * STEPS)];
+            ctx.beginPath();
+            ctx.arc(moved[i], moved[i + 1], DOT + lift * GROW, 0, TAU);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+        }
+
+        function settle(glyph) {
+          if (glyph.moved) {
+            glyph.el.removeAttribute("transform");
+            glyph.el.style.stroke = "";
+            glyph.moved = false;
+          }
+        }
+
+        // The letters, each moved by the rings crossing its middle: away from where
+        // the ring began, and toward the dot's blue while the crest is on it.
+        function sway(t) {
+          const box = word.getBoundingClientRect();
+          const scale = box.width / WORD_UNITS;
+          for (const glyph of glyphs) {
+            const x = box.left + glyph.x * scale;
+            const y = box.top + glyph.y * scale;
+            let lift = 0;
+            let px = 0;
+            let py = 0;
+            for (const ring of rings) {
+              const age = t - ring.born;
+              const dx = x - ring.x;
+              const dy = y - ring.y;
+              const far = Math.sqrt(dx * dx + dy * dy);
+              const across = (far - age * SPEED) / WORD_BAND;
+              if (across > -1 && across < 1) {
+                const crest = ((Math.cos(across * Math.PI) + 1) / 2) * (1 - age / LIFE) * ring.force;
+                lift += crest;
+                if (far > 0.001) {
+                  px += (dx / far) * crest;
+                  py += (dy / far) * crest;
+                }
+              }
+            }
+            if (lift < 0.01 || scale === 0) {
+              settle(glyph);
+              continue;
+            }
+            const reach = WORD_PUSH / scale;
+            glyph.el.setAttribute("transform", `translate(${(px * reach).toFixed(2)} ${(py * reach).toFixed(2)})`);
+            const ramp = glyph.small ? subRamp : wordRamp;
+            glyph.el.style.stroke = ramp[Math.round(Math.min(lift, 1) * WORD_TINT * STEPS)];
+            glyph.moved = true;
+          }
+        }
+
+        function rest(letter) {
+          if (letter.moved) {
+            letter.el.style.transform = "";
+            letter.el.style.color = "";
+            letter.moved = false;
+          }
+        }
+
+        // What the rings do at a point: how high the crests on it stand together, and
+        // which way they push.
+        function crestAt(x, y, t, band) {
+          let lift = 0;
+          let px = 0;
+          let py = 0;
+          for (const ring of rings) {
+            const age = t - ring.born;
+            const dx = x - ring.x;
+            const dy = y - ring.y;
+            const far = Math.sqrt(dx * dx + dy * dy);
+            const across = (far - age * SPEED) / band;
+            if (across > -1 && across < 1) {
+              const crest = ((Math.cos(across * Math.PI) + 1) / 2) * (1 - age / LIFE) * ring.force;
+              lift += crest;
+              if (far > 0.001) {
+                px += (dx / far) * crest;
+                py += (dy / far) * crest;
+              }
+            }
+          }
+          return { lift, px, py };
+        }
+
+        // A small letter's place while a crest is on it: pushed along the ring's path,
+        // leaning, a little larger.
+        function carried(at, i) {
+          const up = Math.min(at.lift, 1);
+          const lean = (i % 2 === 0 ? -1 : 1) * ECHO_TILT * up;
+          return (
+            `translate(${(at.px * ECHO_PUSH).toFixed(2)}px, ${(at.py * ECHO_PUSH).toFixed(2)}px) ` +
+            `rotate(${lean.toFixed(2)}deg) scale(${(1 + up * ECHO_GROW).toFixed(3)})`
+          );
+        }
+
+        // The last word's letters, each carried by the rings crossing it and turned
+        // toward the ink while the crest is on it.
+        function echo(t) {
+          if (letters.length === 0) {
+            return;
+          }
+          const box = mover.getBoundingClientRect();
+          const step = box.width / letters.length;
+          const y = box.top + box.height / 2;
+          letters.forEach((letter, i) => {
+            const at = crestAt(box.left + (i + 0.5) * step, y, t, ECHO_BAND);
+            if (at.lift < 0.01) {
+              rest(letter);
+              return;
+            }
+            letter.el.style.transform = carried(at, i);
+            letter.el.style.color = echoRamp[Math.round(Math.min(at.lift * ECHO_INK, 1) * STEPS)];
+            letter.moved = true;
+          });
+        }
+
+        function hide(letter) {
+          if (letter.lit) {
+            letter.el.style.opacity = "0";
+            letter.el.style.transform = "";
+            letter.lit = false;
+          }
+        }
+
+        function say(text) {
+          action.textContent = text;
+          shown = split(action);
+          for (const letter of shown) {
+            letter.el.style.opacity = still.matches ? "" : "0";
+          }
+        }
+
+        // The next word in turn, taken at a landing while the last one is out of sight.
+        function nextWord() {
+          if (!enabled || sayings.length < 2 || shown.some((letter) => letter.lit)) {
+            return;
+          }
+          turn = (turn + 1) % sayings.length;
+          say(sayings[turn]);
+        }
+
+        function smooth(v) {
+          const c = Math.min(Math.max(v, 0), 1);
+          return c * c * (3 - 2 * c);
+        }
+
+        // The second word. It lies over the last word, centered on it, unseen. As a
+        // ring's crest reaches the place of one of its letters, the letter
+        // comes into view, is carried along the ring's path, fast at first and slowing,
+        // and fades out by the end of its reach. Where two rings would carry it, the
+        // one that shows it more does.
+        function sweep(t) {
+          if (!enabled || shown.length === 0) {
+            return;
+          }
+          const box = action.getBoundingClientRect();
+          const step = box.width / shown.length;
+          const y = box.top + box.height / 2;
+          // The word is carried sideways only as far as the column has room for the
+          // whole of it, so on a narrow screen it goes mostly down and stays whole.
+          const column = stage.getBoundingClientRect();
+          const roomRight = Math.max(column.right - box.right, 0);
+          const roomLeft = Math.max(box.left - column.left, 0);
+          shown.forEach((letter, i) => {
+            const x = box.left + (i + 0.5) * step;
+            let seen = 0;
+            let place = "";
+            for (const ring of rings) {
+              const dx = x - ring.x;
+              const dy = y - ring.y;
+              const far = Math.sqrt(dx * dx + dy * dy);
+              const arrival = far / SPEED;
+              const since = t - ring.born - arrival; // seconds since the crest reached the letter
+              if (far < 0.001 || since < -ACTION_LEAD || since > ACTION_TIME) {
+                continue;
+              }
+              const u = Math.max(since, 0) / ACTION_TIME;
+              const strength = Math.min((1 - arrival / LIFE) * (ring.carry ?? ring.force) * ACTION_SHOW, 1);
+              const rise = Math.min((since + ACTION_LEAD) / (2 * ACTION_LEAD), 1);
+              const fall = 1 - smooth((u - ACTION_HOLD) / (1 - ACTION_HOLD));
+              const now = strength * rise * fall;
+              if (now > seen) {
+                const out = ACTION_REACH * (1 - (1 - u) * (1 - u));
+                seen = now;
+                const across = Math.min(Math.max((dx / far) * out, -roomLeft), roomRight);
+                place =
+                  `translate(${across.toFixed(2)}px, ${((dy / far) * out).toFixed(2)}px) ` +
+                  `scale(${(1 + ACTION_GROW * u).toFixed(3)})`;
+              }
+            }
+            if (seen < 0.01) {
+              hide(letter);
+              return;
+            }
+            letter.el.style.opacity = seen.toFixed(3);
+            letter.el.style.transform = place;
+            letter.lit = true;
+          });
+        }
+
+        // How far through its bounce the dot is, from the animation's own clock where
+        // the browser gives it.
+        function phase(now) {
+          if (!clock && tittle.getAnimations) {
+            clock = tittle.getAnimations()[0] || null;
+          }
+          const elapsed = clock && clock.currentTime !== null ? Number(clock.currentTime) : now;
+          return (elapsed % PERIOD) / PERIOD;
+        }
+
+        function ringAt(x, y, force) {
+          rings.push({ x, y, force, born: performance.now() / 1000 });
+        }
+
+        // The dot lands as its cycle starts over.
+        function tick(now) {
+          const at = phase(now);
+          if (lastPhase === null || at < lastPhase) {
+            const box = word.getBoundingClientRect();
+            const scale = box.width / WORD_UNITS;
+            nextWord();
+            ringAt(box.left + LANDING.x * scale, box.top + LANDING.y * scale, 1);
+          }
+          lastPhase = at;
+          const t = now / 1000;
+          draw(t);
+          sway(t);
+          echo(t);
+          sweep(t);
+          frame = requestAnimationFrame(tick);
+        }
+
+        // With motion turned off the grid is drawn once and the word stands still.
+        function start() {
+          cancelAnimationFrame(frame);
+          rings = [];
+          clock = null;
+          lastPhase = null;
+          glyphs.forEach(settle);
+          letters.forEach(rest);
+          // Where nothing will move, the second word stands under the last word in
+          // plain sight; where rings run, it lies over that word, out of sight, and
+          // waits for the first one.
+          if (action) {
+            action.classList.toggle("live", !still.matches);
+            action.hidden = !enabled;
+            turn = -1;
+            if (sayings.length > 0) {
+              say(sayings[0]);
+            }
+          }
+          for (const letter of shown) {
+            letter.el.style.transform = "";
+            letter.el.style.opacity = still.matches ? "" : "0";
+            letter.lit = false;
+          }
+          readPalette();
+          layOut();
+          if (still.matches) {
+            draw(performance.now() / 1000);
+          } else {
+            frame = requestAnimationFrame(tick);
+          }
+        }
+
+        function refresh() {
+          readPalette();
+          layOut();
+          if (still.matches) {
+            draw(performance.now() / 1000);
+          }
+        }
+
+        window.addEventListener("resize", refresh);
+        window.addEventListener("load", refresh);
+        window.addEventListener("scroll", refresh, { passive: true });
+        window.addEventListener("pointerdown", (event) => {
+          // The switch is a control, not the page's ground: a click on it starts no ring.
+          if (!still.matches && !(event.target instanceof Element && event.target.closest(".switch"))) {
+            ringAt(event.clientX, event.clientY, 0.9);
+          }
+        });
+        still.addEventListener("change", start);
+        dark.addEventListener("change", refresh);
+
+        start();
+      })();
+    </script>
+  </body>
+</html>
