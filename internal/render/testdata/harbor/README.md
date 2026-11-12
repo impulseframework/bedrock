@@ -1182,7 +1182,7 @@ Per environment, after the first apply:
 | `jobs_resources` | CPU and memory of one run of the job process. | `object({ cpu, memory })` | `1`, `512Mi` | no |
 | `jobs_retries` | Retries of a failed run of the job process. | `number` | `0` | no |
 | `jobs_timeout` | How long one run of the job process may take. | `string` | `"1800s"` | no |
-| `placeholder_image` | Image the services and job are created with. | `string` | `ghcr.io/impulseframework/welcome:v1` | no |
+| `placeholder_image` | Image the services and job are created with. | `string` | `ghcr.io/impulseframework/welcome@sha256:106eb632ba7ae2857a044cec68c6efd8d647f67b2355f3b37e206b1686fee6aa` | no |
 | `restore` | Set by a restore run alone: the database's protection (and tst's file stores') lifted at the apply before the plan that replaces them. | `bool` | `false` | no |
 | `retired` | The secrets and file stores a release retires, by variable: each one's protection lifted, so that the next release can remove it ("Retiring a secret or a file store"). | `list(string)` | `[]` | no |
 | `secret_versions` | Pinned secret version per environment per variable; the word `generated` for a generated secret. | `map(map(string))` | all empty | no |

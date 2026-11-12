@@ -61,7 +61,7 @@ cloud_armor = {
 
 # Defaults that are decisions, restated so they are visible here:
 #   hostnames                    = lantrn-console-tst. / lantrn-console-stg. / lantrn-console.impulseframework.dev
-#   placeholder_image            = ghcr.io/impulseframework/welcome:v1
+#   placeholder_image            = ghcr.io/impulseframework/welcome@sha256:106eb632ba7ae2857a044cec68c6efd8d647f67b2355f3b37e206b1686fee6aa
 #   mail_mailbox                 = ""
 #   cloud_armor_sign_in_count    = 30
 #   cloud_armor_sign_in_interval = 60

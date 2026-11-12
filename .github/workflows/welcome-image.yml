@@ -22,8 +22,16 @@
 #
 # A package starts private on GitHub, and Cloud Run reads only a public one: an owner of the
 # organization makes the package public once, after the first run (README.md, "The welcome
-# image"). Every run ends by asking the registry for the tag with no credentials, and warns
-# while that answer is not the image.
+# image"). Every run asks the registry for the tag with no credentials, and warns while that
+# answer is not the image.
+#
+# The placement names the image by digest, for the version it says (PlaceholderImage and
+# PlaceholderVersion in internal/derive/placement.go): the registry has no setting that
+# keeps a tag from being pushed again, and a service created by digest runs the image that
+# was published, whatever the tag names later. Every run ends by asking the registry for
+# the digest it holds under that version's tag and fails when it is not the digest the
+# placement names: a tag that was moved, or a digest written wrong. A change to the
+# placement's file starts a run, so a new digest is held to the registry when it lands.
 name: welcome image
 
 on:
@@ -31,6 +39,7 @@ on:
     branches: [master]
     paths:
       - welcome/**
+      - internal/derive/placement.go
       - .github/workflows/welcome-image.yml
   workflow_dispatch:
 
@@ -95,7 +104,7 @@ jobs:
           if docker pull --quiet "$IMAGE" >/dev/null 2>&1; then
             published=$(docker image inspect --format "{{ index .Config.Labels \"${SOURCES_LABEL}\" }}" "$IMAGE")
             if [ "$published" != "$SOURCES" ]; then
-              echo "${IMAGE} is published already, made of other sources (${published:-none recorded}) than welcome/VERSION records for it (${SOURCES}). A tag is never moved: this change takes the next version, in welcome/VERSION and in derive.PlaceholderImage."
+              echo "${IMAGE} is published already, made of other sources (${published:-none recorded}) than welcome/VERSION records for it (${SOURCES}). A tag is never moved: this change takes the next version in welcome/VERSION, and the placement names its digest once it is published."
               exit 1
             fi
             echo "${IMAGE} is published already, made of these sources: nothing is published."
@@ -186,3 +195,24 @@ jobs:
           else
             echo "::warning::${IMAGE} is published but not public (asked with no credentials, the registry answered ${code}): Cloud Run cannot create a service with it until an owner of the organization makes the package public, once (README.md, \"The welcome image\")"
           fi
+      - name: Hold the placement's digest to the registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLACEMENT: internal/derive/placement.go
+        run: |
+          set -euo pipefail
+          # The version the placement names and the digest it names it by, read from the
+          # two constants as gofmt writes them.
+          named=$(sed -nE 's/^[[:space:]]*PlaceholderVersion = "(v[1-9][0-9]*)"$/\1/p' "$PLACEMENT")
+          digest=$(sed -nE "s#^[[:space:]]*PlaceholderImage = \"${REGISTRY}/${NAME}@(sha256:[0-9a-f]{64})\"\$#\\1#p" "$PLACEMENT")
+          if [ -z "$named" ] || [ -z "$digest" ]; then
+            echo "${PLACEMENT} does not name the welcome image by a version and a digest (PlaceholderVersion, PlaceholderImage = \"${REGISTRY}/${NAME}@sha256:...\")"
+            exit 1
+          fi
+          token=$(curl -fsS -u "${GITHUB_ACTOR}:${GH_TOKEN}" "https://${REGISTRY}/token?service=${REGISTRY}&scope=repository:${NAME}:pull" | jq -r '.token // empty') || token=""
+          held=$(curl -sS -o /dev/null -D - -H "Authorization: Bearer ${token}" -H "Accept: ${MANIFESTS}" "https://${REGISTRY}/v2/${NAME}/manifests/${named}" | tr -d '\r' | sed -nE 's/^docker-content-digest: (sha256:[0-9a-f]{64})$/\1/Ip') || held=""
+          if [ "$held" != "$digest" ]; then
+            echo "::error::the placement names ${REGISTRY}/${NAME}@${digest} as ${named}, and under the tag ${named} the registry holds ${held:-nothing it would name}: the tag was moved, or the digest is written wrong. A service is created with the digest the placement names, never with the tag."
+            exit 1
+          fi
+          echo "the placement names ${named} by the digest the registry holds under that tag: ${digest}"

@@ -275,8 +275,9 @@ func TestVersion(t *testing.T) {
 
 A tag is never moved once it is published (.github/workflows/welcome-image.yml refuses
 a version whose published image was made of other sources). When %s is published
-already, this change takes the next version: raise it in %s with the hash above, and
-name it in derive.PlaceholderImage. When it has never been published, record the hash
+already, this change takes the next version: raise it in %s with the hash above; once
+the merge has published it, a second change names its digest in derive.PlaceholderImage
+and its version in derive.PlaceholderVersion. When it has never been published, record the hash
 above beside it.`, got, versionFile, record[2], record[1], record[1], versionFile)
 	}
 }

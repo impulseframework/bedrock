@@ -246,8 +246,8 @@ and what its absence means:
   organization's `stateBucket`. Required.
 - `placeholderImage`: the image the services and the job are created with before the
   first deploy, after which the pipeline owns the image. The framework's welcome image,
-  `ghcr.io/impulseframework/welcome:v1` (The welcome image, below); a placement written
-  before that image names Cloud Run's public sample,
+  named by its digest, `ghcr.io/impulseframework/welcome@sha256:...` (The welcome image,
+  below); a placement written before that image names Cloud Run's public sample,
   `us-docker.pkg.dev/cloudrun/container/hello`, and keeps it. Required.
 - `defaultBranch`: the branch pull requests target and releases are cut on. From the
   organization's `githubDefaultBranch`. Required.
@@ -3248,10 +3248,10 @@ and every step keeps its own timeout (Maintenance windows, above).
 Between an application's registration and its first release its sites have no image of
 their own, and the stack creates every Cloud Run service with the image the placement
 names as `placeholderImage`. A first placement names the framework's welcome image,
-`ghcr.io/impulseframework/welcome:v1`: one small program, the `welcome` directory of this
-repository, which answers every request, at every path, with one page saying that the
-site is set up and that its application has not had a release yet. The first deploy
-takes its place.
+`ghcr.io/impulseframework/welcome`, by the digest of its version v1: one small program,
+the `welcome` directory of this repository, which answers every request, at every path,
+with one page saying that the site is set up and that its application has not had a
+release yet. The first deploy takes its place.
 
 It serves on the port Cloud Run gives it (`PORT`), on one listener that speaks HTTP/1.1
 and unencrypted HTTP/2. The stack names the container port `h2c` for a site whose main
@@ -3279,8 +3279,7 @@ version, which is the tag, and the SHA-256 of what the image is made of (every f
 the directory but its tests and the record). The directory's test refuses a record whose
 hash is not the files', so a change to the program, the page or the Dockerfile says in
 the test's failure what to do: before the version has ever been published, record the
-new hash; after, raise the version there and in `derive.PlaceholderImage`
-(`internal/derive/placement.go`), which a test holds to the record. The workflow
+new hash; after, raise the version there. The workflow
 `.github/workflows/welcome-image.yml` publishes it: on a push to master that touches the
 image, or started by hand, it looks for the version's tag in the registry. When the tag
 is there it checks that the published image carries the hash the record names (the
@@ -3291,6 +3290,23 @@ with a site's binary as its arguments, asks it for the page over HTTP/1.1 and ov
 unencrypted HTTP/2, and pushes it once it has answered both. Started by hand on a
 branch, it publishes the version that branch records, which is how a lab round gets the
 image a pull request names before the merge.
+
+The placement names the image by its digest, the hash of what the registry holds, and
+not by its tag (`derive.PlaceholderImage`, with the version that digest was published as
+in `derive.PlaceholderVersion`, both in `internal/derive/placement.go`). GitHub's
+container registry has no setting that keeps a tag from being pushed again, and the
+package can be written by any run of a workflow in this repository; a service created
+by digest runs the image that was published and reviewed, whatever a tag names later. A
+digest exists only once its image is published, and the image is published by the merge
+that raises the version, so a change to the image lands in two steps: the change raises
+the version in `welcome/VERSION` and merges, and the workflow's run publishes it and
+prints its digest (`published ghcr.io/impulseframework/welcome@sha256:...`); a second
+change names that version and digest in the two constants. Between the two the placement
+names the version before, which a test allows and no further back. Every run of the
+workflow, which a change to `internal/derive/placement.go` starts as well, asks the
+registry for the digest it holds under the tag of the version the placement names, and
+fails when that is not the digest named: a tag that was moved, or a digest written
+wrong.
 
 A package starts private on GitHub, and Cloud Run reads a public image from GitHub's
 registry with no credentials, so an owner of the organization makes the package public
