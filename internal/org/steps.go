@@ -20,7 +20,7 @@ import (
 // OpenTofu image the check and the commands run in.
 const (
 	gcloudImage   = "gcr.io/cloud-builders/gcloud"
-	goImage       = "cgr.dev/chainguard/go@sha256:04df3e7738e9caea8a5830142ad01cb484bd9790a931bdd7b5d0462538f9f305"
+	goImage       = "cgr.dev/chainguard/go@sha256:905d3bb3fbb15a801a974de607f66c7ba655a327dc40f0a1d42d4a24708165bd"
 	openTofuImage = "ghcr.io/opentofu/opentofu:1.12.6"
 )
 

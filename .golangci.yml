@@ -296,6 +296,14 @@ linters:
       - linters:
           - tagliatelle
         path: internal/(github/|release/|deploy/guardplan\.go)
+      # The GitHub API stand-in answers the tests' own client, in JSON. Where an answer
+      # cannot be encoded it writes the encoder's error in its place, for the test's
+      # failure to show: no browser renders it. (The taint analysis reports it with
+      # Go 1.27.4's standard library and did not with 1.27.3's.)
+      - linters:
+          - gosec
+        path: internal/github/githubtest/server\.go
+        text: G705
       # tokenEnv names the variable a token is read from; it holds no token.
       - linters:
           - gosec

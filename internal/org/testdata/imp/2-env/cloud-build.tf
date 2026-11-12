@@ -248,7 +248,7 @@ resource "google_cloudbuild_trigger" "stack" {
 
     step {
       id         = "BuildBedrock"
-      name       = "cgr.dev/chainguard/go@sha256:04df3e7738e9caea8a5830142ad01cb484bd9790a931bdd7b5d0462538f9f305"
+      name       = "cgr.dev/chainguard/go@sha256:905d3bb3fbb15a801a974de607f66c7ba655a327dc40f0a1d42d4a24708165bd"
       entrypoint = "sh"
       args       = ["-c", local.stack_build_bedrock]
       env        = ["GOBIN=/builder/home", "CGO_ENABLED=0", "GOTOOLCHAIN=local", "GOFLAGS=-trimpath", "GOPATH=/tmp/go", "GOCACHE=/tmp/go-build", "GOMODCACHE=/tmp/go-mod", "GOPROXY=https://proxy.golang.org", "GOSUMDB=sum.golang.org", "GONOSUMDB=", "GOPRIVATE=", "GOINSECURE="]
