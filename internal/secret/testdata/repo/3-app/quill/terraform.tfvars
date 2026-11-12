@@ -13,4 +13,4 @@ secret_versions = {
 }
 
 # Defaults that are decisions, restated so they are visible here:
-#   placeholder_image = ghcr.io/impulseframework/welcome:v1
+#   placeholder_image = ghcr.io/impulseframework/welcome@sha256:106eb632ba7ae2857a044cec68c6efd8d647f67b2355f3b37e206b1686fee6aa

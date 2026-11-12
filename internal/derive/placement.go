@@ -321,15 +321,27 @@ func Machines() []Machine {
 	}
 }
 
-// PlaceholderImage is the image an application's first placement names for every service
-// and job to be created with before the first deploy (placeholderImage): the framework's
-// welcome image, this repository's welcome directory, which serves one page on the port
-// Cloud Run gives it, in HTTP/1.1 and in unencrypted HTTP/2 (a site on the framework's
-// server gets a container port named h2c, which an image that speaks HTTP/1.1 alone
-// answers with 502), and reads nothing. The tag is the version welcome/VERSION records,
-// published once and never moved; a placement written before this image keeps the one it
-// names, Cloud Run's public sample.
-const PlaceholderImage = "ghcr.io/impulseframework/welcome:v1"
+const (
+	// PlaceholderImage is the image an application's first placement names for every
+	// service and job to be created with before the first deploy (placeholderImage): the
+	// framework's welcome image, this repository's welcome directory, which serves one
+	// page on the port Cloud Run gives it, in HTTP/1.1 and in unencrypted HTTP/2 (a site
+	// on the framework's server gets a container port named h2c, which an image that
+	// speaks HTTP/1.1 alone answers with 502), and reads nothing. It is named by its
+	// digest, the hash of what the registry holds, so a service is created with the image
+	// that was published as PlaceholderVersion and with nothing a tag could be moved to
+	// afterwards. A placement written before this image keeps the one it names, Cloud
+	// Run's public sample.
+	PlaceholderImage = "ghcr.io/impulseframework/welcome@sha256:106eb632ba7ae2857a044cec68c6efd8d647f67b2355f3b37e206b1686fee6aa"
+	// PlaceholderVersion is the version of the welcome image that digest was published
+	// as: the version welcome/VERSION records, or the one before it. A digest exists only
+	// once its image is published, and the image is published by the merge that raises
+	// the version, so a change to the image lands in two steps: the version is raised and
+	// merged, and then its digest is named here. Between the two this names the version
+	// before. The workflow that publishes the image holds the digest to the registry's
+	// for this version at every run (.github/workflows/welcome-image.yml).
+	PlaceholderVersion = "v1"
+)
 
 var (
 	prefixRE = regexp.MustCompile(`^[a-z][a-z0-9]{0,7}$`)

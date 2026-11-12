@@ -121,7 +121,7 @@ variable "hostnames" {
 variable "placeholder_image" {
   description = "Image every Cloud Run service and job is created with. The pipeline owns the image from the first deploy on (lifecycle ignore_changes), so this is only what runs before the first release."
   type        = string
-  default     = "ghcr.io/impulseframework/welcome:v1"
+  default     = "ghcr.io/impulseframework/welcome@sha256:106eb632ba7ae2857a044cec68c6efd8d647f67b2355f3b37e206b1686fee6aa"
 }
 
 variable "cloud_armor" {

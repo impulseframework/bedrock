@@ -797,7 +797,7 @@ func TestSecretAdd(t *testing.T) {
 	const mailKey = "imp-tst-gbl-quill-mail-api-key"
 	placement := `{"prefix": "imp", "environments": ["tst", "stg", "prd"], "regions": [{"name": "us-central1", "code": "uc1"}],
 		"appsDomain": "impulseframework.dev", "hostedDomain": "impulseframework.com", "stateBucket": "imp-boot-gbl-state-0000",
-		"placeholderImage": "ghcr.io/impulseframework/welcome:v1", "defaultBranch": "master", "repository": "quill",
+		"placeholderImage": "ghcr.io/impulseframework/welcome@sha256:106eb632ba7ae2857a044cec68c6efd8d647f67b2355f3b37e206b1686fee6aa", "defaultBranch": "master", "repository": "quill",
 		"releaseApp": "impulseframework-release", "bedrockVersion": "v0.1.0", "bedrockSha256": "0000000000000000000000000000000000000000000000000000000000000000",
 		"labels": {"bedrock-lab": "true"}}`
 	added3 := []string{
