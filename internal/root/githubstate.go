@@ -1,7 +1,8 @@
 // githubstate.go is the root organization's repository and its GitHub organization's
-// settings as the engine keeps them: the repository's merge settings and the ruleset on
-// its default branch, the organization's larger runner, its group and the variable that
-// names it. Read and written with the infrastructure app's token, or a person's.
+// settings as the engine keeps them: the organization's policy on immutable releases,
+// the repository's merge settings and the ruleset on its default branch, the
+// organization's larger runner, its group and the variable that names it. Read and
+// written with the infrastructure app's token, or a person's.
 
 package root
 
@@ -19,13 +20,17 @@ import (
 	"github.com/impulseframework/bedrock/internal/org"
 )
 
-// githubSection brings the repository and the organization's Actions settings to the
-// placement, or notes that GitHub was not read.
+// githubSection turns the organization's immutable releases on and brings the repository
+// and the organization's Actions settings to the placement, or notes that GitHub was not
+// read.
 func (e *engine) githubSection(ctx context.Context) error {
 	if e.gh == nil {
 		e.note("GitHub was not checked: no token (GITHUB_TOKEN, or the infrastructure app's in a trigger's run)")
 
 		return nil
+	}
+	if err := e.immutableReleases(ctx); err != nil {
+		return err
 	}
 	owner, repo := e.p.GithubOrganization, e.p.SourceRepo
 	if _, err := e.gh.Repository(ctx, owner, repo); err != nil {
@@ -45,6 +50,44 @@ func (e *engine) githubSection(ctx context.Context) error {
 	}
 
 	return e.runner(ctx)
+}
+
+// immutableReleasesPlace is where an owner of the GitHub organization sees its policy on
+// immutable releases and sets it, in a sentence's end.
+const immutableReleasesPlace = `the organization's Settings on GitHub, under Repository, then General: in the "Releases" section, "All repositories"`
+
+// immutableReleases turns immutable releases on for every repository of the GitHub
+// organization: the root organization's, its hosting organizations', their applications'
+// and the libraries', the ones that stand and the ones made after. It is the
+// organization's one policy, so no repository is read or set on its own. A policy that
+// holds every repository already is left alone, and one that holds none, or the ones an
+// owner selected, is widened to all; the engine never narrows the policy or turns it off.
+// GitHub answers a token that may not administer the organization not found, and tells
+// it nothing of the policy (a person's at a terminal who is no owner), so that answer is
+// noted as a policy that was not read, never taken for one that is off.
+func (e *engine) immutableReleases(ctx context.Context) error {
+	owner := e.p.GithubOrganization
+	got, err := e.gh.OrgImmutableReleases(ctx, owner)
+	if err != nil {
+		if github.NotFound(err) {
+			e.note(fmt.Sprintf("immutable releases were not checked: this token cannot read the %s organization's policy on them (the infrastructure app's reads it, and an owner's); an owner sees it in %s", owner, immutableReleasesPlace))
+
+			return nil
+		}
+
+		return errors.Wrapf(err, "reading the %s organization's policy on immutable releases", owner)
+	}
+	if got == github.ImmutableReleasesAll {
+		return nil
+	}
+	names := "no repository"
+	if got == github.ImmutableReleasesSelected {
+		names = "only the repositories an owner selected"
+	}
+
+	return e.change(ctx, sectionGitHub, fmt.Sprintf("turns immutable releases on for every repository of the %s organization (its policy names %s today): a release published from then on keeps its tag and its assets as published", owner, names), func(ctx context.Context) error {
+		return e.gh.EnforceImmutableReleases(ctx, owner)
+	})
 }
 
 // mergeSettings says what the merge settings are, in a sentence's end.

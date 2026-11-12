@@ -19,6 +19,8 @@ there first.
 
 For the GitHub organization:
 
+- immutable releases, on for every repository of the organization
+  ("Immutable releases", below);
 - this repository: its merge settings (squash alone) and the ruleset on
   `{{.GithubDefaultBranch}}`, which takes changes by pull request alone, with
   {{.ApprovingReviewCount}} approving review(s), once the check
@@ -57,11 +59,12 @@ order:
    library.
 2. It makes this repository, private, with an initial commit.
 3. It makes the organization as the placement says, through the same engine the
-   workflow runs: this repository's settings and ruleset, the environment with
-   the infrastructure app's key sealed into it, each library, the version tags'
-   ruleset, and the release app's credentials sealed where the libraries read
-   them. Each key goes from GitHub's answer into its secret and is never written
-   to this computer's disk.
+   workflow runs: the organization's immutable releases, this repository's
+   settings and ruleset, the environment with the infrastructure app's key
+   sealed into it, each library, the version tags' ruleset, and the release
+   app's credentials sealed where the libraries read them. Each key goes from
+   GitHub's answer into its secret and is never written to this computer's
+   disk.
 4. It pushes `placement.json`, this README and the workflow as the first commit.
 
 A run that stopped finishes on the next run with the same directory, with one
@@ -184,6 +187,31 @@ workflow reads, for the library repositories alone:
   a release workflow accepts a release from.
 
 A repository that is not a library reads neither secret.
+
+## Immutable releases
+
+Every repository of the `{{.GithubOrganization}}` organization is held to
+immutable releases: this repository, the libraries, and a repository made
+later, by anyone. Once a release is published, its tag stays at the commit it
+names and its assets stay as they were uploaded. Nobody changes or deletes
+either; the title and the notes can still be edited.
+
+The apply sets it, as the infrastructure app, as the organization's own policy:
+one setting for every repository. The plan names the change while the policy
+names no repository, or the ones an owner selected. The apply widens the policy
+and never narrows it or turns it off, and `bedrock org destroy` leaves it as it
+is. GitHub holds to it the releases published after it is set, and none
+published before.
+
+An owner of `{{.GithubOrganization}}` sees the policy in the organization's
+Settings on GitHub, under Repository, then General: in the "Releases" section,
+"All repositories". GitHub answers the policy to a token that administers the
+organization and to no other. So `bedrock org check` run at a terminal with the
+token of a person who is no owner notes that immutable releases were not
+checked; the workflow's jobs act as the infrastructure app, which reads it.
+
+A release that carries files is made as a draft, given its files, and
+published last: GitHub's advice for a repository held to immutable releases.
 
 ## The GitHub Apps and their keys
 

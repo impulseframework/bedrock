@@ -131,6 +131,7 @@ func TestEngineFromNothing(t *testing.T) {
 		"Cloud Build: links the repository https://github.com/imp-example/imr-root-infrastructure.git under the connection as imr-root-uc1-infrastructure-repo",
 		"Cloud Build: creates the trigger imr-root-uc1-plan",
 		"Cloud Build: creates the trigger imr-root-uc1-apply",
+		"GitHub: turns immutable releases on for every repository of the imp-example organization (its policy names no repository today): a release published from then on keeps its tag and its assets as published",
 		"GitHub: sets the merge settings of imp-example/imr-root-infrastructure",
 		"GitHub: rules the default branch of imp-example/imr-root-infrastructure: pull requests alone with 1 approving review(s), squash merges, the plan trigger's build required, the infrastructure app bypassing",
 		"GitHub: sets the organization variable CI_LARGE_RUNNER to ci-large",
@@ -162,6 +163,10 @@ func TestEngineFromNothing(t *testing.T) {
 	}
 	if !strings.Contains(out, "grants: grants serviceAccount:imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/billing.admin on billing account 012345-6789AB-CDEF01") {
 		t.Errorf("the bootstrap did not grant the creating identity billing administration:\n%s", out)
+	}
+
+	if got := w.srv.ImmutableReleases[w.p.GithubOrganization]; got != github.ImmutableReleasesAll {
+		t.Errorf("after the bootstrap's apply the organization's policy on immutable releases is %q, want %q", got, github.ImmutableReleasesAll)
 	}
 
 	clean, out := w.run(t, root.Check, false)

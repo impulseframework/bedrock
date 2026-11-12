@@ -202,6 +202,7 @@ func (w *githubWorld) state(t *testing.T) string {
 		data, err = json.MarshalIndent(map[string]any{
 			"repositories": w.srv.Repos, "created": w.srv.Created, "commits": w.srv.Messages, "variables": w.srv.Variables,
 			"runnerGroups": w.srv.RunnerGroups, "hostedRunners": w.srv.HostedRunners, "secrets": w.srv.OrgSecrets, "rulesets": w.srv.OrgRulesets,
+			"immutableReleases": w.srv.ImmutableReleases,
 		}, "", "  ")
 	})
 	if err != nil {
@@ -336,13 +337,19 @@ func sameSentences(t *testing.T, what string, got, want []string) {
 	}
 }
 
+// immutableSentence is the change that turns immutable releases on in an organization
+// whose policy names no repository.
+const immutableSentence = "GitHub: turns immutable releases on for every repository of the imf-example organization (its policy names no repository today): a release published from then on keeps its tag and its assets as published"
+
 // fromNothing are the changes a run lists against an organization where nothing stands
-// beyond the root repository, when it holds both keys: the root repository's settings,
-// rule, environment and key, each library with its settings and rule, and what the
-// libraries share. An apply admits the default branch to the environment it just made as
-// a change of its own, which a plan's sentence for the environment's making covers.
+// beyond the root repository, when it holds both keys: the organization's immutable
+// releases, the root repository's settings, rule, environment and key, each library with
+// its settings and rule, and what the libraries share. An apply admits the default branch
+// to the environment it just made as a change of its own, which a plan's sentence for the
+// environment's making covers.
 func fromNothing(apply bool) []string {
 	changes := []string{
+		immutableSentence,
 		"GitHub: sets the merge settings of " + libraryRoot + ": " + mergeSentence,
 		"GitHub: rules the default branch of " + libraryRoot + ": pull requests alone with 1 approving review(s), squash merges, the workflow's plan (bedrock plan) required, the infrastructure app bypassing",
 		"GitHub: makes the environment bedrock of " + libraryRoot + ", which the workflow's jobs run in and which admits the branch master alone",
@@ -537,15 +544,16 @@ func TestEngineWithoutCloudPlanWritesNothing(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	report.Write(&buf, root.Plan)
-	if want := "17 change(s) the apply would make; 0 finding(s).\n"; !strings.HasSuffix(buf.String(), want) {
+	if want := "18 change(s) the apply would make; 0 finding(s).\n"; !strings.HasSuffix(buf.String(), want) {
 		t.Errorf("Write() = %q, want it to end %q", buf.String(), want)
 	}
 }
 
 // TestEngineWithoutCloudBeforeTheRootRepository: while the root repository does not
 // exist, its rules and its environment wait with a note and nothing is said of the
-// infrastructure app's key, which has no environment to be sealed into; the libraries are
-// made all the same.
+// infrastructure app's key, which has no environment to be sealed into; the
+// organization's immutable releases are turned on and the libraries are made all the
+// same.
 func TestEngineWithoutCloudBeforeTheRootRepository(t *testing.T) {
 	t.Parallel()
 
@@ -555,11 +563,13 @@ func TestEngineWithoutCloudBeforeTheRootRepository(t *testing.T) {
 	sameSentences(t, "the notes about the root repository", mentioning(report.Notes, w.p.SourceRepo), []string{
 		"the repository " + libraryRoot + " does not exist yet: the bootstrap makes it, and its rules wait",
 	})
-	if got := mentioning(whats(report), "GitHub: "); len(got) != 0 || len(report.Findings) != 0 {
+	if got := mentioning(whats(report), libraryRoot); len(got) != 0 || len(report.Findings) != 0 {
 		t.Errorf("without the root repository the run changes %q in it and finds %q; want neither:\n%s", got, report.Findings, out)
 	}
-	// The first five changes of an apply from nothing are the root repository's own.
-	sameSentences(t, "the changes without the root repository", whats(report), fromNothing(true)[5:])
+	// Of an apply from nothing, the first change is the organization's and the five
+	// after it are the root repository's own.
+	all := fromNothing(true)
+	sameSentences(t, "the changes without the root repository", whats(report), append([]string{all[0]}, all[6:]...))
 	if _, made := w.srv.Repos[libraryRoot]; made {
 		t.Error("the engine made the root repository, which is the bootstrap's to make")
 	}
@@ -840,8 +850,8 @@ func TestEngineWithoutCloudApplyStopsAndFinishes(t *testing.T) {
 	var out bytes.Buffer
 	report, err := root.Run(context.Background(), clients, &root.Request{Placement: w.p, Mode: root.Apply, GitHubToken: "test-token", SealKeys: w.keys}, &out)
 	// Of the apply's changes in order, the sealing of the infrastructure app's key is the
-	// fifth and the rule on version tags the fifteenth.
-	const sealsRootKey, rulesTags = 4, 14
+	// sixth and the rule on version tags the sixteenth.
+	const sealsRootKey, rulesTags = 5, 15
 	all := fromNothing(true)
 	refused := all[rulesTags]
 	if !strings.HasPrefix(refused, "libraries: rules the version tags") || !strings.HasPrefix(all[sealsRootKey], "GitHub: seals the infrastructure app's key") {

@@ -58,8 +58,10 @@ workflow when bedrock's release pull request merges:
   exactly the files it built, each with the digest GitHub reports matching
   `checksums.txt`; while the release is a draft, anyone with write access could add or
   replace an asset.
-- **Locked**: with the repository's immutable releases on, the published release and its
-  assets cannot change.
+- **Locked**: the repository is held to immutable releases, so the published release's
+  tag and assets cannot change. The root organization that keeps the GitHub organization
+  turns them on for every repository of it (bedrock org, below), and the job warns when
+  the release it published is not immutable.
 
 A draft is not a release `bedrock upgrade` finds, so no application can move to a release
 before its binaries are on it. If the job fails, the draft stays a draft: re-run the
@@ -2515,7 +2517,8 @@ label handed onward, an hour's time to live, nothing else in the zone; the Cloud
 connection `<prefix>-root-<region code>-github`, the repository's link under it and the
 two triggers `<prefix>-root-<region code>-plan` and `<prefix>-root-<region code>-apply`,
 whose steps are the trigger's own (the pinned bedrock fetched, `bedrock org check`, then
-the command); and the repository's settings and the ruleset on its default branch (pull
+the command); the GitHub organization's immutable releases, on for every repository
+(below); and the repository's settings and the ruleset on its default branch (pull
 requests alone, `approvingReviews` approving reviews, the plan trigger's check passing,
 the infrastructure app bypassing). Two things it reports and never changes: the creating
 identity's grants above the folder, made by the bootstrap, and a zone whose domain was
@@ -2604,6 +2607,26 @@ organization's, which records them under the label, whose merge makes the record
 rendered `README.md` carries both ("Handing a label onward"), with how a name resolves
 and the steps for delegating a domain to the organization.
 
+A root organization holds every repository of its GitHub organization to immutable
+releases: its own, each hosting organization's, the applications' and the libraries', and
+a repository made later, by anyone. In such a repository a release, once published, keeps
+its tag at the commit it names and its assets as they were uploaded: nobody changes or
+deletes either, while its title and its notes can still be edited. It is the GitHub
+organization's own policy, which the apply sets to every repository as the infrastructure
+app (its organization Administration permission), in both kinds of root organization: one
+setting, so no repository is visited and none is missed. A plan and a check name the
+change while the policy names no repository, or the ones an owner selected; the apply
+widens it and never narrows it or turns it off, and `org destroy` leaves it as it is.
+GitHub holds to it the releases published after it is set and none published before. An
+owner sees the policy in the organization's Settings on GitHub, under Repository, then
+General: in the "Releases" section, "All repositories". GitHub answers the policy to a
+token that administers the organization and to no other, so `org check` run at a terminal
+with the token of a person who is no owner notes that immutable releases were not checked;
+the triggers' and the workflow's runs act as the infrastructure app, which reads it. A
+release that carries files is made as a draft, given its files and published last, as
+bedrock's own is (Install, above): GitHub's advice for a repository held to immutable
+releases.
+
 A root organization also keeps libraries: repositories that deploy nowhere, listed in its
 `placement.json` under `libraries`, each with its name (`repository`), whether it is public
 (`public`; private when left out), the checks a pull request into its default branch must
@@ -2641,8 +2664,9 @@ with, or a `placement.json` written by hand in the directory, which lists the li
 with their checks and names everything. It makes the apps the placement calls for in the
 browser, the infrastructure app always and the release app once a library is listed (no
 deployer app and no Bot Account: both serve Cloud Build); the repository, private; then,
-through the engine, the repository's settings and ruleset, its environment `bedrock`, each
-library, the version tags' ruleset and the release app's credentials; and last the first
+through the engine, the organization's immutable releases, the repository's settings and
+ruleset, its environment `bedrock`, each library, the version tags' ruleset and the
+release app's credentials; and last the first
 commit, `placement.json`, the README and the workflow `.github/workflows/bedrock.yml`. The
 workflow is to this organization what the two triggers are to the other kind: its plan job
 runs `org check` and `org plan` on a pull request and posts what the merge would change
@@ -2663,8 +2687,8 @@ github-infrastructure-key` or `github-release-key` proves a new key signs as the
 seals it; and `org secrets check`, with no argument there, says where each key is, who
 reads it and when it was last sealed. `org destroy` there deletes no project: it takes
 the release app's credentials, the version tags' ruleset, the infrastructure app's key
-and the plan the repository's ruleset requires off GitHub, and leaves every repository
-and the apps.
+and the plan the repository's ruleset requires off GitHub, and leaves every repository,
+the apps and the organization's immutable releases.
 
 A root organization is set up by the bootstrap, and a hosting organization under it by
 pull request. Each step opens with the place it happens; the rendered READMEs carry the
@@ -3180,9 +3204,10 @@ organization's GitHub plan, so its plan must include all four.
   infrastructure app (`0-bootstrap/README.md`: repository Actions, Administration,
   Contents, Metadata and Pull requests, organization Administration, Variables and
   Self-hosted runners; Contents read and write is what the creation pushes a new
-  organization's repository with, and Pull requests what it opens the hand-off pull
-  request in the root organization's repository with), each installed on all
-  repositories; and Google's Cloud Build GitHub App,
+  organization's repository with, Pull requests what it opens the hand-off pull
+  request in the root organization's repository with, and organization Administration
+  what the root organization's apply turns immutable releases on with), each installed
+  on all repositories; and Google's Cloud Build GitHub App,
   installed on the organization for all repositories as the Bot Account before the
   bootstrap, which finds the installation through the infrastructure app.
 

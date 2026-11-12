@@ -1,10 +1,11 @@
 // Package github is the small GitHub REST client bedrock needs: the organization's
-// installed apps, its Actions secrets and its rulesets, a repository's rulesets, its refs,
-// tags, comparisons and directory listings, whether it is empty, its workflows, the check
-// runs on a commit, its deployment environments, its issues, its pull requests with their
-// comments and deployments, and a GitHub App's installation token. It speaks to one API
-// host with one token, sends a read again when GitHub stalls or answers a gateway error,
-// and translates the API's refusals into errors that carry the status and the message.
+// installed apps, its Actions secrets, its rulesets and its policy on immutable releases,
+// a repository's rulesets, its refs, tags, comparisons and directory listings, whether it
+// is empty, its workflows, the check runs on a commit, its deployment environments, its
+// issues, its pull requests with their comments and deployments, and a GitHub App's
+// installation token. It speaks to one API host with one token, sends a read again when
+// GitHub stalls or answers a gateway error, and translates the API's refusals into errors
+// that carry the status and the message.
 package github
 
 import (

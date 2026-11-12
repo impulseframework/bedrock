@@ -320,7 +320,10 @@ Besides the infrastructure app `1-org` acts as (`0-bootstrap/README.md`), the
 organization uses two GitHub Apps in every application: the release app, which
 cuts each release (release-please runs as it from each application's release
 trigger in Cloud Build, so the tag and the GitHub Release carry it as their
-author, and each repository's tag ruleset lets it alone make a release tag),
+author, and each repository's tag ruleset lets it alone make a release tag;
+the root organization holds every repository of the GitHub organization to
+immutable releases, so a published release keeps its tag and its assets: that
+organization's `README.md`, "Immutable releases"),
 and the deployer app, which the pipeline talks back on a pull request as (a
 deployment carrying the environment's URL, a comment, the guard's refusals).
 All three are the root organization `imr`'s: its bootstrap

@@ -63,6 +63,8 @@ func TestRenderRootWithoutCloud(t *testing.T) {
 		"# imf-root-infrastructure", "the `imf-example` GitHub organization", "This root organization has no cloud.", "`" + PlanJobName + "`",
 		"`imf-example-infrastructure`", "the secret `" + InfrastructureKeySecret + "` of this repository's environment `" + RootEnvironment + "`",
 		"bedrock secret add " + InfrastructureKey + " --from-file", "1 approving review(s)",
+		"- immutable releases, on for every repository of the organization", "## Immutable releases\n\nEvery repository of the `imf-example` organization is held to\nimmutable releases",
+		`in the "Releases" section,` + "\n" + `"All repositories"`,
 	} {
 		if !strings.Contains(readme, phrase) {
 			t.Errorf("the README lacks %q", phrase)

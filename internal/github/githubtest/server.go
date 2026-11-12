@@ -205,6 +205,12 @@ type Server struct {
 	// the API, with their ids.
 	OrgSecrets  map[string]map[string]*OrgSecret
 	OrgRulesets map[string][]*github.Ruleset
+	// ImmutableReleases are the organizations' policies on immutable releases, by
+	// organization: all, none or selected, none for an organization that never set one.
+	// An organization in ImmutableReleasesHidden answers not found to the read and the
+	// set alike, as GitHub answers a token that may not administer the organization.
+	ImmutableReleases       map[string]string
+	ImmutableReleasesHidden map[string]bool
 	// secretsPublic and secretsPrivate are the stand-in's own key pair, the one every
 	// organization's and every environment's public key for secrets answers with: a
 	// put's value is sealed with the public key and opened here with the private one.
@@ -227,6 +233,9 @@ const (
 	branchPolicy   = "branch"
 	tagPolicy      = "tag"
 	typeKey        = "type"
+	// enforcedKey names, in the organization's policy on immutable releases, which
+	// repositories it holds to them.
+	enforcedKey = "enforced_repositories"
 )
 
 var (
@@ -285,6 +294,7 @@ var (
 	secretsKeyRE     = regexp.MustCompile(`^/orgs/([^/]+)/actions/secrets/public-key$`)
 	orgSecretRE      = regexp.MustCompile(`^/orgs/([^/]+)/actions/secrets/([^/]+)$`)
 	orgSecretReposRE = regexp.MustCompile(`^/orgs/([^/]+)/actions/secrets/([^/]+)/repositories$`)
+	immutableRE      = regexp.MustCompile(`^/orgs/([^/]+)/settings/immutable-releases$`)
 )
 
 const (
@@ -309,6 +319,7 @@ func New(t *testing.T) *Server {
 		PublicApps: map[string]github.App{}, OrgInstallations: map[string][]github.OrgInstallation{}, Memberships: map[string]string{},
 		DefaultBranch: "main",
 		OrgSecrets:    map[string]map[string]*OrgSecret{}, OrgRulesets: map[string][]*github.Ruleset{},
+		ImmutableReleases: map[string]string{}, ImmutableReleasesHidden: map[string]bool{},
 		secretsPublic: public, secretsPrivate: private,
 	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
@@ -589,6 +600,9 @@ var routes = []route{
 	}},
 	{orgSecretReposRE, func(s *Server, w http.ResponseWriter, r *http.Request, m []string) {
 		s.orgSecretRepositories(w, r, m[1], m[2])
+	}},
+	{immutableRE, func(s *Server, w http.ResponseWriter, r *http.Request, m []string) {
+		s.immutableReleases(w, r, m[1])
 	}},
 }
 
@@ -1737,6 +1751,42 @@ func serveRuleset(w http.ResponseWriter, r *http.Request, list *[]*github.Rulese
 		reply(w, http.StatusOK, in)
 	case http.MethodDelete:
 		*list = slices.Delete(*list, i, i+1)
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		reply(w, http.StatusMethodNotAllowed, map[string]string{messageKey: r.Method})
+	}
+}
+
+// immutableReleases reads the organization's policy on immutable releases (GET) or sets
+// it (PUT) to all, none or selected; an organization whose policy the token may not
+// administer answers not found to both.
+func (s *Server) immutableReleases(w http.ResponseWriter, r *http.Request, org string) {
+	if s.ImmutableReleasesHidden[org] {
+		reply(w, http.StatusNotFound, map[string]string{messageKey: notFound})
+
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		policy := s.ImmutableReleases[org]
+		if policy == "" {
+			policy = github.ImmutableReleasesNone
+		}
+		reply(w, http.StatusOK, map[string]string{enforcedKey: policy})
+	case http.MethodPut:
+		var in map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			reply(w, http.StatusUnprocessableEntity, map[string]string{messageKey: jsonBodyRequired})
+
+			return
+		}
+		var policy string
+		if err := json.Unmarshal(in[enforcedKey], &policy); err != nil || !slices.Contains([]string{github.ImmutableReleasesAll, github.ImmutableReleasesNone, github.ImmutableReleasesSelected}, policy) {
+			reply(w, http.StatusUnprocessableEntity, map[string]string{messageKey: enforcedKey + " is all, none or selected"})
+
+			return
+		}
+		s.ImmutableReleases[org] = policy
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		reply(w, http.StatusMethodNotAllowed, map[string]string{messageKey: r.Method})
