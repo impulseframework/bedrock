@@ -87,9 +87,10 @@ the same engine the apply trigger runs: the runner identities and the creating i
 their roles, the secrets' aliases and policies, the creating identity's Folder Creator at the
 organization node and Billing Account Administrator on the billing account, the zones of the
 domains (--domain) with DNSSEC, the Cloud Build connection, the repository link and the two
-triggers, the repository's settings and ruleset with the infrastructure app as its bypass
-actor; last its own Owner off the root project, and the check. No terraform: the root
-organization is bedrock's own bookkeeping, kept true by API on every merge.
+triggers, the GitHub organization's immutable releases, on for every repository, the
+repository's settings and ruleset with the infrastructure app as its bypass actor; last its
+own Owner off the root project, and the check. No terraform: the root organization is
+bedrock's own bookkeeping, kept true by API on every merge.
 
 The discovery decides what the credentials show: whose they are (the break-glass account),
 the one organization and the one open billing account they see, or --organization (its
@@ -110,10 +111,11 @@ sourceRepo and libraries, each with the checks its pull requests must pass), whi
 everything. In order: the GitHub Apps the placement calls for, made in your browser (the
 infrastructure app always, the release app when a library is listed); the repository
 <prefix>-root-infrastructure, private; everything the workflow's apply keeps true, through the
-same engine (the repository's settings and ruleset, its bedrock environment with the
-infrastructure app's key sealed into it, each library with its settings and ruleset, the
-organization's ruleset on version tags, the release app's credentials sealed where the
-libraries alone read them); then placement.json, the README and the workflow as the first
+same engine (the organization's immutable releases, on for every repository, the repository's
+settings and ruleset, its bedrock environment with the infrastructure app's key sealed into
+it, each library with its settings and ruleset, the organization's ruleset on version tags,
+the release app's credentials sealed where the libraries alone read them); then
+placement.json, the README and the workflow as the first
 commit, and the check. A key goes from GitHub's answer into its GitHub secret and is held by
 no later run, since GitHub never gives a sealed key back: a run again acts with a key
 generated anew on the infrastructure app's settings page (--infrastructure-app with

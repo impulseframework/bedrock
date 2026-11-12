@@ -91,7 +91,8 @@ var appPermissions = map[AppRole]map[string]string{
 		PermissionMetadata:     LevelRead,
 		PermissionPullRequests: LevelWrite,
 		// The organization's runner group, hosted runner and CI_LARGE_RUNNER variable,
-		// and the repositories it creates.
+		// the repositories it creates, and the organization's policy on immutable
+		// releases, which the root organization's apply sets to every repository.
 		PermissionOrgAdmin:     LevelWrite,
 		PermissionOrgVariables: LevelWrite,
 		PermissionOrgRunners:   LevelWrite,

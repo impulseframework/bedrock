@@ -85,6 +85,7 @@ func TestOrgBootstrapNoCloud(t *testing.T) {
 		"Drafted the imf root organization, without a cloud: GitHub organization imp-example, 2 libraries, bedrock " + headVersion + ".",
 		"the infrastructure app: App 5000 (imp-example-infrastructure), brought with its key, holds what bedrock declares and is installed on imp-example.",
 		"Created the repository imp-example/imf-root-infrastructure, private.",
+		"GitHub: turns immutable releases on for every repository of the imp-example organization (its policy names no repository today)",
 		"libraries: creates the public repository imp-example/workflows, with an initial commit on master",
 		"Bootstrapped the imf root organization on GitHub alone",
 		"Next, each where it happens:",
@@ -107,6 +108,9 @@ func TestOrgBootstrapNoCloud(t *testing.T) {
 	}
 	if repo := srv.Repos["imp-example/imf-root-infrastructure"]; repo == nil || repo.Environments[org.RootEnvironment] == nil {
 		t.Errorf("the repository and its environment were not made: %+v", repo)
+	}
+	if got := srv.ImmutableReleases["imp-example"]; got != github.ImmutableReleasesAll {
+		t.Errorf("after the bootstrap the organization's policy on immutable releases is %q, want %q", got, github.ImmutableReleasesAll)
 	}
 
 	tests := []struct {
@@ -369,6 +373,9 @@ func TestOrgKeysNoCloud(t *testing.T) {
 	}
 	if srv.Repos["imp-example/workflows"] == nil || srv.Repos["imp-example/imf-root-infrastructure"] == nil {
 		t.Error("the destroy removed a repository")
+	}
+	if got := srv.ImmutableReleases["imp-example"]; got != github.ImmutableReleasesAll {
+		t.Errorf("after the destroy the organization's policy on immutable releases is %q, want %q: bedrock never turns it off", got, github.ImmutableReleasesAll)
 	}
 	journal, err := os.ReadFile(filepath.Join(dir, "JOURNAL.md"))
 	if err != nil || !strings.Contains(string(journal), "bedrock org destroy took the root organization's keeping off GitHub") {

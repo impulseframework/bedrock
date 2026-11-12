@@ -10,9 +10,10 @@
 // triggers run; bedrock-linux-arm64 and bedrock-darwin-arm64 for developer machines),
 // and uploads them to the draft with checksums.txt, the SHA-256 of each in the format
 // sha256sum reads. It then checks the draft's assets against checksums.txt and the
-// digests GitHub reports, and publishes the draft; with the repository's immutable
-// releases on, neither the release nor its assets change after that. Latest skips a
-// draft, so a release is not found before its binaries are on it.
+// digests GitHub reports, and publishes the draft; the repository is held to immutable
+// releases (its organization's policy, which the root organization that keeps the
+// organization sets), so neither the release's tag nor its assets change after that.
+// Latest skips a draft, so a release is not found before its binaries are on it.
 //
 // A release pin is the version and the linux/amd64 checksum; the rendered pipeline
 // downloads that binary at its first step and the rendered triggers at their own, and all

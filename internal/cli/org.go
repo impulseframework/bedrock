@@ -1609,18 +1609,20 @@ repository, and a release keeps working under the previous release's steps.
 In a root organization's repository (kind root in placement.json) plan is the plan trigger's
 run through the engine the bootstrap made the organization with: it compares the organization
 (the APIs, the identities and their roles, the secrets' aliases and policies, the grants, the
-zones and their record sets, the connection and the triggers, the repository's settings and
-ruleset) with the pull request's placement.json, says what the merge would change and which
-hosting organizations it would create, and posts that in one comment on the pull request as
-the deployer app, updated on a later push. Nothing is changed.
+zones and their record sets, the connection and the triggers, the GitHub organization's
+immutable releases, the repository's settings and ruleset) with the pull request's
+placement.json, says what the merge would change and which hosting organizations it would
+create, and posts that in one comment on the pull request as the deployer app, updated on a
+later push. Nothing is changed.
 
 A root organization without a cloud (no organizationId in placement.json) has no trigger:
 plan is the plan job of its repository's workflow, which hands it the infrastructure app's
 key (BEDROCK_INFRASTRUCTURE_APP_KEY, read from the repository's bedrock environment), the
 commit (BEDROCK_COMMIT) and the pull request (BEDROCK_PULL_REQUEST). It compares what the
-organization keeps on GitHub (the repository's settings, ruleset and environment, the apps,
-each library, the version tags' ruleset, the release app's credentials) with the pull
-request's placement.json and posts what the merge would change as the infrastructure app.`,
+organization keeps on GitHub (the organization's immutable releases, the repository's
+settings, ruleset and environment, the apps, each library, the version tags' ruleset, the
+release app's credentials) with the pull request's placement.json and posts what the merge
+would change as the infrastructure app.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if root, err := isRootRepo(dir); err != nil {
@@ -1750,8 +1752,9 @@ RELEASE_PLEASE_APP_PEM and RELEASE_PLEASE_APP_CLIENT_ID and the variable RELEASE
 the organization's ruleset on version tags, the infrastructure app's key in the repository's
 bedrock environment, and the plan the repository's ruleset requires, since the workflow has
 no key to run it with from then on. The repositories stay, the root organization's and every
-library's, with their code, pull requests, settings and rulesets, and the apps stay
-installed: a person deletes them on the organization's settings page, which ends their keys.
+library's, with their code, pull requests, settings and rulesets, the organization's
+immutable releases stay on, and the apps stay installed: a person deletes them on the
+organization's settings page, which ends their keys.
 It acts with GITHUB_TOKEN or gh's token, an owner's of the GitHub organization, or as the
 infrastructure app with a key of it generated anew (--infrastructure-key).
 

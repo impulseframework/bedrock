@@ -358,11 +358,13 @@ organization records the same App ID (`githubInfrastructureAppId` in
 environments and their branch policies on the Actions permission and writes
 them on Administration; with Contents the creation pushes a new organization's
 rendered repository, and with Pull requests it opens the hand-off pull request
-in the root organization's repository; the organization permissions are for the
-`CI_LARGE_RUNNER` variable, the runner and its runner group, which the root
-organization's apply sets and makes when its placement names a larger runner
-(`ciLargeRunner`, `ciLargeRunnerSize`). The app bypasses the branch rules it
-writes, here as in the root organization's repository (`1-org/github.tf`).
+in the root organization's repository; the organization permissions are for
+the organization's immutable releases, which the root organization's apply
+turns on for every repository, and for the `CI_LARGE_RUNNER` variable, the
+runner and its runner group, which that apply sets and makes when its placement
+names a larger runner (`ciLargeRunner`, `ciLargeRunnerSize`). The app bypasses
+the branch rules it writes, here as in the root organization's repository
+(`1-org/github.tf`).
 
 The key itself lives in the root organization `imr`'s root
 project (`root` in `placement.json`), added, proven and pinned there by its key

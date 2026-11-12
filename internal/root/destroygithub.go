@@ -6,7 +6,8 @@
 // repository's environment, and the plan the root repository's ruleset requires, since
 // nothing can run it once the key is gone. The repositories stay, the root's and every
 // library's, with their code, pull requests, settings and rulesets, and the apps stay
-// installed, for a person to delete.
+// installed, for a person to delete. The organization's policy on immutable releases
+// stays as it is too: bedrock turns it on and never off.
 
 package root
 

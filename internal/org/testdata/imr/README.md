@@ -215,8 +215,9 @@ the apply, run on it:
   placement, section by section (the APIs, the identities and their roles, the
   secrets' aliases and policies, the grants, the zones and their record sets,
   the applier's and the creating identity's ownership of the domains,
-  the connection and the triggers, the repository's settings and ruleset, the
-  organization policies, the spend budgets and the billing export), and
+  the connection and the triggers, the GitHub organization's immutable
+  releases, the repository's settings and ruleset, the organization policies,
+  the spend budgets and the billing export), and
   posts what the merge would change, and which hosting organizations it would
   create, in one comment on the pull request as the deployer app, updated on a
   later push. Nothing is changed.
@@ -755,6 +756,32 @@ grants the new organization's identities their use of the billing account.
 The first hosting organization is created the same way as every later one. A
 hosting organization's primary region is this organization's: a connection
 reads the Bot Account's token in its own region.
+
+## Immutable releases
+
+Every repository of the `imp-example` organization is held to
+immutable releases: this repository, each hosting organization's, the
+applications' and the libraries', and a repository made later, by anyone. Once
+a release is published, its tag stays at the commit it names and its assets
+stay as they were uploaded. Nobody changes or deletes either; the title and the
+notes can still be edited.
+
+The apply sets it, as the infrastructure app, as the organization's own policy:
+one setting for every repository. The plan names the change while the policy
+names no repository, or the ones an owner selected. The apply widens the policy
+and never narrows it or turns it off, and `bedrock org destroy` leaves it as it
+is. GitHub holds to it the releases published after it is set, and none
+published before.
+
+An owner of `imp-example` sees the policy in the organization's
+Settings on GitHub, under Repository, then General: in the "Releases" section,
+"All repositories". GitHub answers the policy to a token that administers the
+organization and to no other. So `bedrock org check` run at a terminal with the
+token of a person who is no owner notes that immutable releases were not
+checked; the triggers' runs act as the infrastructure app, which reads it.
+
+A release that carries files is made as a draft, given its files, and
+published last: GitHub's advice for a repository held to immutable releases.
 
 ## Libraries
 
