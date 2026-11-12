@@ -64,6 +64,29 @@ const (
 	applySeconds = 7200
 )
 
+// What the fetch step's refusal of a commit pin under steps in the release shape says
+// applies the commit shape. In a hosting organization it is 0-bootstrap, the layer that
+// holds the triggers, which bedrock upgrade applies when it moves the pin across kinds.
+// A root organization has no layer: the engine makes its triggers, and the bootstrap run
+// again in a clone is its recovery by hand. Neither holds a quote or a $, which the
+// script's string and Cloud Build would read.
+const (
+	commitShapeByHand     = "A commit pin needs the commit shape, which bedrock upgrade applies to 0-bootstrap when it moves the pin from a release to a commit; when the pin was moved without that apply, apply 0-bootstrap from this branch by hand (in 0-bootstrap: tofu init, then tofu apply, as the bootstrap administrator) before this pull request's plan, or the merge's apply, can run"
+	rootCommitShapeByHand = "A commit pin needs the commit shape, and a root organization has no layer to apply: the engine makes its triggers. Run bedrock org bootstrap again in a clone at this branch, as the break-glass account, which makes the organization as the branch's placement.json says and brings the two triggers to the commit shape, before this pull request's plan, or the merge's apply, can run"
+)
+
+// fetchScript is the FetchBedrock step's script for the organization's own triggers:
+// fetchBedrockScript, with the refusal's last sentence the root organization's when the
+// placement is one. A hosting organization's script is the constant, byte for byte, as
+// its layers render it.
+func (p *Placement) fetchScript() string {
+	if !p.IsRoot() {
+		return fetchBedrockScript
+	}
+
+	return strings.Replace(fetchBedrockScript, commitShapeByHand, rootCommitShapeByHand, 1)
+}
+
 // fetchBedrockScript is the FetchBedrock step, run by python3 in the gcloud image with
 // the home directory, the download host and the repository's clone URL as its arguments.
 // It reads the pin off placement.json in the checkout (or the placement a fourth argument
@@ -77,7 +100,8 @@ const (
 // version is left in a note for the next step, which builds it. A commit pin under steps
 // in the release shape (stepsEnv ends in -release) is refused before the branches are
 // read, since no step follows to build it, and the refusal says what applies the commit
-// shape. No pin: the run stops here and says what records one; a pin that is not a
+// shape (commitShapeByHand; a root organization's triggers carry its own sentence,
+// fetchScript). No pin: the run stops here and says what records one; a pin that is not a
 // version's shape stops it too, before the version goes into the download's address,
 // since the placement read is a pull request's. The script holds no $, which Cloud Build
 // would read as a substitution.
@@ -104,7 +128,7 @@ if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)*", version):
     sys.exit(placement_path + " pins bedrock " + version + ", which is neither a release nor a commit pin: the version goes into the address the release is downloaded from, so nothing else is taken; bedrock upgrade records the pin")
 if re.search(r"[-.][0-9]{14}-[0-9a-f]{12}\Z", version):
     if steps.endswith("-` + ReleaseKind + `"):
-        sys.exit(placement_path + " pins bedrock " + version + ", a commit pin, and this trigger's steps are in the release shape (" + steps + "): this step downloads a release, and no step follows to build a commit. A commit pin needs the commit shape, which bedrock upgrade applies to 0-bootstrap when it moves the pin from a release to a commit; when the pin was moved without that apply, apply 0-bootstrap from this branch by hand (in 0-bootstrap: tofu init, then tofu apply, as the bootstrap administrator) before this pull request's plan, or the merge's apply, can run")
+        sys.exit(placement_path + " pins bedrock " + version + ", a commit pin, and this trigger's steps are in the release shape (" + steps + "): this step downloads a release, and no step follows to build a commit. ` + commitShapeByHand + `")
     commit = version[-12:]
     branches = tempfile.mkdtemp(prefix="bedrock-branches-")
     cloned = subprocess.run(["git", "clone", "--quiet", "--bare", "--no-tags", "--filter=tree:0", repository, branches], capture_output=True, text=True, check=False)
@@ -197,7 +221,7 @@ var runEnv = []string{"BUILD_ID=$BUILD_ID", "PROJECT_ID=$PROJECT_ID", "LOCATION=
 func (p *Placement) TriggerSteps(command string) []TriggerStep {
 	steps := []TriggerStep{{
 		ID: "FetchBedrock", Image: gcloudImage, Entrypoint: "python3",
-		Args:           []string{"-c", fetchBedrockScript, bedrockHome, "https://github.com", release.CloneURL()},
+		Args:           []string{"-c", p.fetchScript(), bedrockHome, "https://github.com", release.CloneURL()},
 		Env:            []string{stepsEnv + "=" + StepsShape(p)},
 		TimeoutSeconds: fetchSeconds,
 	}}

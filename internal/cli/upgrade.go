@@ -36,18 +36,8 @@ const (
 	yesTyped = "yes"
 )
 
-func newUpgrade(d deps) *cobra.Command {
-	var (
-		appFlag   string
-		dirFlag   string
-		placement string
-		yes       bool
-	)
-
-	cmd := &cobra.Command{
-		Use:   upgradeCommand + " [version|commit|branch] [--app <dir>] [--dir <dir>]",
-		Short: "Move the application to a bedrock release or a pushed commit",
-		Long: `upgrade moves the application's bedrock pin in placement.json (bedrockVersion, and for a release
+// upgradeLong is the help of bedrock upgrade.
+const upgradeLong = `upgrade moves the application's bedrock pin in placement.json (bedrockVersion, and for a release
 bedrockSha256), which its pipeline and its stack's triggers run. In the organization's
 infrastructure repository (the one whose placement.json at the root names the organization,
 organizationId) it moves the organization's pin instead, which the Cloud Build triggers' runs
@@ -77,7 +67,7 @@ commit the pipeline's first step and the stack's triggers get the pinned bedrock
 bedrock deploy step runs it. The pin is the one place a bedrock version appears in the
 application.
 
-In the organization's repository a move that changes the pin's kind, a release to a commit or a
+In a hosting organization's repository a move that changes the pin's kind, a release to a commit or a
 commit to a release, changes the shape of the Cloud Build triggers' steps (0-bootstrap/cloud-build.tf:
 a release pin renders the fetch step alone, a commit pin adds the step that builds it), and
 0-bootstrap is the one layer no trigger applies: the triggers as applied stay in the old shape,
@@ -86,6 +76,16 @@ typed back (--yes stands in for it where there is no terminal; without either th
 and nothing is moved), and after the render applies 0-bootstrap as you, with your sign-in, the way
 the break-glass account applies the layer by hand: the plan updates the two triggers in place.
 A move that keeps the kind applies nothing.
+
+A root organization has no layer, so nothing is applied in its repository and nothing is asked.
+With a cloud, its two triggers' steps change shape with the pin's kind the same way, and the engine
+makes them, in the apply trigger's run and in the bootstrap. upgrade says what the move does to
+them, and after a move from a release to a commit, what brings them to the commit shape before the
+pull request can be planned: bedrock org bootstrap again in the clone, as the break-glass account,
+the root organization's recovery by hand. A move from a commit to a release needs nothing by hand:
+the triggers' commit shape runs a release too, and the merge's apply brings them to the release
+shape. Without a cloud the organization has no trigger: its workflow's jobs fetch a release and
+build a commit alike.
 
 Upgrade impulse first, then bedrock, and land both in one change: bedrock's checks read what
 impulse's walk writes (the release file, the processes), and the walk reads nothing bedrock
@@ -96,8 +96,21 @@ render and check refuse a placement pinned to another bedrock than a release or 
 commit running them, so the installed bedrock is kept at the pin; upgrade is the command that
 moves it. Run from anywhere inside the repository, it finds the stack and the application as
 render does; --dir, --app and --placement override. In the organization's repository --dir
-is the repository root.`,
-		Args: cobra.MaximumNArgs(1),
+is the repository root.`
+
+func newUpgrade(d deps) *cobra.Command {
+	var (
+		appFlag   string
+		dirFlag   string
+		placement string
+		yes       bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   upgradeCommand + " [version|commit|branch] [--app <dir>] [--dir <dir>]",
+		Short: "Move the application to a bedrock release or a pushed commit",
+		Long:  upgradeLong,
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, p, err := d.orgRepository(dirFlag)
 			if err != nil {
@@ -132,7 +145,7 @@ is the repository root.`,
 	cmd.Flags().StringVar(&appFlag, "app", "", "application root, the directory holding go.mod (default: the repository root when the stack is in its infrastructure directory, else the working directory)")
 	cmd.Flags().StringVar(&dirFlag, "dir", "", "the stack directory (default: the application's stack, found from the working directory)")
 	cmd.Flags().StringVar(&placement, "placement", "", "placement file (default: placement.json in the stack directory)")
-	cmd.Flags().BoolVar(&yes, confirmFlag, false, "in the organization's repository, when the pin changes kind: apply 0-bootstrap without yes typed back, where there is no terminal to type it at")
+	cmd.Flags().BoolVar(&yes, confirmFlag, false, "in a hosting organization's repository, when the pin changes kind: apply 0-bootstrap without yes typed back, where there is no terminal to type it at")
 	_ = cmd.MarkFlagDirname("app")
 	_ = cmd.MarkFlagDirname("dir")
 
@@ -151,10 +164,17 @@ type upgradeTarget struct {
 	// runner is who runs the pin from the commit; builds says who builds a commit pin.
 	runner string
 	builds string
-	// root is the organization repository's root, whose 0-bootstrap upgrade applies when
-	// the pin changes kind; empty for an application, whose pin changes no trigger's
-	// steps (its stack trigger always carries the build step).
+	// root is a hosting organization's repository root, whose 0-bootstrap upgrade
+	// applies when the pin changes kind; empty for an application, whose pin changes no
+	// trigger's steps (its stack trigger always carries the build step), and for a root
+	// organization, which has no layer.
 	root string
+	// engine is the repository root of a root organization with a cloud. Its two
+	// triggers' steps follow the pin's kind as a hosting organization's do, and no layer
+	// holds them: the engine makes them, in the apply trigger's run and in the
+	// bootstrap. A pin that changes kind there applies nothing, and upgrade says what
+	// brings the triggers to the new shape. Empty everywhere else.
+	engine string
 }
 
 // appTarget is an application's placement: the stack is rendered with the pinned
@@ -193,11 +213,16 @@ func orgTarget(p *org.Placement, root, placement string) *upgradeTarget {
 		builds: "the triggers' runs build it",
 		root:   root,
 	}
-	if !p.HasCloud() {
+	switch {
+	case !p.HasCloud():
 		// A root organization without a cloud has no trigger and no layer: its workflow's
 		// jobs fetch a release and build a commit alike, so a pin that changes kind
 		// applies nothing.
-		t.runner, t.builds, t.root = "the repository's workflow", "the workflow's jobs build it", ""
+		t.runner, t.builds, t.root = "the workflow's jobs", "the workflow's jobs build it", ""
+	case p.IsRoot():
+		// A root organization with a cloud has the two triggers and no layer: there is
+		// no 0-bootstrap to apply, and the engine makes the triggers.
+		t.root, t.engine = "", root
 	}
 
 	return t
@@ -205,10 +230,10 @@ func orgTarget(p *org.Placement, root, placement string) *upgradeTarget {
 
 // shapeChange is the change of kind the move to version makes to the organization's
 // pin, release to commit or commit to release, which changes the shape of the Cloud
-// Build triggers' steps; nil when the kind stays, for an application, and for a first
-// pin, before the triggers exist.
+// Build triggers' steps; nil when the kind stays, for an application, for a root
+// organization without a cloud, and for a first pin, before the triggers exist.
 func (t *upgradeTarget) shapeChange(version string) *shapeChange {
-	if t.root == "" || t.version == "" {
+	if (t.root == "" && t.engine == "") || t.version == "" {
 		return nil
 	}
 	from, to := org.PinKind(t.version), org.PinKind(version)
@@ -216,20 +241,26 @@ func (t *upgradeTarget) shapeChange(version string) *shapeChange {
 		return nil
 	}
 
-	return &shapeChange{from: from, to: to}
+	return &shapeChange{from: from, to: to, engine: t.engine != ""}
 }
 
 // shapeChange is a move of the organization's pin across kinds (org.PinKind), which
-// changes the shape of the Cloud Build triggers' steps: 0-bootstrap, the one layer no
-// trigger applies, is applied here after the render.
+// changes the shape of the Cloud Build triggers' steps. In a hosting organization
+// 0-bootstrap, the one layer no trigger applies, is applied here after the render. In a
+// root organization (engine) there is no layer and nothing is applied here: the engine
+// makes the triggers, and the move says what brings them to the new shape.
 type shapeChange struct {
-	from string
-	to   string
+	from   string
+	to     string
+	engine bool
 }
 
 // announcement says what the move does to the triggers: the kinds, the shapes, what
 // the triggers as applied do with the new pin, and that 0-bootstrap is applied here.
 func (c *shapeChange) announcement() string {
+	if c.engine {
+		return c.engineAnnouncement()
+	}
 	const applies = "bedrock upgrade applies 0-bootstrap after the render%s, as you, with your sign-in, the way the break-glass account applies the layer by hand (in 0-bootstrap: tofu init, plan and apply, at its backend)%s; the plan updates the two triggers in place."
 	if c.to == org.CommitKind {
 		return "The pin moves from a release to a commit, and the Cloud Build triggers' steps change shape with it (0-bootstrap/cloud-build.tf): a release pin renders the fetch step alone, a commit pin adds the step that builds it with go install. The triggers are applied in the release shape, whose fetch step refuses a commit pin, so no pull request with this pin can be planned until 0-bootstrap is applied in the commit shape. " +
@@ -238,6 +269,33 @@ func (c *shapeChange) announcement() string {
 
 	return "The pin moves from a commit to a release, and the Cloud Build triggers' steps change shape with it (0-bootstrap/cloud-build.tf): a commit pin renders the fetch step and the step that builds it with go install, a release pin the fetch step alone. The triggers are applied in the commit shape, whose steps run a release pin too (the build step has nothing to do), so the pull request's plan runs either way. " +
 		fmt.Sprintf(applies, " all the same", ", so the triggers and the repository are in one shape")
+}
+
+// engineAnnouncement says what the move does to a root organization's triggers: the
+// kinds, the shapes, what the triggers as they stand do with the new pin, and that
+// nothing is applied here, since a root organization has no layer.
+func (c *shapeChange) engineAnnouncement() string {
+	const noLayer = "A root organization has no layer to apply: the engine makes its triggers, in the apply trigger's run and in the bootstrap, so bedrock upgrade applies nothing here"
+	if c.to == org.CommitKind {
+		return "The pin moves from a release to a commit, and the two Cloud Build triggers' steps change shape with it: a release pin has the fetch step alone, a commit pin adds the step that builds it with go install. The triggers stand in the release shape, whose fetch step refuses a commit pin, so no pull request with this pin can be planned, and no merge applied, until they are in the commit shape. " +
+			noLayer + ", and says after the render what brings them to the commit shape by hand."
+	}
+
+	return "The pin moves from a commit to a release, and the two Cloud Build triggers' steps change shape with it: a commit pin has the fetch step and the step that builds it with go install, a release pin the fetch step alone. The triggers stand in the commit shape, whose steps run a release pin too (the build step has nothing to do), so the pull request's plan runs, and the merge's apply brings the triggers to the release shape. " +
+		noLayer + ", and nothing is applied by hand."
+}
+
+// byHand says what brings a root organization's triggers to the commit shape before
+// the pull request that moves the pin to a commit can be planned: the bootstrap run
+// again in the clone, the root organization's recovery by hand, which makes the
+// organization as the working tree's placement says. A move to a release needs
+// nothing by hand, and says nothing.
+func (c *shapeChange) byHand(t *upgradeTarget) string {
+	if !c.engine || c.to != org.CommitKind {
+		return ""
+	}
+
+	return fmt.Sprintf("Before this change's pull request: bedrock %s %s %s again, in this clone, as the break-glass account. It finds everything that stands and makes the rest as %s says, which brings the two triggers to the commit shape; until then the plan trigger's fetch step refuses the commit pin.", orgCommand, bootstrapCommand, t.engine, t.placement)
 }
 
 // pinMove is one move of the pin, ready to be made once the bedrock to render with is in
@@ -302,7 +360,8 @@ func (d deps) upgradeToRelease(cmd *cobra.Command, src *release.Source, t *upgra
 
 // move makes the move once it is confirmed and the bedrock to render with is in hand:
 // the pin written and announced, the render with that bedrock, the apply of 0-bootstrap
-// when the triggers' shape changes, and the closing line.
+// when a hosting organization's triggers change shape (in a root organization, what
+// brings its triggers to the new shape by hand), and the closing line.
 func (d deps) move(cmd *cobra.Command, t *upgradeTarget, m *pinMove, change *shapeChange) error {
 	out := cmd.OutOrStdout()
 	if err := t.write(m.version, m.sum); err != nil {
@@ -312,7 +371,13 @@ func (d deps) move(cmd *cobra.Command, t *upgradeTarget, m *pinMove, change *sha
 	if err := renderWith(cmd, m.bin, m.version, t.render); err != nil {
 		return err
 	}
-	if change != nil {
+	switch {
+	case change == nil:
+	case change.engine:
+		if next := change.byHand(t); next != "" {
+			fmt.Fprintln(out, next)
+		}
+	default:
 		if err := d.applyShapeChange(cmd, t, change); err != nil {
 			return err
 		}
@@ -326,7 +391,8 @@ func (d deps) move(cmd *cobra.Command, t *upgradeTarget, m *pinMove, change *sha
 // confirmed before anything is fetched, installed or written: when there is one, it is
 // printed and yes is asked for at the terminal; --yes stands in for it, and a run with
 // no terminal and no --yes is refused, with nothing moved. ok is false when something
-// else was typed, which stops the move. No change asks nothing.
+// else was typed, which stops the move. No change asks nothing, and neither does a
+// change in a root organization, where the move applies nothing to confirm.
 func (d deps) confirmShapeChange(cmd *cobra.Command, t *upgradeTarget, version string, yes bool) (change *shapeChange, ok bool, err error) {
 	change = t.shapeChange(version)
 	if change == nil {
@@ -334,7 +400,7 @@ func (d deps) confirmShapeChange(cmd *cobra.Command, t *upgradeTarget, version s
 	}
 	out := cmd.OutOrStdout()
 	fmt.Fprintln(out, change.announcement())
-	if yes {
+	if yes || change.engine {
 		return change, true, nil
 	}
 	if !d.interactive() {

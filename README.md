@@ -817,8 +817,8 @@ by the alias the skeleton binds the driver under.
   triggers' first step makes the same check with git before building a commit pin, so a
   pin edited into the placement by hand is refused there too.
 
-In the organization's repository, a move that changes the pin's kind, a release to a
-commit or a commit to a release, changes the shape of the Cloud Build triggers' steps
+In a hosting organization's repository, a move that changes the pin's kind, a release to
+a commit or a commit to a release, changes the shape of the Cloud Build triggers' steps
 (`0-bootstrap/cloud-build.tf`: a release pin renders the fetch step alone, a commit pin
 adds the step that builds it with `go install`), and 0-bootstrap is the one layer no
 trigger applies, so the triggers stay in the old shape until someone applies it. In the
@@ -834,6 +834,20 @@ that keeps the kind applies nothing and reads as before. A pull request that rea
 plan trigger with a commit pin while the triggers are in the release shape fails at the
 fetch step with a message that says what applies the commit shape: `bedrock upgrade` when
 it moves the pin, else 0-bootstrap applied from that branch by hand.
+
+A root organization has no layer, so `upgrade` applies nothing in its repository and asks
+for nothing. With a cloud, its two triggers' steps change shape with the pin's kind the
+same way, and the engine makes them, in the apply trigger's run and in the bootstrap. So
+`upgrade` says what the move does to them, and after a move from a release to a commit it
+says what brings them to the commit shape before the pull request can be planned:
+`bedrock org bootstrap <dir>` again in the clone, as the break-glass account, the root
+organization's recovery by hand, which makes the organization as the working tree's
+`placement.json` says and so updates the triggers' steps. Until then the plan trigger's
+fetch step refuses the commit pin, and its message names the same command. A move from a
+commit to a release needs nothing by hand: the triggers' commit shape runs a release too
+(the build step has nothing to do), and the merge's apply brings them to the release
+shape. A root organization without a cloud has no trigger: its workflow's jobs fetch a
+release and build a commit alike, and a move of either kind applies nothing.
 
 Push the commit before pinning it: the proxy knows only pushed commits, and when it is
 asked about one too soon it remembers for about 30 minutes that it did not know it.
