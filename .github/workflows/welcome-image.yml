@@ -1,0 +1,188 @@
+# The welcome image: what a site runs on between its application's registration and its first
+# release (placement.json, placeholderImage; README.md, "The welcome image"). It is one small
+# program, the welcome directory of this repository, published to GitHub's container registry
+# as ghcr.io/impulseframework/welcome:<version>, where Cloud Run reads a public image
+# directly.
+#
+# A tag is published once and never moved. welcome/VERSION is the record: the version, which
+# is the tag, and the SHA-256 of what the image is made of, which the tests of the welcome
+# directory hold to the files and the image carries as a label. A run finds the version's
+# tag in the registry or not. There already: the run checks that the published image was
+# made of the sources the record names and publishes nothing; made of other sources, it
+# refuses, since that change takes the next version. Not there: the run builds the binary
+# with the module's Go (static, linux/amd64, which is what Cloud Run runs), builds the image
+# around it, starts it and asks it for the page over HTTP/1.1 and over unencrypted HTTP/2,
+# with a site's binary as its arguments, and pushes it only once it has answered both.
+#
+# It runs on a push to master that touches the image, so the image a merge names is
+# published before the release of bedrock that names it. Started by hand on a branch, it
+# publishes the version that branch records, which is how a lab round gets the image a pull
+# request names before the merge: the image is then already there when the merge's run
+# looks, made of the same sources. A page that changes after that takes the next version.
+#
+# A package starts private on GitHub, and Cloud Run reads only a public one: an owner of the
+# organization makes the package public once, after the first run (README.md, "The welcome
+# image"). Every run ends by asking the registry for the tag with no credentials, and warns
+# while that answer is not the image.
+name: welcome image
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - welcome/**
+      - .github/workflows/welcome-image.yml
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  image:
+    name: build, try and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: welcome-image
+      cancel-in-progress: false
+    env:
+      REGISTRY: ghcr.io
+      NAME: impulseframework/welcome
+      # The label the image carries the hash of its sources under.
+      SOURCES_LABEL: dev.impulseframework.welcome.sources
+      MANIFESTS: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the record
+        id: record
+        run: |
+          set -euo pipefail
+          read -r version sources < welcome/VERSION
+          if ! [[ "$version" =~ ^v[1-9][0-9]*$ ]] || ! [[ "$sources" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "welcome/VERSION holds '${version} ${sources}', not a version (v1, v2, ...) and the SHA-256 of the image's sources"
+            exit 1
+          fi
+          echo "the record: ${REGISTRY}/${NAME}:${version}, made of ${sources}"
+          {
+            echo "version=${version}"
+            echo "sources=${sources}"
+            echo "image=${REGISTRY}/${NAME}:${version}"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Hold the record to the sources
+        # The tests of the welcome directory refuse a record whose hash is not the files',
+        # and the placement's test refuses a default image that is not this version.
+        run: go test ./welcome/ ./internal/derive/ -run '^(TestVersion|TestPlaceholderImage)$'
+      - name: Sign in to the registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login "$REGISTRY" --username "$GITHUB_ACTOR" --password-stdin
+      - name: Look for the tag
+        id: look
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.record.outputs.version }}
+          SOURCES: ${{ steps.record.outputs.sources }}
+          IMAGE: ${{ steps.record.outputs.image }}
+        run: |
+          set -euo pipefail
+          if docker pull --quiet "$IMAGE" >/dev/null 2>&1; then
+            published=$(docker image inspect --format "{{ index .Config.Labels \"${SOURCES_LABEL}\" }}" "$IMAGE")
+            if [ "$published" != "$SOURCES" ]; then
+              echo "${IMAGE} is published already, made of other sources (${published:-none recorded}) than welcome/VERSION records for it (${SOURCES}). A tag is never moved: this change takes the next version, in welcome/VERSION and in derive.PlaceholderImage."
+              exit 1
+            fi
+            echo "${IMAGE} is published already, made of these sources: nothing is published."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The pull failed. A tag that is not there is published; a registry that could
+          # not be asked is not, since the tag may stand. The registry answers 404 for a
+          # tag it does not hold, and 401 or 403 where the package itself is not there
+          # yet or is not this repository's, in which case the push below is refused as
+          # well. Any other answer stops the run.
+          token=$(curl -fsS -u "${GITHUB_ACTOR}:${GH_TOKEN}" "https://${REGISTRY}/token?service=${REGISTRY}&scope=repository:${NAME}:pull" | jq -r '.token // empty') || token=""
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${token}" -H "Accept: ${MANIFESTS}" "https://${REGISTRY}/v2/${NAME}/manifests/${VERSION}") || code="none"
+          case "$code" in
+            401 | 403 | 404)
+              echo "${IMAGE} is not published (the registry answered ${code}): this run publishes it."
+              echo "published=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "${IMAGE} could not be pulled, and the registry answered ${code} when asked for the tag: the tag may stand, so nothing is published. Run the workflow again."
+              exit 1
+              ;;
+          esac
+      - name: Build
+        if: steps.look.outputs.published != 'true'
+        env:
+          CGO_ENABLED: "0"
+          GOFLAGS: -trimpath
+          GOOS: linux
+          GOARCH: amd64
+          SOURCES: ${{ steps.record.outputs.sources }}
+          IMAGE: ${{ steps.record.outputs.image }}
+        run: |
+          set -euo pipefail
+          # The build context is the binary alone, outside the checkout.
+          context="${RUNNER_TEMP}/welcome-image"
+          mkdir -p "$context"
+          go build -ldflags="-s -w" -o "${context}/welcome" ./welcome
+          docker build --file welcome/Dockerfile --tag "$IMAGE" \
+            --label "org.opencontainers.image.title=welcome" \
+            --label "org.opencontainers.image.description=The page a site answers with between its application's registration and its first release." \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            --label "${SOURCES_LABEL}=${SOURCES}" \
+            "$context"
+      - name: Try the image
+        if: steps.look.outputs.published != 'true'
+        env:
+          IMAGE: ${{ steps.record.outputs.image }}
+        run: |
+          set -euo pipefail
+          # As a multi-site application's service starts it: the site's binary as the
+          # arguments, which the image's entrypoint does not read.
+          container=$(docker run --detach --rm --publish 127.0.0.1:8080:8080 "$IMAGE" /console)
+          trap 'docker stop "$container" >/dev/null' EXIT
+          for protocol in --http1.1 --http2-prior-knowledge; do
+            answered=$(curl -sS --retry 10 --retry-delay 1 --retry-connrefused "$protocol" -o /dev/null -w '%{http_version} %{http_code}' http://127.0.0.1:8080/any/path)
+            case "${protocol} ${answered}" in
+              "--http1.1 1.1 200" | "--http2-prior-knowledge 2 200")
+                echo "asked with ${protocol}: answered HTTP/${answered}"
+                ;;
+              *)
+                echo "asked with ${protocol}, the image answered '${answered}', not the page in that protocol: nothing is published"
+                exit 1
+                ;;
+            esac
+          done
+      - name: Publish
+        if: steps.look.outputs.published != 'true'
+        env:
+          IMAGE: ${{ steps.record.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE"
+          echo "published $(docker image inspect --format '{{ index .RepoDigests 0 }}' "$IMAGE")"
+      - name: Ask as anyone
+        env:
+          VERSION: ${{ steps.record.outputs.version }}
+          IMAGE: ${{ steps.record.outputs.image }}
+        run: |
+          set -euo pipefail
+          # What Cloud Run does when a service is created with the image: no credentials.
+          token=$(curl -fsS "https://${REGISTRY}/token?service=${REGISTRY}&scope=repository:${NAME}:pull" | jq -r '.token // empty') || token=""
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${token}" -H "Accept: ${MANIFESTS}" "https://${REGISTRY}/v2/${NAME}/manifests/${VERSION}") || code="none"
+          if [ "$code" = 200 ]; then
+            echo "${IMAGE} is public: anyone can pull it."
+          else
+            echo "::warning::${IMAGE} is published but not public (asked with no credentials, the registry answered ${code}): Cloud Run cannot create a service with it until an owner of the organization makes the package public, once (README.md, \"The welcome image\")"
+          fi

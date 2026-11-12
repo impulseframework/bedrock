@@ -98,7 +98,9 @@ func TestFetchBedrockScript(t *testing.T) {
 		// env is the step's environment beyond the process's: BEDROCK_STEPS, the shape
 		// of the steps, which 0-bootstrap's triggers set and 2-env's stack trigger
 		// leaves unset.
-		env      []string
+		env []string
+		// root runs the script a root organization's triggers carry (fetchScript).
+		root     bool
 		wantOut  string
 		wantErr  string
 		wantNote string
@@ -136,6 +138,22 @@ func TestFetchBedrockScript(t *testing.T) {
 			repository: "file://" + filepath.Join(t.TempDir(), "missing"),
 			env:        []string{stepsEnv + "=" + StepsVersion + "-release"},
 			wantErr:    "placement.json pins bedrock " + stamp + onBranch[:12] + ", a commit pin, and this trigger's steps are in the release shape (" + StepsVersion + "-release): this step downloads a release, and no step follows to build a commit. A commit pin needs the commit shape, which bedrock upgrade applies to 0-bootstrap when it moves the pin from a release to a commit; when the pin was moved without that apply, apply 0-bootstrap from this branch by hand (in 0-bootstrap: tofu init, then tofu apply, as the bootstrap administrator) before this pull request's plan, or the merge's apply, can run",
+		},
+		{
+			name:       "a commit pin under the release shape in a root organization: refused, naming the bootstrap run again, since there is no layer to apply",
+			placement:  `{"kind": "root", "bedrockVersion": "` + stamp + onBranch[:12] + `"}`,
+			repository: "file://" + filepath.Join(t.TempDir(), "missing"),
+			env:        []string{stepsEnv + "=" + StepsVersion + "-release"},
+			root:       true,
+			wantErr:    "no step follows to build a commit. A commit pin needs the commit shape, and a root organization has no layer to apply: the engine makes its triggers. Run bedrock org bootstrap again in a clone at this branch, as the break-glass account, which makes the organization as the branch's placement.json says and brings the two triggers to the commit shape, before this pull request's plan, or the merge's apply, can run",
+		},
+		{
+			name:      "a release pin in a root organization: downloaded, verified and run",
+			placement: `{"kind": "root", "bedrockVersion": "v0.5.0", "bedrockSha256": "` + sum + `"}`,
+			env:       []string{stepsEnv + "=" + StepsVersion + "-release"},
+			root:      true,
+			wantOut:   "bedrock v0.5.0 (a stand-in binary)\n",
+			wantRun:   true,
 		},
 		{
 			name:      "a commit pin only a tag reaches",
@@ -181,7 +199,11 @@ func TestFetchBedrockScript(t *testing.T) {
 			if repo == "" {
 				repo = repository
 			}
-			cmd := exec.CommandContext(t.Context(), python, "-I", "-c", fetchBedrockScript, home, srv.URL, repo)
+			script := fetchBedrockScript
+			if tt.root {
+				script = (&Placement{Kind: RootKind}).fetchScript()
+			}
+			cmd := exec.CommandContext(t.Context(), python, "-I", "-c", script, home, srv.URL, repo)
 			cmd.Dir = checkout
 			cmd.Env = append(append(os.Environ(), "TMPDIR="+t.TempDir()), tt.env...)
 			out, err := cmd.CombinedOutput()
@@ -273,5 +295,39 @@ func TestBuildBedrockScript(t *testing.T) {
 	}
 	if strings.Contains(fetchBedrockScript, "$") {
 		t.Errorf("the fetch script carries a $, which Cloud Build reads as a substitution")
+	}
+}
+
+// TestFetchScript holds the script the organization's own triggers carry to the
+// organization's kind: a hosting organization's is the constant its layers render, byte
+// for byte, whose refusal of a commit pin under steps in the release shape names
+// 0-bootstrap; a root organization's differs by that one sentence, which names the
+// bootstrap run again, since a root organization has no layer. Neither sentence holds
+// what would end the script's string or what Cloud Build would read as a substitution.
+func TestFetchScript(t *testing.T) {
+	t.Parallel()
+
+	hosting := (&Placement{}).fetchScript()
+	if hosting != fetchBedrockScript {
+		t.Errorf("a hosting organization's script is not the constant its layers render")
+	}
+	root := (&Placement{Kind: RootKind}).fetchScript()
+	if want := strings.Replace(fetchBedrockScript, commitShapeByHand, rootCommitShapeByHand, 1); root != want || root == fetchBedrockScript {
+		t.Errorf("a root organization's script does not differ from the constant by the one sentence")
+	}
+	if strings.Contains(root, "0-bootstrap") {
+		t.Errorf("a root organization's script names 0-bootstrap, a layer it has not")
+	}
+	for _, sentence := range []string{commitShapeByHand, rootCommitShapeByHand} {
+		if strings.ContainsAny(sentence, "\"$\n\\") {
+			t.Errorf("the sentence %q holds a quote, a $, a line break or a backslash", sentence)
+		}
+	}
+	for name, p := range map[string]*Placement{"hosting": {}, "root": {Kind: RootKind}} {
+		for _, command := range []string{PlanCommand, ApplyCommand} {
+			if got := p.TriggerSteps(command)[0].Args[1]; got != p.fetchScript() {
+				t.Errorf("the %s organization's %s trigger does not carry its own fetch script", name, command)
+			}
+		}
 	}
 }

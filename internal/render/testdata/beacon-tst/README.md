@@ -173,6 +173,10 @@ from `2-env`'s state.
   image and runs it on the build worker as the deploy identity, with the
   variables `locals.tf` derives for it (`migrate_env`, which `cloud-build.tf`
   passes to the pipeline as `_MIGRATE_ENV`).
+  Until the first deploy every hostname answers with what the placeholder
+  image serves (`placeholder_image`): the framework's welcome image, which a
+  first placement names, says that the site is set up and that its application
+  has not had a release yet, over HTTP/1.1 and HTTP/2 alike.
   From the first deploy on, the revision template is the pipeline's
   (`ignore_changes`): this stack keeps each service standing (its name, its
   ingress, its protection) and says in its `revision_templates` output what
@@ -948,7 +952,7 @@ Per environment, after the first apply:
 | `environment` | `tst`; passed as `-var` on every run. | `string` | n/a | yes |
 | `generated_secret_versions` | The generated secrets' versions, derived and passed by the pipeline's plan step; never written here. | `map(string)` | `{}` | no |
 | `hostnames` | Hostnames per environment; the first is canonical. | `map(list(string))` | the one above | no |
-| `placeholder_image` | Image the services and job are created with. | `string` | `us-docker.pkg.dev/cloudrun/container/hello` | no |
+| `placeholder_image` | Image the services and job are created with. | `string` | `ghcr.io/impulseframework/welcome:v1` | no |
 | `restore` | Set by a restore run alone: the database's protection (and tst's file stores') lifted at the apply before the plan that replaces them. | `bool` | `false` | no |
 | `retired` | The secrets and file stores a release retires, by variable: each one's protection lifted, so that the next release can remove it ("Retiring a secret or a file store"). | `list(string)` | `[]` | no |
 | `secret_versions` | Pinned secret version per environment per variable; the word `generated` for a generated secret. | `map(map(string))` | all empty | no |

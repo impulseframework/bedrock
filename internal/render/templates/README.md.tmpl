@@ -282,6 +282,10 @@ from `2-env`'s state.
   shared registry's copy to start again. The service and the job are created
   with a placeholder image.
 {{- end}}
+  Until the first deploy every hostname answers with what the placeholder
+  image serves (`placeholder_image`): the framework's welcome image, which a
+  first placement names, says that the site is set up and that its application
+  has not had a release yet, over HTTP/1.1 and HTTP/2 alike.
   From the first deploy on, the revision template is the pipeline's
   (`ignore_changes`): this stack keeps each service standing (its name, its
   ingress, its protection) and says in its `revision_templates` output what

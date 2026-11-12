@@ -61,7 +61,7 @@ cloud_armor = {
 
 # Defaults that are decisions, restated so they are visible here:
 #   hostnames                    = lantrn-console-tst. / lantrn-console-stg. / console.lanterns.example
-#   placeholder_image            = us-docker.pkg.dev/cloudrun/container/hello
+#   placeholder_image            = ghcr.io/impulseframework/welcome:v1
 #   mail_mailbox                 = ""
 #   cloud_armor_sign_in_count    = 30
 #   cloud_armor_sign_in_interval = 60

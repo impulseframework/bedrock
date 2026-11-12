@@ -871,7 +871,7 @@ It also makes the application's first placement.json, the file bedrock render re
 application's repository (infrastructure/placement.json), from this placement and nothing
 asked: the prefix, the environments, the regions, the domains, the state bucket, the default
 branch, the release app's slug, the labels and the environment projects' ids and numbers,
-with Cloud Run's sample image to create the services with, the application's code and its
+with the framework's welcome image to create the services with, the application's code and its
 repository's name, the first environment's database seeded, and the bedrock running
 register as the pin (a release with its pipeline binary's checksum from the release's
 checksums.txt, or a commit installed with go install; a build from a checkout is nobody's

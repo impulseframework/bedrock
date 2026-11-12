@@ -60,10 +60,10 @@ ARG COMMIT=unknown
 # fresh one.
 #
 # The go image is pinned at a digest that carries a toolchain at least as new as go.mod
-# declares (go1.27.3, published 2026-10-22), found the way the header says. The compile
+# declares (go1.27.4, published 2026-11-11), found the way the header says. The compile
 # stage sets GOTOOLCHAIN=local, which makes a go.mod that outruns the image fail the build
 # there instead of downloading a toolchain: the fix is a new digest here, never a download.
-FROM cgr.dev/chainguard/go@sha256:04df3e7738e9caea8a5830142ad01cb484bd9790a931bdd7b5d0462538f9f305 AS go-modules
+FROM cgr.dev/chainguard/go@sha256:905d3bb3fbb15a801a974de607f66c7ba655a327dc40f0a1d42d4a24708165bd AS go-modules
 WORKDIR /go/src/app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -86,7 +86,7 @@ RUN bun install --frozen-lockfile
 # a module the cache lacks fails the compile rather than being downloaded, so the layer
 # depends on nothing but the copied files and the downloaded modules. -mod=readonly keeps
 # go.mod an input, never rewritten.
-FROM cgr.dev/chainguard/go@sha256:04df3e7738e9caea8a5830142ad01cb484bd9790a931bdd7b5d0462538f9f305 AS build-env
+FROM cgr.dev/chainguard/go@sha256:905d3bb3fbb15a801a974de607f66c7ba655a327dc40f0a1d42d4a24708165bd AS build-env
 
 ENV CGO_ENABLED=0 \
     GOTOOLCHAIN=local \

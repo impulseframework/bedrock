@@ -322,9 +322,14 @@ func Machines() []Machine {
 }
 
 // PlaceholderImage is the image an application's first placement names for every service
-// and job to be created with before the first deploy (placeholderImage): Cloud Run's
-// public sample, which serves on the port Cloud Run gives it and reads nothing.
-const PlaceholderImage = "us-docker.pkg.dev/cloudrun/container/hello"
+// and job to be created with before the first deploy (placeholderImage): the framework's
+// welcome image, this repository's welcome directory, which serves one page on the port
+// Cloud Run gives it, in HTTP/1.1 and in unencrypted HTTP/2 (a site on the framework's
+// server gets a container port named h2c, which an image that speaks HTTP/1.1 alone
+// answers with 502), and reads nothing. The tag is the version welcome/VERSION records,
+// published once and never moved; a placement written before this image keeps the one it
+// names, Cloud Run's public sample.
+const PlaceholderImage = "ghcr.io/impulseframework/welcome:v1"
 
 var (
 	prefixRE = regexp.MustCompile(`^[a-z][a-z0-9]{0,7}$`)

@@ -235,6 +235,18 @@ upgrade`), checks, and only then plans or applies. The runners hold their
 roles on the root project and read roles on the folder; the apply impersonates
 the creating identity for a creation alone.
 
+The steps follow the kind of the pin: a release pin has the fetch step alone, a
+pin at a commit adds the step that builds it with `go install`. No file here
+holds the steps: the apply makes the triggers, and so does the bootstrap, so
+they change shape with the apply that follows the pin's move. A move from a
+commit to a release needs nothing by hand, since the commit shape runs a
+release too. A move from a release to a commit does: the fetch step of the
+release shape refuses a pin at a commit, so neither the pull request's plan nor
+the merge's apply runs until `bedrock org bootstrap` is run again in a clone at
+that branch, as the break-glass account, which brings the two triggers to the
+commit shape. `bedrock upgrade` says so when it moves the pin, and the refusal
+names the same command.
+
 Two things the apply reports and never changes, since they lie outside the
 folder or would break a customer: the grants at the organization node and on
 the billing account, made by the bootstrap, and a zone

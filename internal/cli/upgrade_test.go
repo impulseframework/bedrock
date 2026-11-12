@@ -358,10 +358,10 @@ func TestPinGuard(t *testing.T) {
 // shape of the triggers' steps, so upgrade says so, asks for yes typed back (--yes
 // stands in for it; a run with neither is refused before anything moves or installs),
 // and after the render applies 0-bootstrap by hand (init, plan, apply) and prints the
-// two summary lines; a move that keeps the kind applies nothing.
+// two summary lines; a move that keeps the kind applies nothing. It runs alone, its
+// cases one after another, as TestUpgrade does and for its reason: run in parallel,
+// one case's fork came between another's write of the binary and its run.
 func TestUpgradeOrganization(t *testing.T) {
-	t.Parallel()
-
 	const zeros = "0000000000000000000000000000000000000000000000000000000000000000"
 	const planned = "Planned 0-bootstrap: Plan: 0 to add, 2 to change, 0 to destroy.\n"
 	// applied is what tofu runs when upgrade applies 0-bootstrap, by prefix.
@@ -445,8 +445,6 @@ func TestUpgradeOrganization(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
 			src, sum := releaseServer(t)
 			dir := orgRepo(t)
 			if code, out := runOrg(t, "org", "new", dir); code != 0 {
@@ -507,6 +505,156 @@ func TestUpgradeOrganization(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUpgradeRootOrganization: a root organization has no layer, so upgrade applies
+// nothing in its repository and asks for nothing, whatever the pin does. With a cloud
+// its two triggers' steps follow the pin's kind, and the engine makes them: a move from
+// a release to a commit says that the triggers as they stand refuse the pin and, after
+// the render, names what brings them to the commit shape by hand (the bootstrap run
+// again in the clone); a move from a commit to a release says the commit shape runs a
+// release too and that the merge's apply brings the triggers along. Without a cloud
+// there is no trigger, and a move across kinds says nothing of one. It runs alone, its
+// cases one after another, as TestUpgrade does and for its reason.
+func TestUpgradeRootOrganization(t *testing.T) {
+	const zeros = "0000000000000000000000000000000000000000000000000000000000000000"
+	const noLayer = "A root organization has no layer to apply: the engine makes its triggers, in the apply trigger's run and in the bootstrap, so bedrock upgrade applies nothing here"
+	tests := []struct {
+		name    string
+		noCloud bool
+		// pinned is the pin before the move; empty leaves the placement without one.
+		pinned        string
+		args          []string
+		wantVersion   string
+		wantSum       bool
+		wantInstalled string
+		// wantOut and absent are what the output holds and does not; {dir} stands for
+		// the repository's directory.
+		wantOut []string
+		absent  []string
+	}{
+		{
+			name: "with a cloud, a release to a commit: nothing applied or asked, and the bootstrap run again named", pinned: "v0.4.0", args: []string{headCommit[:12]}, wantVersion: headVersion, wantInstalled: headVersion,
+			wantOut: []string{
+				"The pin moves from a release to a commit, and the two Cloud Build triggers' steps change shape with it: a release pin has the fetch step alone, a commit pin adds the step that builds it with go install. The triggers stand in the release shape, whose fetch step refuses a commit pin, so no pull request with this pin can be planned, and no merge applied, until they are in the commit shape. " + noLayer + ", and says after the render what brings them to the commit shape by hand.\n",
+				"a commit pin: the triggers' runs build it with go install", "bedrock stand-in org render --dir ",
+				"Before this change's pull request: bedrock org bootstrap {dir} again, in this clone, as the break-glass account. It finds everything that stands and makes the rest as {dir}/placement.json says, which brings the two triggers to the commit shape; until then the plan trigger's fetch step refuses the commit pin.\n",
+				"from that commit the Cloud Build triggers' runs build bedrock " + headVersion + " with go install and run it.\n",
+			},
+			absent: []string{"0-bootstrap", "Type yes", "tofu"},
+		},
+		{
+			name: "with a cloud, a commit to a release: nothing applied or asked, and nothing by hand", pinned: headVersion, args: []string{"v0.4.0"}, wantVersion: "v0.4.0", wantSum: true,
+			wantOut: []string{
+				"The pin moves from a commit to a release, and the two Cloud Build triggers' steps change shape with it: a commit pin has the fetch step and the step that builds it with go install, a release pin the fetch step alone. The triggers stand in the commit shape, whose steps run a release pin too (the build step has nothing to do), so the pull request's plan runs, and the merge's apply brings the triggers to the release shape. " + noLayer + ", and nothing is applied by hand.\n",
+				"from bedrock " + headVersion + " to bedrock v0.4.0 (bedrock-linux-amd64 ", "bedrock stand-in org render --dir ",
+				"with the rendered files: from that commit the Cloud Build triggers' runs run bedrock v0.4.0.\n",
+			},
+			absent: []string{"0-bootstrap", "Type yes", "tofu", "bedrock org bootstrap"},
+		},
+		{
+			name: "with a cloud, a release to a commit with --yes: the flag has nothing to stand in for, and nothing is applied", pinned: "v0.4.0", args: []string{headCommit[:12], "--yes"}, wantVersion: headVersion, wantInstalled: headVersion,
+			wantOut: []string{noLayer + ", and says after the render what brings them to the commit shape by hand.\n", "Before this change's pull request: bedrock org bootstrap {dir} again, in this clone, as the break-glass account."},
+			absent:  []string{"0-bootstrap", "Type yes", "tofu"},
+		},
+		{
+			name: "with a cloud, a release to another release: the kind stays, and nothing is said of the triggers", pinned: "v0.1.0", args: []string{"v0.4.0"}, wantVersion: "v0.4.0", wantSum: true,
+			wantOut: []string{"from bedrock v0.1.0 to bedrock v0.4.0 (bedrock-linux-amd64 ", "from that commit the Cloud Build triggers' runs run bedrock v0.4.0.\n"},
+			absent:  []string{"change shape", "0-bootstrap", "bedrock org bootstrap"},
+		},
+		{
+			name: "with a cloud, a first pin: no trigger stands in a shape yet", args: []string{headCommit[:12]}, wantVersion: headVersion, wantInstalled: headVersion,
+			wantOut: []string{"from no bedrock to bedrock " + headVersion + ", a commit pin"},
+			absent:  []string{"change shape", "0-bootstrap", "bedrock org bootstrap"},
+		},
+		{
+			name: "without a cloud, a release to a commit: no trigger, so nothing is said of one", noCloud: true, pinned: "v0.4.0", args: []string{headCommit[:12]}, wantVersion: headVersion, wantInstalled: headVersion,
+			wantOut: []string{"a commit pin: the workflow's jobs build it with go install", "from that commit the workflow's jobs build bedrock " + headVersion + " with go install and run it.\n"},
+			absent:  []string{"change shape", "0-bootstrap", "bedrock org bootstrap", "Cloud Build"},
+		},
+		{
+			name: "without a cloud, a commit to a release", noCloud: true, pinned: headVersion, args: []string{"v0.4.0"}, wantVersion: "v0.4.0", wantSum: true,
+			wantOut: []string{"with the rendered files: from that commit the workflow's jobs run bedrock v0.4.0.\n"},
+			absent:  []string{"change shape", "0-bootstrap", "bedrock org bootstrap", "Cloud Build"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src, sum := releaseServer(t)
+			dir := rootRepo(t)
+			if tt.noCloud {
+				dir = noCloudRepo(t)
+			}
+			if tt.pinned != "" {
+				pinnedSum := ""
+				switch {
+				case tt.pinned == "v0.4.0":
+					pinnedSum = sum
+				case !release.IsCommitPin(tt.pinned):
+					pinnedSum = zeros
+				}
+				editPlacement(t, dir, func(p *org.Placement) {
+					p.BedrockVersion, p.BedrockSHA256 = tt.pinned, pinnedSum
+				})
+			}
+			fake := &installs{src: src, sum: sum}
+			tofu := &bootstrapTofu{}
+			d := deps{
+				interactive: never,
+				releases: func() *release.Source {
+					return src
+				},
+				cacheDir: t.TempDir(),
+				install:  fake.install,
+				cwd:      dir,
+				version:  installedHead,
+				deploy:   &deploy.Clients{Exec: tofu},
+			}
+			args := append([]string{upgradeCommand}, tt.args...)
+			args = append(args, "--dir", dir)
+			out, err := execute(d, "", args...)
+			if err != nil {
+				t.Fatalf("error = %v; output:\n%s", err, out)
+			}
+			for _, want := range tt.wantOut {
+				if want = strings.ReplaceAll(want, "{dir}", dir); !strings.Contains(out, want) {
+					t.Errorf("output lacks %q:\n%s", want, out)
+				}
+			}
+			for _, absent := range tt.absent {
+				if strings.Contains(out, absent) {
+					t.Errorf("output holds %q:\n%s", absent, out)
+				}
+			}
+			checkOrgPin(t, dir, tt.wantVersion, tt.wantSum, sum)
+			if got := strings.Join(fake.versions, " "); got != tt.wantInstalled {
+				t.Errorf("installed %q, want %q", got, tt.wantInstalled)
+			}
+			if len(tofu.ran) != 0 {
+				t.Errorf("tofu ran %d command(s), and a root organization has no layer to apply:\n%s", len(tofu.ran), strings.Join(tofu.ran, "\n"))
+			}
+		})
+	}
+}
+
+// noCloudRepo is the repository of a root organization without a cloud, with no
+// bedrock pin: its placement alone, as the bootstrap drafts one.
+func noCloudRepo(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	p := &org.Placement{
+		Kind: org.RootKind, Prefix: "imf", GithubOrganization: "imp-example", GithubDefaultBranch: "master",
+		SourceRepo: "imf-root-infrastructure", Libraries: []org.Library{{Repository: "workflows", Public: true}},
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if err := p.Write(filepath.Join(dir, orgPlacementFile)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	return dir
 }
 
 // checkOrgPin reads the organization's placement back and checks its pin: the version,

@@ -636,8 +636,8 @@ const (
 // GOTOOLCHAIN=local, so a newer go line fails them rather than downloading a toolchain,
 // and the fix is a new digest here (a test holds the two together).
 const (
-	goImage   = "cgr.dev/chainguard/go@sha256:04df3e7738e9caea8a5830142ad01cb484bd9790a931bdd7b5d0462538f9f305"
-	goImageGo = "1.27.3"
+	goImage   = "cgr.dev/chainguard/go@sha256:905d3bb3fbb15a801a974de607f66c7ba655a327dc40f0a1d42d4a24708165bd"
+	goImageGo = "1.27.4"
 )
 
 // goInstallEnv is the environment go install builds a commit pin in, the pipeline's and

@@ -1,6 +1,6 @@
 module github.com/impulseframework/bedrock
 
-go 1.27.3
+go 1.27.4
 
 require (
 	cloud.google.com/go/domains v0.17.0

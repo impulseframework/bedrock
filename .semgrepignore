@@ -31,3 +31,12 @@ internal/cli/upgrade_test.go
 # committed one: naming, not cryptography, so the weak-hash audit does not apply.
 internal/deploy/exec.go
 internal/migration/sequence.go
+# The welcome image's program answers every request with its one page, a file embedded at
+# build time that holds nothing a request sent, so the direct-write audit (an HTML page
+# writing user data) does not apply. The page's one link is its icon, written into the
+# link itself as a data address: nothing is fetched, so there is nothing for an integrity
+# attribute to check. Its test starts the test binary itself as the program, with the
+# arguments a Cloud Run service would pass it; the dangerous-exec audit does not apply.
+welcome/main.go
+welcome/page.html
+welcome/main_test.go
