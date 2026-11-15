@@ -58,7 +58,7 @@ triggers in the boot project plan and apply (the same plan and apply). check com
 committed files with what the placement renders, and preflight checks, before the bootstrap,
 that the break-glass account holds the roles it needs.`,
 	}
-	cmd.AddCommand(newOrgBootstrap(d), newOrgNew(d), newOrgPreflight(d), newOrgRender(d), newOrgCheck(d), newOrgRegister(d), newOrgPlace(d), newOrgCreate(d), newOrgPlan(d), newOrgApply(d), newOrgTeardown(d), newOrgServe(d), newOrgHostnames(d), newOrgRetire(d), newOrgDestroy(d), newOrgSecrets(d))
+	cmd.AddCommand(newOrgBootstrap(d), newOrgNew(d), newOrgPreflight(d), newOrgRender(d), newOrgCheck(d), newOrgRegister(d), newOrgPlace(d), newOrgCreate(d), newOrgPlan(d), newOrgApply(d), newOrgTeardown(d), newOrgServe(d), newOrgHostnames(d), newOrgRetire(d), newOrgDestroy(d), newOrgSecrets(d), newOrgLibrary(d))
 
 	return cmd
 }

@@ -818,6 +818,14 @@ listed under `libraries` in `placement.json`:
   the plan prints the checks the ruleset it came with requires: copy them into
   `checks`, then delete that ruleset on GitHub.
 
+A new library comes onto the list by a command, run in a clone of this
+repository: `bedrock org library add <repository>` writes the entry (`--public`,
+`--check <name>` once for each check, `--adopted`), holds the placement to its
+rules and renders. It reaches nothing on GitHub: the pull request that carries
+the change says in its plan what the merge will do, and the merge's apply makes
+the repository. Team access to it is given on GitHub by hand. Changing an entry,
+and taking one off the list, are edits of `placement.json` by hand.
+
 The apply keeps each library by GitHub's API, as it keeps this repository: the
 repository, made when it is missing, its visibility, its merge settings, and
 the ruleset `default branch` on its default branch, this repository's own with
