@@ -2676,7 +2676,9 @@ organization with no Google credentials and no token: `--prefix` and
 `--github-organization`, `--library` and `--public-library` for the libraries it starts
 with, or a `placement.json` written by hand in the directory, which lists the libraries
 with their checks and names everything. It makes the apps the placement calls for in the
-browser, the infrastructure app always and the release app once a library is listed (no
+browser, signed in to GitHub as an owner of the organization (GitHub makes an app under the
+account that is signed in, and the page refuses an app another account owns, saying where
+to delete it), the infrastructure app always and the release app once a library is listed (no
 deployer app and no Bot Account: both serve Cloud Build); the repository, private; then,
 through the engine, the organization's immutable releases, the repository's settings and
 ruleset, its environment `bedrock`, each library, the version tags' ruleset and the
