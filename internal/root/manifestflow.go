@@ -180,6 +180,7 @@ var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html>
 <style>body{font-family:system-ui,sans-serif;max-width:48em;margin:3em auto;padding:0 1em;line-height:1.5}
 .app{border:1px solid #ccc;border-radius:6px;padding:1em 1.5em;margin:1em 0}.done{color:#2a7a2a}button,a.button{font:inherit;padding:.4em 1em}</style></head>
 <body><h1>The GitHub Apps of the {{.Organization}} organization</h1>
+<p>Sign GitHub in, in this browser, as an owner of <b>{{.Organization}}</b> before you start: GitHub makes an app under the account that is signed in.</p>
 <p>bedrock org bootstrap makes three GitHub Apps, owned by the <b>{{.Organization}}</b> organization. For each: <b>Create</b> opens GitHub with the app's manifest, where one click makes it; GitHub then brings you back here. <b>Install</b> opens the app's installation page: choose the organization and <b>all repositories</b>. This page refreshes on its own.</p>
 {{range .Rows}}<div class="app"><h2>{{.Name}}</h2><p>{{.Description}}</p>
 {{if not .App}}<form method="post" action="{{.Form}}"><input type="hidden" name="manifest" value="{{.Manifest}}"><button type="submit">Create {{.Name}} on GitHub</button></form>
@@ -237,7 +238,10 @@ func (f *Flow) stateOf(role org.AppRole) string {
 	return ""
 }
 
-// made is where GitHub sends the browser with the code: the app is made from it.
+// made is where GitHub sends the browser with the code: the app is made from it. GitHub
+// makes an app under the account the browser is signed in as when that account may not
+// make one for the organization, and such an app can never be installed there, so an app
+// another account owns is not taken: the page says whose it is and how to start again.
 func (f *Flow) made(w http.ResponseWriter, r *http.Request) {
 	code, state := r.URL.Query().Get("code"), r.URL.Query().Get("state")
 	f.mu.Lock()
@@ -250,13 +254,30 @@ func (f *Flow) made(w http.ResponseWriter, r *http.Request) {
 	}
 	app, err := f.convert(r.Context(), code)
 	f.mu.Lock()
-	if err != nil {
+	switch {
+	case err != nil:
 		f.failures = append(f.failures, fmt.Sprintf("GitHub did not make %s from the code it sent: %v. Try Create again.", role.Title(), errors.Cause(err)))
-	} else {
+	case app.Owner.Login != f.organization:
+		f.failures = append(f.failures, ownedElsewhere(role, app, f.organization))
+	default:
 		f.apps[role] = app
 	}
 	f.mu.Unlock()
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// ownedElsewhere says that GitHub made an app under an account other than the
+// organization, which happens when the browser is signed in as an account that is not one
+// of the organization's owners, and how to start again: the app's name is GitHub's for as
+// long as the app exists, so it is deleted before it is made again.
+func ownedElsewhere(role org.AppRole, app *github.App, organization string) string {
+	settings := "https://github.com/settings/apps/" + app.Slug
+	if app.Owner.Type == "Organization" {
+		settings = "https://github.com/organizations/" + app.Owner.Login + "/settings/apps/" + app.Slug
+	}
+
+	return fmt.Sprintf("GitHub made %s (App %d, %s) under the account %s, not the %s organization, so it can never be installed there: the browser was signed in as an account that is not an owner of %s. Delete it (%s, Advanced, Delete GitHub App), since GitHub keeps its name while it exists; sign GitHub in, in this browser, as an owner of %s; then Create it again here.",
+		role.Title(), app.ID, app.Slug, app.Owner.Login, organization, organization, settings, organization)
 }
 
 // installedRedirect is where GitHub sends the browser after an installation: back to the
