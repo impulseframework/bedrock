@@ -2411,6 +2411,7 @@ bedrock org render                                              # after a placem
 bedrock org check                                               # the committed layers against the placement
 bedrock org register quill ../quill                             # an application joins the foundation; its first placement.json is written into its checkout
 bedrock org create rgb                                           # in a root organization: a hosting organization recorded, for the apply trigger to create on the merge
+bedrock org library add impulse --public --check tests          # in a root organization: a library listed in the placement, for a pull request whose merge makes its repository
 bedrock org plan                                                # what the plan trigger runs on a pull request
 bedrock org apply                                               # what the apply trigger runs on a push to the default branch
 bedrock org teardown                                            # the applications out of service: 2-net's hosts and listeners, then every application torn down
@@ -2650,7 +2651,20 @@ required check that pull request did not report is a finding, since every pull r
 will wait for it, and the checks it reported that the entry does not require are a note,
 since only a person can tell a helper job from a test nobody listed. A library taken off
 the list is never deleted: the plan says so, and the apply takes the release app's
-credentials from it. In a root organization with a cloud the release app's key is sealed
+credentials from it. A new library is listed by a command, run in a clone of the root
+organization's repository and found from the git root like every bedrock command:
+`org library add <repository>` adds the entry (`--public` for a public repository,
+`--check <name>` once for each required check, which may be left out until the library's
+own workflows exist, and `--adopted` for a repository that already stands in the
+organization), holds the placement to the rules a hand edit is held to (a name GitHub
+takes, a library listed once, never the organization's own repository, a root organization
+alone), renders, writes the journal line and says what follows. It reaches nothing on
+GitHub and opens no pull request: the change is reviewed like any other, the pull
+request's plan lists the new repository, and the merge's apply makes it. It gives no team
+access to the new repository, which stays a step by hand on GitHub, and it never runs in
+the library's own repository, which does not exist until that merge. Taking a library off
+the list, and changing an entry's checks or visibility, stay edits of `placement.json` by
+hand. In a root organization with a cloud the release app's key is sealed
 into its organization secret from the version the placement pins in Secret Manager, and
 sealed again when the pin moves; the first library adds permissions to the infrastructure
 and release apps, which `org check` names until they are granted.
