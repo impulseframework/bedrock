@@ -483,7 +483,10 @@ type Facts struct {
 	KeepsReleaseBackups bool
 	// Migration is the migration operation a release build carries (the operations
 	// workflow's version, rerun or force), which the migrate step does; nil for none.
-	Migration     *MigrateAction
+	Migration *MigrateAction
+	// Retirement is the retirement a release build carries (the operations workflow's
+	// retire), which the plan and migrate steps do; nil for none.
+	Retirement    *Retirement
 	Image         string
 	ImageTag      string
 	CommitTag     string
@@ -616,6 +619,9 @@ func newFacts(data []byte) (*Facts, error) {
 	if err := f.maintenanceInstruction(); err != nil {
 		return nil, err
 	}
+	if err := f.retirement(); err != nil {
+		return nil, err
+	}
 
 	return f, nil
 }
@@ -706,6 +712,27 @@ func (f *Facts) maintenanceInstruction() error {
 	return nil
 }
 
+// retirement reads the retirement a release build may carry (bedrock secret retire,
+// through the operations workflow): the versioned secret's variable, the version and who
+// asked, with no restore, rollback, migration operation or maintenance instruction
+// beside it. It is a release build's: a retirement names who asked, and a pull-request
+// build that names a requester was refused above (restore). The run is otherwise the
+// release's own, from the start: the plan step hands the revision every enabled version
+// but the one retiring, and the migrate step has the application rewrite what names it
+// (retire.go).
+func (f *Facts) retirement() error {
+	r, err := retirementOf(f.Substitutions)
+	if err != nil || r == nil {
+		return err
+	}
+	if f.Restore != "" || f.Rollback != "" || f.Migration != nil || f.MaintenanceOff {
+		return errors.Newf("%s=%s with a restore, a rollback, a migration operation or a maintenance instruction: the run that retires a version does nothing else", retireVariableSub, r.Variable)
+	}
+	f.Retirement, f.Requester = r, r.Requester
+
+	return nil
+}
+
 // flagIf is the true flag when set, and nothing otherwise, for a fact other steps read as
 // set or empty.
 func flagIf(set bool) string {
@@ -790,6 +817,8 @@ func (f *Facts) trigger(ctx context.Context, comments CommentsFunc, out io.Write
 			fmt.Fprintf(out, "Restore run: %s's database is replaced (%s) before %s deploys, asked for by %s.\n", f.Environment, f.Restore, f.Tag, f.Requester)
 		case f.Migration != nil:
 			fmt.Fprintf(out, "Migration operation %s.\n", f.Migration)
+		case f.Retirement != nil:
+			fmt.Fprintf(out, "Retirement run: %s runs again in %s, and %s.\n", f.Tag, f.Environment, f.Retirement)
 		case f.Requester != "":
 			fmt.Fprintf(out, "Rerun: %s runs again in %s, asked for by %s.\n", f.Tag, f.Environment, f.Requester)
 		}

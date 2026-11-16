@@ -529,6 +529,27 @@ func TestResolve(t *testing.T) {
 			wantOut: []string{"Rerun: v1.2.3 runs again in prd, asked for by octocat.", "Release backup: prd keeps a backup of its database as of the cut, the moment before the migrations run (placement.json's releaseBackups); bedrock restore --before returns to it."},
 		},
 		{
+			name:    "a retirement is the live release run again, naming the version, the variable and who asked",
+			subs:    tagBuild(map[string]string{retireVariableSub: "APP_SECRET_KEY", retireVersionSub: "1", requesterSub: "octocat"}),
+			want:    withComment(tag, "", func(o *outcome) { o.Requester = "octocat" }),
+			wantOut: []string{"Retirement run: v1.2.3 runs again in tst, and version 1 of APP_SECRET_KEY is taken out of use, asked for by octocat: the migrate command rewrites every stored value that names it and confirms none is left, the revision deploys without it, and the operations workflow then disables it in Secret Manager."},
+		},
+		{
+			name:    "a retirement beside a migration operation is refused",
+			subs:    tagBuild(map[string]string{retireVariableSub: "APP_SECRET_KEY", retireVersionSub: "1", requesterSub: "octocat", migrateActionSub: actionVersion}),
+			wantErr: "_RETIRE_SECRET=APP_SECRET_KEY with a restore, a rollback, a migration operation or a maintenance instruction: the run that retires a version does nothing else",
+		},
+		{
+			name:    "a retirement beside a restore is refused",
+			subs:    tagBuild(map[string]string{retireVariableSub: "APP_SECRET_KEY", retireVersionSub: "1", requesterSub: "octocat", restoreSub: restoreEmpty}),
+			wantErr: "_RETIRE_SECRET=APP_SECRET_KEY with a restore, a rollback, a migration operation or a maintenance instruction: the run that retires a version does nothing else",
+		},
+		{
+			name:    "a retirement that names no version is refused",
+			subs:    tagBuild(map[string]string{retireVariableSub: "APP_SECRET_KEY", requesterSub: "octocat"}),
+			wantErr: `_RETIRE_SECRET="APP_SECRET_KEY" with _RETIRE_VERSION="": a retirement names the versioned secret's variable and the version to retire, both`,
+		},
+		{
 			name:     "a pull-request build is not rerun through the door",
 			subs:     prBuild(map[string]string{requesterSub: "octocat"}),
 			comments: []string{"/gcbrun"},

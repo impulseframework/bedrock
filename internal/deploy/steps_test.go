@@ -173,21 +173,23 @@ func (s *fakeSecrets) Create(_ context.Context, project, id string, labels map[s
 	return nil
 }
 
-func (s *fakeSecrets) Newest(_ context.Context, container string) (string, error) {
-	newest := 0
+func (s *fakeSecrets) EnabledVersions(_ context.Context, container string) ([]string, error) {
+	var numbers []int
 	for version, state := range s.states {
 		if !strings.HasPrefix(version, container+"/versions/") || state != enabledState {
 			continue
 		}
-		if n, err := strconv.Atoi(path.Base(version)); err == nil && n > newest {
-			newest = n
+		if n, err := strconv.Atoi(path.Base(version)); err == nil {
+			numbers = append(numbers, n)
 		}
 	}
-	if newest == 0 {
-		return "", nil
+	slices.Sort(numbers)
+	versions := make([]string, 0, len(numbers))
+	for _, n := range numbers {
+		versions = append(versions, strconv.Itoa(n))
 	}
 
-	return strconv.Itoa(newest), nil
+	return versions, nil
 }
 
 func (s *fakeSecrets) Grant(_ context.Context, container, role, member string) error {

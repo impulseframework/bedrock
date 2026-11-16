@@ -212,7 +212,7 @@ type EnvironmentTeardown struct {
 	// them; live is the environment's live release, or nil; id the stack's id, or "";
 	// recorded whether the records hold a teardown of this stack since the live release.
 	generation int
-	pins       map[string]string
+	pins       *derivedPins
 	live       *Record
 	id         string
 	recorded   bool
@@ -492,8 +492,8 @@ func refuseRouted(ctx context.Context, store Store, bucket string, state *stateF
 }
 
 // readRecords reads what the plan's variables and the record come from: the stack's id,
-// the database generation the pipeline's last plan had, the generated secrets' pins the
-// live release runs, and that release.
+// the database generation the pipeline's last plan had, the generated secrets' pins and
+// the versioned secrets' versions the live release runs, and that release.
 func (t *EnvironmentTeardown) readRecords(ctx context.Context, store Store) error {
 	app, env := t.req.App, t.req.Env
 	id, err := stackID(ctx, store, t.records, app, env)
@@ -510,7 +510,7 @@ func (t *EnvironmentTeardown) readRecords(ctx context.Context, store Store) erro
 		return err
 	}
 	if t.live != nil {
-		t.pins = t.live.GeneratedSecrets
+		t.pins = &derivedPins{Generated: t.live.GeneratedSecrets, Versioned: t.live.VersionedSecrets}
 	}
 	t.recorded, err = teardownRecorded(ctx, store, t.records, app, env, id, t.live)
 	if err != nil {
@@ -689,8 +689,8 @@ func (t *EnvironmentTeardown) Run(ctx context.Context, out io.Writer) error {
 }
 
 // vars are the plan's variables: the environment, the database generation and the
-// generated secrets' pins as the pipeline's last plan had them (so that the apply before
-// the destroy changes nothing else), and the command's own.
+// generated and versioned secrets' versions as the pipeline's last plan had them (so that
+// the apply before the destroy changes nothing else), and the command's own.
 func (t *EnvironmentTeardown) vars() []string {
 	args := []string{varFlag, "environment=" + t.req.Env, varFlag, "database_generation=" + strconv.Itoa(t.generation)}
 	args = append(args, generatedArgs(t.pins)...)

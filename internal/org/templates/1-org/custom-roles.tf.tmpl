@@ -94,6 +94,31 @@ resource "google_project_iam_custom_role" "secret_operator" {
   depends_on = [google_project_iam_member.org_tofu_role_admin]
 }
 
+# Disabling a secret version, and nothing else of a secret. An application's
+# stack grants it on the containers of its versioned secrets alone
+# (secret:"versioned" in the code: the application's own secret, of which the
+# service holds every enabled version) to the environment's operations
+# identity: bedrock secret retire, through the operations workflow, disables a
+# version once the application has rewritten every stored value that named it
+# and the service no longer holds it. It is a custom role because the cloud's
+# own roles/secretmanager.secretVersionManager also destroys versions, and a
+# retired version is never destroyed by the pipeline: a backup taken before
+# holds values under it, and a disabled version is enabled again by the
+# stack's identity (secretContainerAdmin).
+resource "google_project_iam_custom_role" "secret_version_disabler" {
+  for_each = local.custom_role_projects
+
+  project     = each.value
+  role_id     = "secretVersionDisabler"
+  title       = "Secret Version Disabler"
+  description = "Disables a Secret Manager secret version, and nothing else: no payload, no adding, no enabling, no destroying."
+  permissions = [
+    "secretmanager.versions.disable",
+  ]
+
+  depends_on = [google_project_iam_member.org_tofu_role_admin]
+}
+
 # Cloud Run job policies for the deploy pipeline. bedrock deploy jobs makes a
 # job per build for an application's job process and copies the template job's
 # IAM policy onto it, so the site's identity may start the job of its own build.

@@ -272,12 +272,24 @@ func Placement(layerDir string) (*derive.Placement, error) {
 	return derive.ReadPlacement(file)
 }
 
-// SecretVariable is one secret variable the application declares: its name, and whether
-// its value is the tooling's to make (secret:"generated"), which bedrock secret add and
-// pin refuse and bedrock secret rotate serves.
+// SecretVariable is one secret variable the application declares: its name, whether its
+// value is the tooling's to make (secret:"generated" or secret:"versioned"), which
+// bedrock secret add and pin refuse and bedrock secret rotate serves, and whether every
+// enabled version of it reaches the processes (secret:"versioned").
 type SecretVariable struct {
 	Name      string
 	Generated bool
+	Versioned bool
+}
+
+// Word is the secret tag's word for a secret the tooling makes, which the placement's
+// secret_versions carries for it: versioned, or generated.
+func (s SecretVariable) Word() string {
+	if s.Versioned {
+		return secret.Versioned
+	}
+
+	return secret.Generated
 }
 
 // Variables lists the secret variables the application declares, by name (Secrets, with
@@ -334,14 +346,14 @@ func derivedSecrets(appDir, layerDir string) ([]SecretVariable, error) {
 	}
 	secrets := make([]SecretVariable, 0, len(m.Secrets))
 	for _, s := range m.Secrets {
-		secrets = append(secrets, SecretVariable{Name: s.Variable.Name, Generated: s.Generated})
+		secrets = append(secrets, SecretVariable{Name: s.Variable.Name, Generated: s.Generated, Versioned: s.Versioned})
 	}
 
 	return secrets, nil
 }
 
 // localsSecrets reads the entries of the secrets local in the locals file, in the file's
-// order: each key, and whether its object's generated attribute is true.
+// order: each key, and whether its object's generated and versioned attributes are true.
 func localsSecrets(file string) ([]SecretVariable, error) {
 	src, err := os.ReadFile(file)
 	if err != nil {
@@ -377,7 +389,7 @@ func localsSecrets(file string) ([]SecretVariable, error) {
 			if err != nil {
 				return nil, errors.Wrapf(err, "%s in %s", secretsLocal, file)
 			}
-			secrets = append(secrets, SecretVariable{Name: name, Generated: generatedEntry(item.ValueExpr)})
+			secrets = append(secrets, SecretVariable{Name: name, Generated: flagEntry(item.ValueExpr, generatedLocal), Versioned: flagEntry(item.ValueExpr, versionedLocal)})
 		}
 
 		return secrets, nil
@@ -386,20 +398,24 @@ func localsSecrets(file string) ([]SecretVariable, error) {
 	return nil, errors.Newf("no %s local in %s: the application layer's locals list the secret variables the code declares", secretsLocal, file)
 }
 
-// generatedLocal is the attribute of a secrets entry that says the tooling makes its
-// value, as render writes it.
-const generatedLocal = "generated"
+// generatedLocal and versionedLocal are the attributes of a secrets entry that say the
+// tooling makes its value, and that every enabled version of it reaches the processes,
+// as render writes them.
+const (
+	generatedLocal = "generated"
+	versionedLocal = "versioned"
+)
 
-// generatedEntry reports whether a secrets entry (an object written out) says generated
-// = true; any other shape is a secret someone puts in place.
-func generatedEntry(expr hclsyntax.Expression) bool {
+// flagEntry reports whether a secrets entry (an object written out) says the attribute
+// is true; any other shape leaves it false, as for a secret someone puts in place.
+func flagEntry(expr hclsyntax.Expression, attribute string) bool {
 	obj, ok := expr.(*hclsyntax.ObjectConsExpr)
 	if !ok {
 		return false
 	}
 	for _, item := range obj.Items {
 		key, err := secret.ObjectKey(item.KeyExpr)
-		if err != nil || key != generatedLocal {
+		if err != nil || key != attribute {
 			continue
 		}
 		v, diags := item.ValueExpr.Value(nil)

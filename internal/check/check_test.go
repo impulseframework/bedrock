@@ -159,7 +159,7 @@ func TestRun(t *testing.T) {
 				m.Scheduled = []derive.ScheduledRoute{{Path: "/_scheduled/send-daily-digest", Schedule: "0 6 * * 1-5", TimeZone: "America/New_York"}}
 			},
 			wantFindings: []Finding{
-				{Path: "README.md", Line: 295, Want: "  | `POST /_scheduled/send-daily-digest` | `0 6 * * 1-5` | America/New_York |", Got: "  | `POST /_scheduled/send-daily-digest` | `0 7 * * 1-5` | America/New_York |"},
+				{Path: "README.md", Line: 296, Want: "  | `POST /_scheduled/send-daily-digest` | `0 6 * * 1-5` | America/New_York |", Got: "  | `POST /_scheduled/send-daily-digest` | `0 7 * * 1-5` | America/New_York |"},
 				{Path: "scheduler.tf", Line: 29, Want: `      schedule  = "0 6 * * 1-5"`, Got: `      schedule  = "0 7 * * 1-5"`},
 			},
 			wantOutput: []string{"2 of 22 owned file(s) differ", "differs  scheduler.tf:29"},
@@ -171,7 +171,7 @@ func TestRun(t *testing.T) {
 				m.Scheduled = append([]derive.ScheduledRoute{{Path: "/_scheduled/close-stale-holds", Schedule: "*/15 * * * *", TimeZone: "UTC"}}, m.Scheduled...)
 			},
 			wantFindings: []Finding{
-				{Path: "README.md", Line: 295, Want: "  | `POST /_scheduled/close-stale-holds` | `*/15 * * * *` | UTC |", Got: "  | `POST /_scheduled/send-daily-digest` | `0 7 * * 1-5` | America/New_York |"},
+				{Path: "README.md", Line: 296, Want: "  | `POST /_scheduled/close-stale-holds` | `*/15 * * * *` | UTC |", Got: "  | `POST /_scheduled/send-daily-digest` | `0 7 * * 1-5` | America/New_York |"},
 				{Path: "scheduler.tf", Line: 27, Want: `    "close-stale-holds" = {`, Got: `    "send-daily-digest" = {`},
 			},
 			wantOutput: []string{"2 of 22 owned file(s) differ", "differs  scheduler.tf:27"},
@@ -725,10 +725,50 @@ func generatedModel(t *testing.T) *derive.Model {
 	return m
 }
 
+// versionedModel is harbor with an application secret declared secret:"versioned" on the
+// line after its cookie key: a copy of the fixture with the field added, derived as
+// harborModel is.
+func versionedModel(t *testing.T) *derive.Model {
+	t.Helper()
+
+	dir := filepath.Join(t.TempDir(), "harbor")
+	if err := os.CopyFS(dir, os.DirFS(filepath.Join(fixtures, "harbor"))); err != nil {
+		t.Fatalf("os.CopyFS() error = %v", err)
+	}
+	config := filepath.Join(dir, "pkg", "config", "data.go")
+	data, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const cookie = "`env:\"APP_COOKIE_KEY\" secret:\"true\"`\n"
+	if !bytes.Contains(data, []byte(cookie)) {
+		t.Fatalf("%s lacks %s", config, cookie)
+	}
+	data = bytes.Replace(data, []byte(cookie), []byte(cookie+"\tSecretKey string `env:\"APP_SECRET_KEY\" secret:\"versioned\"`\n"), 1)
+	if err := os.WriteFile(config, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := derive.ReadPlacement(filepath.Join(fixtures, "placement.json"))
+	if err != nil {
+		t.Fatalf("derive.ReadPlacement() error = %v", err)
+	}
+	a, err := app.Discover(dir)
+	if err != nil {
+		t.Fatalf("app.Discover() error = %v", err)
+	}
+	m, err := derive.Derive(a, p)
+	if err != nil {
+		t.Fatalf("derive.Derive() error = %v", err)
+	}
+
+	return m
+}
+
 // TestRunGenerated: check refuses an environment's secret_versions entry that disagrees
 // with the code's secret tags: a number, latest or no entry for a generated secret, and the
 // word generated on a secret someone puts in place; the word on a generated secret in every
-// environment leaves the check clean. The committed stack's render is harbor's, whose
+// environment leaves the check clean. A versioned secret is held to its own word the same
+// way, and the word generated there is refused as a number is. The committed stack's render is harbor's, whose
 // cookie key is not generated, so the drift the tag change itself makes is left aside here.
 func TestRunGenerated(t *testing.T) {
 	t.Parallel()
@@ -737,10 +777,35 @@ func TestRunGenerated(t *testing.T) {
 	tests := []struct {
 		name      string
 		generated bool
+		// versioned declares an application secret secret:"versioned" beside the cookie key.
+		versioned bool
 		versions  string
 		want      []GeneratedFinding
 		wantOut   []string
 	}{
+		{
+			name:      "the word versioned in every environment is what a versioned secret needs",
+			versioned: true,
+			versions:  "secret_versions = {\n  tst = { APP_SECRET_KEY = \"versioned\" }\n  stg = { APP_SECRET_KEY = \"versioned\", APP_STAFF_DIRECTORY_CLIENT_SECRET = \"1\" }\n  prd = { APP_SECRET_KEY = \"versioned\" }\n}\n",
+		},
+		{
+			name:      "a number, the word generated and no entry for a versioned secret are refused, per environment in promotion order",
+			versioned: true,
+			versions:  "secret_versions = {\n  tst = { APP_SECRET_KEY = 3 }\n  stg = { APP_SECRET_KEY = \"generated\" }\n  prd = {}\n}\n",
+			want: []GeneratedFinding{
+				{Environment: "tst", Variable: "APP_SECRET_KEY", Problem: `APP_SECRET_KEY is versioned (secret:"versioned" at pkg/config/data.go:271) and secret_versions.tst in terraform.tfvars pins "3" where the word versioned belongs: write APP_SECRET_KEY = "versioned" there; its enabled versions are read at each build, and a process receives every one, and bedrock secret rotate tst APP_SECRET_KEY adds the next`},
+				{Environment: "stg", Variable: "APP_SECRET_KEY", Problem: `APP_SECRET_KEY is versioned (secret:"versioned" at pkg/config/data.go:271) and secret_versions.stg in terraform.tfvars pins "generated" where the word versioned belongs: write APP_SECRET_KEY = "versioned" there; its enabled versions are read at each build, and a process receives every one, and bedrock secret rotate stg APP_SECRET_KEY adds the next`},
+				{Environment: "prd", Variable: "APP_SECRET_KEY", Problem: `APP_SECRET_KEY is versioned (secret:"versioned" at pkg/config/data.go:271) and secret_versions.prd in terraform.tfvars has no entry for it: write APP_SECRET_KEY = "versioned" there; its enabled versions are read at each build, and a process receives every one`},
+			},
+			wantOut: []string{"  refused  APP_SECRET_KEY is versioned (secret:\"versioned\" at pkg/config/data.go:271) and secret_versions.tst in terraform.tfvars pins \"3\" where the word versioned belongs"},
+		},
+		{
+			name:     "the word versioned on a secret someone puts in place is refused",
+			versions: "secret_versions = {\n  tst = { APP_STAFF_DIRECTORY_CLIENT_SECRET = \"versioned\" }\n  stg = {}\n  prd = {}\n}\n",
+			want: []GeneratedFinding{
+				{Environment: "tst", Variable: "APP_STAFF_DIRECTORY_CLIENT_SECRET", Problem: `APP_STAFF_DIRECTORY_CLIENT_SECRET carries the word versioned in secret_versions.tst in terraform.tfvars, and the code declares it secret:"true" (pkg/config/data.go:285): pin a version number (bedrock secret pin tst APP_STAFF_DIRECTORY_CLIENT_SECRET <version>), or declare it secret:"versioned" in the code`},
+			},
+		},
 		{
 			name:      "the word in every environment is what a generated secret needs",
 			generated: true,
@@ -788,6 +853,9 @@ func TestRunGenerated(t *testing.T) {
 			m := harborModel(t)
 			if tt.generated {
 				m = generatedModel(t)
+			}
+			if tt.versioned {
+				m = versionedModel(t)
 			}
 			report, err := Run(t.Context(), m, dir, filepath.Join(dir, "root"))
 			if err != nil {

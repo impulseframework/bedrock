@@ -240,7 +240,10 @@ steps:
   # The release's migrate command, taken out of the image by BuildImage, run once on this
   # worker as the deploy identity with the variables the stack derives for it (its lines
   # are this build's log); with the seed in a pull request and in the environments the
-  # seed list of the placement in this checkout names.
+  # seed list of the placement in this checkout names. A run that retires a version of a
+  # versioned secret (bedrock secret retire) then runs the command once more with
+  # -retire-secret <VARIABLE>_<version>: it rewrites every stored value that names the
+  # version and confirms none is left, or fails the build before any revision deploys.
   - id: RunMigrations
     name: gcr.io/cloud-builders/gcloud
     entrypoint: /builder/home/bedrock
@@ -328,7 +331,7 @@ options:
   # The bedrock deploy steps read the build's substitutions through the API, so this file
   # names none of the ones the trigger passes; without this, Cloud Build refuses a build
   # for a substitution key the file does not mention (the operations workflow's
-  # _RESTORE, _REQUESTER and _MIGRATE_* among them).
+  # _RESTORE, _REQUESTER, _RETIRE_* and _MIGRATE_* among them).
   substitutionOption: ALLOW_LOOSE
 
 # The whole run: Cloud Build's ceiling, so that a window release may wait inside the run

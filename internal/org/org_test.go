@@ -1066,6 +1066,12 @@ func TestCustomRolePermissions(t *testing.T) {
 			},
 		},
 		{
+			name:        "disables a secret version, and neither destroys nor enables nor reads one",
+			resource:    "secret_version_disabler",
+			roleID:      "secretVersionDisabler",
+			permissions: []string{"secretmanager.versions.disable"},
+		},
+		{
 			name:        "sets a job's policy",
 			resource:    "run_job_policy_admin",
 			roleID:      "runJobPolicyAdmin",

@@ -220,7 +220,9 @@ func (a *MigrateAction) versionWord() string {
 // -force <n> (or -force-data <n>), leaves the force for the record, and then runs the
 // migrations as always; rerun is the migrations as always, by name. A build that runs no
 // migrations (shared-db) runs nothing; a failed run stops the build with the command's
-// lines above; an operation that cannot run is refused before anything runs. With
+// lines above; an operation that cannot run is refused before anything runs. A build
+// carrying a retirement (bedrock secret retire) runs the migrations as always and then the
+// command once more with -retire-secret (retire.go). With
 // preflight, in a run that waits for the maintenance window, the command is run once with
 // -version instead, before the wait (preflight below).
 func Migrate(ctx context.Context, clients *Clients, w Workspace, program, versionVariable string, preflight bool, out io.Writer) error {
@@ -236,18 +238,28 @@ func Migrate(ctx context.Context, clients *Clients, w Workspace, program, versio
 	if preflight && !preflightDue(env, out) {
 		return nil
 	}
-	if env[runMigrationsFact] != trueValue {
-		fmt.Fprintln(out, "Skipping the migrations: this build does not run them.")
-
-		return nil
-	}
 	build, err := w.Build()
 	if err != nil {
 		return err
 	}
+	retirement, err := retirementOf(build.Substitutions)
+	if err != nil {
+		return err
+	}
+	if env[runMigrationsFact] != trueValue {
+		if retirement != nil {
+			return errors.Newf("this build runs no migrations, and it carries a retirement (%s=%s, %s=%s): the migrate command is what rewrites the values that name the version, so the run stops here, before a revision without the version deploys", retireVariableSub, retirement.Variable, retireVersionSub, retirement.Version)
+		}
+		fmt.Fprintln(out, "Skipping the migrations: this build does not run them.")
+
+		return nil
+	}
 	action, err := migrateAction(build.Substitutions)
 	if err != nil {
 		return err
+	}
+	if retirement != nil && action != nil {
+		return errors.Newf("%s=%s with %s=%s: the run that retires a version does nothing else", retireVariableSub, retirement.Variable, migrateActionSub, action.Action)
 	}
 	settings, err := migrateSettings(env, versionVariable)
 	if err != nil {
@@ -277,7 +289,11 @@ func Migrate(ctx context.Context, clients *Clients, w Workspace, program, versio
 		return err
 	}
 
-	return m.perform(ctx, w, action, env[seedFact] == trueValue)
+	if err := m.perform(ctx, w, action, env[seedFact] == trueValue); err != nil || retirement == nil {
+		return err
+	}
+
+	return m.retire(ctx, clients, w, env, retirement)
 }
 
 // migrateSettings are the settings the migrate command runs with, by variable: the

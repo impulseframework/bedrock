@@ -179,13 +179,15 @@ locals {
   # names the field it comes from.
   # ---------------------------------------------------------------------------
 
-  # Secrets: the fields of pkg/config tagged secret:"true" or secret:"generated".
-  # One container per variable per environment, named
+  # Secrets: the fields of pkg/config tagged secret:"true", secret:"generated" or
+  # secret:"versioned". One container per variable per environment, named
   # imp-<env>-gbl-lantrn-<kebab of the variable without its APP_ prefix>. No
   # versions here: someone adds the value (Secret Version Adder) and
   # var.secret_versions pins which one runs, or, for a generated secret, the
   # pipeline adds the first version and derives the pin at each build
-  # (var.generated_secret_versions; secret-manager.tf, "Generated secrets").
+  # (var.generated_secret_versions; secret-manager.tf, "Generated secrets"), or,
+  # for a versioned one, lists every enabled version at each build
+  # (var.versioned_secret_versions; secret-manager.tf, "Versioned secrets").
   #
   # readers: which runtime identity mounts it. The service; and the migrate
   # command, which also constructs the data level, reads the generated password
@@ -203,24 +205,30 @@ locals {
       level   = "data"
       source  = "pkg/config/data.go dataConfig.CookieKey"
       purpose = "Signs session cookies and seals list cursors: Base64 of 32+ random bytes. Rotating it ends every session and cursor."
-      # generated: the tooling makes the value (secret:"generated"); nobody types it.
+      # generated: the tooling makes the value (secret:"generated", secret:"versioned"); nobody types it.
       generated = true
+      # versioned: a process receives every enabled version (secret:"versioned").
+      versioned = false
     }
     APP_MAIL_APP_PASSWORD = {
       name    = "mail-app-password"
       level   = "data"
       source  = "pkg/config/data.go dataConfig.MailAppPassword"
       purpose = "A credential dataConfig.MailAppPassword reads."
-      # generated: the tooling makes the value (secret:"generated"); nobody types it.
+      # generated: the tooling makes the value (secret:"generated", secret:"versioned"); nobody types it.
       generated = false
+      # versioned: a process receives every enabled version (secret:"versioned").
+      versioned = false
     }
     APP_STAFF_ADMINISTRATOR_PASSWORD = {
       name    = "staff-administrator-password"
       level   = "data"
       source  = "pkg/config/data.go dataConfig.StaffAdministratorPassword"
       purpose = "StaffAdministratorPassword is the password of the staff auth's first administrator (staff.Administrator), which the migrate command seeds while the auth's users table holds no rows: a secret the stack generates, read like any other setting, that nobody types and the first sign-in changes."
-      # generated: the tooling makes the value (secret:"generated"); nobody types it.
+      # generated: the tooling makes the value (secret:"generated", secret:"versioned"); nobody types it.
       generated = true
+      # versioned: a process receives every enabled version (secret:"versioned").
+      versioned = false
     }
   }
 
@@ -228,17 +236,24 @@ locals {
   # environment's, which a pull-request stack shares with tst and never creates.
   secret_ids = { for key, s in local.secrets : key => "${local.name}-gbl-${local.app}-${s.name}" }
 
-  # The secrets the tooling makes (secret:"generated"): their entry in
-  # var.secret_versions is the word generated, and their version the number the
-  # pipeline's plan step derived and passed as var.generated_secret_versions.
+  # The secrets the tooling makes (secret:"generated" and secret:"versioned"):
+  # their entry in var.secret_versions is their tag's word (secret_words), and
+  # their versions what the pipeline's plan step derived: for a generated secret
+  # the number of its newest enabled version (var.generated_secret_versions), for
+  # a versioned one the numbers of every enabled version
+  # (var.versioned_secret_versions).
   generated_secrets = { for key, s in local.secrets : key => s if s.generated }
+  versioned_secrets = { for key, s in local.secrets : key => s if s.versioned }
+  secret_words      = { for key, s in local.generated_secrets : key => s.versioned ? "versioned" : "generated" }
 
   # The secrets the migrate command reads (readers, above): the generated
-  # password of each auth's first administrator and the mailbox's app password,
-  # by variable, and the pinned version of each the command runs with, read
-  # back by the pipeline from the applied stack (cloud-build.tf,
-  # _MIGRATE_SECRETS). A secret with no version yet (a plan by hand) is left
-  # out, and the command runs without it.
+  # password of each auth's first administrator, the mailbox's app password and
+  # the versioned secrets at the levels the command constructs (it opens its
+  # database client with their versions, and rewrites the stored values of one
+  # at a retirement, bedrock secret retire), by variable, and the pinned version
+  # of each the command runs with, read back by the pipeline from the applied
+  # stack (cloud-build.tf, _MIGRATE_SECRETS). A secret with no version yet (a
+  # plan by hand) is left out, and the command runs without it.
   migrate_secrets = toset(["APP_MAIL_APP_PASSWORD", "APP_STAFF_ADMINISTRATOR_PASSWORD"])
 
   # The versions this environment runs: the placement's pins (a number, or
@@ -247,15 +262,32 @@ locals {
   # run by hand) is not mounted, as a secret with no pin is not.
   declared_versions = lookup(var.secret_versions, var.environment, {})
   secret_versions = merge(
-    { for key, v in local.declared_versions : key => v if v != "generated" },
-    { for key, v in var.generated_secret_versions : key => v if contains(keys(local.generated_secrets), key) },
+    { for key, v in local.declared_versions : key => v if !contains(["generated", "versioned"], v) },
+    { for key, v in var.generated_secret_versions : key => v if contains(keys(local.generated_secrets), key) && !contains(keys(local.versioned_secrets), key) },
   )
+
+  # The versions of each versioned secret this environment's processes receive:
+  # every enabled one, as the build's plan step listed them. A versioned secret
+  # the build passed no list for (a plan run by hand) is not mounted.
+  versioned_versions = { for key, versions in var.versioned_secret_versions : key => versions if contains(keys(local.versioned_secrets), key) }
 
   # Only a secret with a pinned version is mounted.
   mounted_secrets = {
     for key, s in local.secrets : key => merge(s, { version = local.secret_versions[key] })
     if contains(keys(local.secret_versions), key)
   }
+
+  # What a process receives from Secret Manager, by the variable it reads: a
+  # secret with one version under its own variable, and a versioned secret once
+  # per enabled version, under its variable's name, an underscore and the
+  # version's number (APP_SECRET_KEY_1 and APP_SECRET_KEY_2 for versions 1 and 2 of
+  # APP_SECRET_KEY; the highest number is the current version, and no variable
+  # carries the bare name). key is the variable the code declares, whose
+  # container holds the version.
+  secret_mounts = merge(
+    { for key, s in local.mounted_secrets : key => { key = key, version = s.version } },
+    merge([for key, versions in local.versioned_versions : { for version in versions : "${key}_${version}" => { key = key, version = version } }]...),
+  )
 
   # Build-time secrets (var.build_secrets): what the image build reads in this
   # environment, NAME = pinned version, their containers named like the runtime

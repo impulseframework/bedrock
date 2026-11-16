@@ -764,6 +764,34 @@ func addArgs(args ...string) []string {
 	return append([]string{secretCommand, "add"}, args...)
 }
 
+// versionedLocals is the flat fixture's quill layer with an application secret versioned,
+// as render lists the secrets: generated, and versioned too.
+const versionedLocals = `locals {
+  app = "quill"
+
+  secrets = {
+    APP_SECRET_KEY = {
+      name      = "secret-key"
+      source    = "pkg/config/data.go dataConfig.SecretKey"
+      purpose   = "Encrypts the stored secret fields."
+      generated = true
+      versioned = true
+    }
+    APP_MAIL_API_KEY = {
+      name      = "mail-api-key"
+      source    = "pkg/config/data.go dataConfig.MailAPIKey"
+      purpose   = "Sends mail."
+      generated = false
+      versioned = false
+    }
+  }
+
+  labels = {
+    terraform_source_path = "3-app-quill"
+  }
+}
+`
+
 // generatedLocals is the flat fixture's quill layer with its cookie key generated, as
 // render lists the secrets.
 const generatedLocals = `locals {
@@ -826,6 +854,14 @@ func TestSecretAdd(t *testing.T) {
 		wantCreated map[string]string
 		wantValue   string
 	}{
+		{
+			name:     "a versioned secret takes no value either: the pipeline makes every version",
+			args:     []string{"tst", "APP_SECRET_KEY", "--container", "x"},
+			value:    "k-1",
+			projects: noProjects,
+			locals:   versionedLocals,
+			wantErr:  `APP_SECRET_KEY is versioned (secret:"versioned" in the code): the pipeline makes its values and hands a process every enabled version at each build, so there is nothing to add; bedrock secret rotate <env> APP_SECRET_KEY adds the next version and runs the live release again on it, and bedrock secret retire <env> APP_SECRET_KEY <version> takes one out of use`,
+		},
 		{
 			name:     "a generated secret takes no value: the pipeline makes it",
 			args:     []string{"tst", "APP_COOKIE_KEY", "--container", "x"},
@@ -1079,6 +1115,14 @@ func TestSecretPin(t *testing.T) {
 		wantOut  []string
 		wantFile []string
 	}{
+		{
+			name:     "a versioned secret is not pinned: a process receives every enabled version",
+			args:     []string{"tst", "APP_SECRET_KEY", "3", "--project", "lab-tst-1", "--container", "imp-tst-gbl-quill-secret-key"},
+			withDir:  true,
+			projects: noProjects,
+			locals:   versionedLocals,
+			wantErr:  `APP_SECRET_KEY is versioned (secret:"versioned" in the code): the pipeline makes its values and hands a process every enabled version at each build, so there is nothing to pin; bedrock secret rotate <env> APP_SECRET_KEY adds the next version and runs the live release again on it, and bedrock secret retire <env> APP_SECRET_KEY <version> takes one out of use`,
+		},
 		{
 			name:     "a generated secret is not pinned: its version is derived at each build",
 			args:     []string{"tst", "APP_COOKIE_KEY", "3", "--project", "lab-tst-1", "--container", "imp-tst-gbl-quill-cookie-key"},

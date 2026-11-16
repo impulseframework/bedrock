@@ -220,7 +220,7 @@ func (m *Model) administratorPassword(auth *Auth) error {
 	if v == nil {
 		return nil
 	}
-	if !v.Secret || !v.Generated {
+	if !v.Secret || !v.Generated || v.Versioned {
 		return errors.Newf("%s:%d: %s is not tagged secret:\"generated\": the %s auth's first administrator's password is a value the stack generates and the migrate command seeds with, never one a person types; tag it", v.File, v.Line, v.Declaration(), auth.Name)
 	}
 	v.Role = RoleAdministratorPassword

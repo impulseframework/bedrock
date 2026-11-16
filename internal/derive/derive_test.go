@@ -36,7 +36,12 @@ func fixturePlacement(t *testing.T, name string) *Placement {
 
 // secretLine is what a secret says about itself: variable, container name, declaration.
 func secretLine(s Secret) string {
-	return s.Variable.Name + " " + s.Name + " " + s.Variable.File + " " + s.Variable.Declaration()
+	line := s.Variable.Name + " " + s.Name + " " + s.Variable.File + " " + s.Variable.Declaration()
+	if s.Versioned {
+		line += " " + s.Word()
+	}
+
+	return line
 }
 
 // methodLine is what a sign-in method says about itself: the auth and the registration,
@@ -216,13 +221,14 @@ func TestDerive(t *testing.T) {
 			wantAdministrators: []string{"keepers APP_KEEPERS_ADMINISTRATOR_PASSWORD administrator-password"},
 			wantSecrets: []string{
 				"APP_COOKIE_KEY cookie-key pkg/config/data.go dataConfig.CookieKey",
+				"APP_SECRET_KEY secret-key pkg/config/data.go dataConfig.SecretKey versioned",
 				"APP_MAIL_APP_PASSWORD mail-app-password pkg/config/data.go dataConfig.MailAppPassword",
 				"APP_KEEPERS_ADMINISTRATOR_PASSWORD keepers-administrator-password pkg/config/data.go dataConfig.KeepersAdministratorPassword",
 			},
 			wantCore: []string{varVersion, varServiceName, varLoggingProject},
 			wantData: []string{
 				varDatabaseProject, varDatabaseInstance, varDatabaseName,
-				"APP_DEFAULT_SESSION_TIMEOUT", "APP_COOKIE_KEY", varPublicURL, varMailMailbox, varMailFrom, varMailAppPassword, "APP_KEEPERS_ADMINISTRATOR_PASSWORD",
+				"APP_DEFAULT_SESSION_TIMEOUT", "APP_COOKIE_KEY", "APP_SECRET_KEY", varPublicURL, varMailMailbox, varMailFrom, varMailAppPassword, "APP_KEEPERS_ADMINISTRATOR_PASSWORD",
 				"APP_KEEPERS_PERSONA_ISSUER", "APP_KEEPERS_PERSONA_CLIENT_ID", "APP_KEEPERS_PERSONA_REDIRECT_URL",
 			},
 			wantSite:     []string{varPort, "APP_CONSOLE_DIST"},
@@ -1202,19 +1208,19 @@ func TestSecretFor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		v             Variable
-		want          bool
-		wantGenerated bool
-		wantErr       string
+		name    string
+		v       Variable
+		want    secretDeclaration
+		wantErr string
 	}{
-		{name: "tagged true", v: Variable{Name: "APP_COOKIE_KEY", SecretTag: "true"}, want: true},
-		{name: "tagged generated is a secret the tooling makes", v: Variable{Name: "APP_COOKIE_KEY", SecretTag: "generated"}, want: true, wantGenerated: true},
-		{name: "tagged true with a plain name", v: Variable{Name: "APP_SMTP_PASS", SecretTag: "true"}, want: true},
-		{name: "tagged false with a credential-sounding name", v: Variable{Name: "APP_LICENSE_KEY", SecretTag: "false"}, want: false},
-		{name: "untagged plain name", v: Variable{Name: "APP_STAFF_OIDC_CLIENT_ID"}, want: false},
-		{name: "an untagged credential-sounding name in a role the stack derives is the stack's", v: Variable{Name: varFirebaseAPIKey, Role: RoleFirebaseAPIKey}, want: false},
-		{name: "a derived role tagged false is fine", v: Variable{Name: varFirebaseAPIKey, Role: RoleFirebaseAPIKey, SecretTag: "false"}, want: false},
+		{name: "tagged true", v: Variable{Name: "APP_COOKIE_KEY", SecretTag: "true"}, want: secretDeclaration{secret: true}},
+		{name: "tagged generated is a secret the tooling makes", v: Variable{Name: "APP_COOKIE_KEY", SecretTag: "generated"}, want: secretDeclaration{secret: true, generated: true}},
+		{name: "tagged versioned is a secret the tooling makes whose every enabled version is handed over", v: Variable{Name: "APP_SECRET_KEY", SecretTag: "versioned"}, want: secretDeclaration{secret: true, generated: true, versioned: true}},
+		{name: "tagged true with a plain name", v: Variable{Name: "APP_SMTP_PASS", SecretTag: "true"}, want: secretDeclaration{secret: true}},
+		{name: "tagged false with a credential-sounding name", v: Variable{Name: "APP_LICENSE_KEY", SecretTag: "false"}},
+		{name: "untagged plain name", v: Variable{Name: "APP_STAFF_OIDC_CLIENT_ID"}},
+		{name: "an untagged credential-sounding name in a role the stack derives is the stack's", v: Variable{Name: varFirebaseAPIKey, Role: RoleFirebaseAPIKey}},
+		{name: "a derived role tagged false is fine", v: Variable{Name: varFirebaseAPIKey, Role: RoleFirebaseAPIKey, SecretTag: "false"}},
 		{
 			name:    "a derived role tagged generated is refused too",
 			v:       Variable{Name: varFirebaseAPIKey, Role: RoleFirebaseAPIKey, SecretTag: "generated", File: "pkg/config/data.go", Line: 20, Struct: "dataConfig", Field: "FirebaseAPIKey"},
@@ -1226,14 +1232,19 @@ func TestSecretFor(t *testing.T) {
 			wantErr: "pkg/config/data.go:20: APP_FIREBASE_API_KEY (dataConfig.FirebaseAPIKey) is a value the stack derives and sets on the process, not a secret: drop the secret tag",
 		},
 		{
+			name:    "a variable read under its one name is refused as versioned: the cookie key",
+			v:       Variable{Name: "APP_COOKIE_KEY", Role: RoleCookieKey, SecretTag: "versioned", File: "pkg/config/data.go", Line: 3, Struct: "dataConfig", Field: "CookieKey"},
+			wantErr: `pkg/config/data.go:3: APP_COOKIE_KEY (dataConfig.CookieKey) is read under its one name, and secret:"versioned" hands a process one variable per enabled version (APP_COOKIE_KEY_1, APP_COOKIE_KEY_2) and none named APP_COOKIE_KEY: tag it secret:"generated"`,
+		},
+		{
 			name:    "untagged credential-sounding name is refused",
 			v:       Variable{Name: "APP_MAIL_API_KEY", File: "pkg/config/data.go", Line: 12, Struct: "dataConfig", Field: "MailAPIKey"},
-			wantErr: `pkg/config/data.go:12: APP_MAIL_API_KEY sounds like a credential (its name ends in _KEY) and dataConfig.MailAPIKey carries no secret tag: add secret:"true" to mount it from Secret Manager, secret:"generated" for a value the tooling makes, or secret:"false" if it is a plain value`,
+			wantErr: `pkg/config/data.go:12: APP_MAIL_API_KEY sounds like a credential (its name ends in _KEY) and dataConfig.MailAPIKey carries no secret tag: add secret:"true" to mount it from Secret Manager, secret:"generated" for a value the tooling makes, secret:"versioned" for one whose every enabled version the process receives, or secret:"false" if it is a plain value`,
 		},
 		{
 			name:    "another value is refused",
 			v:       Variable{Name: "APP_COOKIE_KEY", SecretTag: "yes", File: "pkg/config/data.go", Line: 3, Struct: "dataConfig", Field: "CookieKey"},
-			wantErr: `pkg/config/data.go:3: secret:"yes" on dataConfig.CookieKey: the secret tag takes "true", "generated" or "false"`,
+			wantErr: `pkg/config/data.go:3: secret:"yes" on dataConfig.CookieKey: the secret tag takes "true", "generated", "versioned" or "false"`,
 		},
 	}
 	for _, tt := range tests {
@@ -1241,7 +1252,7 @@ func TestSecretFor(t *testing.T) {
 			t.Parallel()
 
 			v := tt.v
-			got, generated, err := secretFor(&v)
+			got, err := secretFor(&v)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("secretFor() error = %v, wantErr %q", err, tt.wantErr)
@@ -1249,8 +1260,49 @@ func TestSecretFor(t *testing.T) {
 
 				return
 			}
-			if err != nil || got != tt.want || generated != tt.wantGenerated {
-				t.Errorf("secretFor() = %v, %v, %v; want %v, %v", got, generated, err, tt.want, tt.wantGenerated)
+			if err != nil || got != tt.want {
+				t.Errorf("secretFor() = %+v, %v; want %+v", got, err, tt.want)
+			}
+		})
+	}
+}
+
+// TestVersionVariablesFree: a variable the code declares under the name a versioned
+// secret hands one of its versions over by is refused, naming both; a name that ends in
+// a number beside a secret that is not versioned is no one's but its own.
+func TestVersionVariablesFree(t *testing.T) {
+	t.Parallel()
+
+	secretKey := Variable{Name: "APP_SECRET_KEY", File: "pkg/config/data.go", Line: 40, Struct: "dataConfig", Field: "SecretKey", SecretTag: "versioned"}
+	second := Variable{Name: "APP_SECRET_KEY_2", File: "pkg/config/data.go", Line: 44, Struct: "dataConfig", Field: "SecondSecretKey", SecretTag: "false"}
+	tests := []struct {
+		name      string
+		versioned bool
+		wantErr   string
+	}{
+		{
+			name:      "beside a versioned secret",
+			versioned: true,
+			wantErr:   `pkg/config/data.go:44: APP_SECRET_KEY_2 (dataConfig.SecondSecretKey) is the name a process receives one version of APP_SECRET_KEY under (dataConfig.SecretKey is secret:"versioned", so every enabled version is handed over as APP_SECRET_KEY_<version>): give the variable another name`,
+		},
+		{name: "beside a secret that is not versioned"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := &Model{Variables: []Variable{secretKey, second}}
+			m.Secrets = []Secret{{Variable: &m.Variables[0], Name: "secret-key", Generated: true, Versioned: tt.versioned}}
+			err := m.versionVariablesFree()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("versionVariablesFree() error = %v", err)
+				}
+
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("versionVariablesFree() error = %v, want %q", err, tt.wantErr)
 			}
 		})
 	}

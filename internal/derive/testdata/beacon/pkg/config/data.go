@@ -175,6 +175,12 @@ type dataConfig struct {
 	// startup.
 	CookieKey string `env:"APP_COOKIE_KEY" secret:"generated"`
 
+	// SecretKey is the application secret the stored secret fields are encrypted under,
+	// in versions: a process receives every enabled version, each under the variable's
+	// name with the version's number after it (APP_SECRET_KEY_1, APP_SECRET_KEY_2), and
+	// the highest number is the current one.
+	SecretKey string `env:"APP_SECRET_KEY" secret:"versioned"`
+
 	// PublicURL is the application's address as a browser reaches it; every link the
 	// auths mail opens the login page under it.
 	PublicURL string `env:"APP_PUBLIC_URL,required"`

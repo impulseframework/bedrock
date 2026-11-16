@@ -229,7 +229,10 @@ variable "secret_versions" {
     "generated" is the entry of a secret the code declares secret:"generated"
     (bedrock render seeds it): the pipeline makes its value and passes its
     version in var.generated_secret_versions, so a number here pins nothing,
-    and bedrock check refuses one there and the word on any other secret.
+    and bedrock check refuses one there and the word on any other secret. The
+    word "versioned" is the entry of a secret the code declares
+    secret:"versioned" the same way: the pipeline makes its values and passes
+    every enabled version in var.versioned_secret_versions.
 
       secret_versions = {
         tst = { APP_COOKIE_KEY = "generated", APP_MAIL_APP_PASSWORD = "1" }
@@ -245,10 +248,10 @@ variable "secret_versions" {
   validation {
     condition = alltrue(flatten([
       for env, versions in var.secret_versions : [
-        for name, version in versions : can(regex("^([1-9][0-9]*|latest|generated)$", version))
+        for name, version in versions : can(regex("^([1-9][0-9]*|latest|generated|versioned)$", version))
       ]
     ]))
-    error_message = "Every secret version is a positive integer, the word latest, or the word generated for a secret the code declares secret:\"generated\"."
+    error_message = "Every secret version is a positive integer, the word latest, or the secret tag's word for a secret the tooling makes: generated for one the code declares secret:\"generated\", versioned for one it declares secret:\"versioned\"."
   }
 }
 
@@ -269,6 +272,28 @@ variable "generated_secret_versions" {
   validation {
     condition     = alltrue([for name, version in var.generated_secret_versions : can(regex("^[1-9][0-9]*$", version))])
     error_message = "Every generated secret version is a positive integer, the number the build derived."
+  }
+}
+
+variable "versioned_secret_versions" {
+  description = <<-EOT
+    The versions of each versioned secret this environment's processes receive
+    (the fields of pkg/config/data.go tagged secret:"versioned"), keyed by the
+    environment variable: the numbers of every enabled version of the secret's
+    container, as the pipeline's plan step listed them (adding version 1 as the
+    apply identity when the container was empty) and passed with -var. A
+    process receives one variable per version, the variable's name with the
+    version's number after it; the highest number is the current version.
+    Never written in terraform.tfvars. A plan run by hand without it mounts no
+    versioned secret and shows that as its change; the next release build
+    mounts them again.
+  EOT
+  type        = map(list(string))
+  default     = {}
+
+  validation {
+    condition     = alltrue(flatten([for name, versions in var.versioned_secret_versions : [for version in versions : can(regex("^[1-9][0-9]*$", version))]]))
+    error_message = "Every versioned secret version is a positive integer, a number the build listed."
   }
 }
 

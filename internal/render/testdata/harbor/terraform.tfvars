@@ -69,7 +69,9 @@ mail_mailbox = ""
 # (bedrock secret pin). "latest" only for a secret the placement marks as
 # tracking it. "generated" for a secret the code declares secret:"generated":
 # the pipeline makes its value and derives its version at each build, so the
-# word stays, and bedrock secret rotate adds the next version.
+# word stays, and bedrock secret rotate adds the next version. "versioned" for
+# one it declares secret:"versioned": made the same way, and a process
+# receives every enabled version (bedrock secret retire takes one away).
 secret_versions = {
   tst = {}
   stg = {}

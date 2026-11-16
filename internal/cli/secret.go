@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -50,25 +51,33 @@ organization's infrastructure repository the same two commands take one of the
 organization's secrets instead, the private keys of its GitHub Apps: github-infrastructure-key,
 github-deployer-key and github-release-key, all in the boot project. A secret the code declares
 secret:"generated" takes neither: the pipeline makes its value and derives its version at each
-build, and rotate adds the next version from GitHub and runs the live release on it.`,
+build, and rotate adds the next version from GitHub and runs the live release on it. A secret the
+code declares secret:"versioned" is generated the same way and takes neither either: a process
+receives every enabled version of it, rotate adds the next, and retire takes one out of use.`,
 	}
 	cmd.AddCommand(newSecretAdd(d))
 	cmd.AddCommand(newSecretPin(d))
 	cmd.AddCommand(newSecretRotate(d))
+	cmd.AddCommand(newSecretRetire(d))
 
 	return cmd
 }
 
-// refuseGenerated refuses a variable the code declares secret:"generated" for add and pin:
-// the pipeline makes its value and derives its version, so neither applies. The secrets
-// are read as the prompts list them: the code, else the layer's locals.
+// refuseGenerated refuses a variable the code declares secret:"generated" or
+// secret:"versioned" for add and pin: the pipeline makes its value and derives its
+// versions, so neither applies. The secrets are read as the prompts list them: the code,
+// else the layer's locals.
 func refuseGenerated(place *pinPlace, variable, verb string) error {
 	secrets, err := where.Secrets(place.appDir, place.layerDir)
 	if err != nil {
 		return err
 	}
 	for _, s := range secrets {
-		if s.Name == variable && s.Generated {
+		switch {
+		case s.Name != variable || !s.Generated:
+		case s.Versioned:
+			return errors.Newf("%s is versioned (secret:%q in the code): the pipeline makes its values and hands a process every enabled version at each build, so there is nothing to %s; bedrock secret rotate <env> %s adds the next version and runs the live release again on it, and bedrock secret retire <env> %s <version> takes one out of use", variable, secret.Versioned, verb, variable, variable)
+		default:
 			return errors.Newf("%s is generated (secret:%q in the code): the pipeline makes its value and derives its version at each build, so there is nothing to %s; bedrock secret rotate <env> %s adds the next version and runs the live release again on it", variable, secret.Generated, verb, variable)
 		}
 	}
@@ -80,24 +89,30 @@ func newSecretRotate(d deps) *cobra.Command {
 	var dirFlag, placementFlag string
 	cmd := &cobra.Command{
 		Use:   "rotate <env> <VARIABLE>",
-		Short: "Rotate a generated secret: a new random version, and the live release run again on it, from GitHub",
+		Short: "Rotate a generated or versioned secret: a new random version, and the live release run again on it, from GitHub",
 		Long: `rotate starts the operations workflow of the application's repository for the environment with the
 rotate action and the variable: the workflow's job, in the GitHub Environment named after the
 environment, exchanges its GitHub token for the environment's operations identity, adds a new
 version to the secret's container (32 bytes of cryptographically secure random data, base64, made
 on the runner and never printed; the stack grants that identity the adding of versions on the
-generated containers alone) and runs the environment's version trigger for the live release, as
-bedrock rerun does. That build's plan step derives the new version as the pin, so the revision
-that takes traffic carries it, and the record names the version. A rotated cookie key signs every
-user of the environment out, which is the point. Production is reached like any environment: the
-trigger's approval gate applies as to any release, and the GitHub Environment's lock as to a restore.
+generated and versioned containers alone) and runs the environment's version trigger for the live
+release, as bedrock rerun does. That build's plan step derives the new version as the pin, so the
+revision that takes traffic carries it, and the record names the version. A rotated cookie key
+signs every user of the environment out, which is the point. Production is reached like any
+environment: the trigger's approval gate applies as to any release, and the GitHub Environment's
+lock as to a restore.
 
-The variable is one the code declares secret:"generated" (the cookie key, in a skeleton); a secret
-someone puts in place is rotated by adding a version (the Secret Manager console, gcloud secrets
-versions add, or bedrock secret add) and pinning it (bedrock secret pin). The command itself
-changes nothing: it checks the variable against the code and that the placement records the
-environment's project (projects, which bedrock org register prints), then dispatches the workflow
-as the person signed in to gh (or GITHUB_TOKEN) and prints where to watch it.`,
+The variable is one the code declares secret:"generated" (the cookie key, in a skeleton) or
+secret:"versioned" (the application's own secret). A versioned secret's earlier versions stay with
+the revision, each under the variable's name with its number after it, the new one the current, so
+what was written under them still opens; bedrock secret retire takes one out of use once nothing
+names it. The same image runs under the new configuration: a revision that does not start leaves the
+one before it serving, the new version stays enabled in Secret Manager, and the next release takes
+it up. A secret someone puts in place is rotated by adding a version (the Secret Manager console,
+gcloud secrets versions add, or bedrock secret add) and pinning it (bedrock secret pin). The
+command itself changes nothing: it checks the variable against the code and that the placement
+records the environment's project (projects, which bedrock org register prints), then dispatches
+the workflow as the person signed in to gh (or GITHUB_TOKEN) and prints where to watch it.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			env, variable := args[0], args[1]
@@ -108,15 +123,20 @@ as the person signed in to gh (or GITHUB_TOKEN) and prints where to watch it.`,
 			if err := secret.ValidateVariable(variable); err != nil {
 				return err
 			}
-			if err := generatedSecret(rc, variable); err != nil {
+			declared, err := generatedSecret(rc, variable)
+			if err != nil {
 				return err
 			}
 			login, err := dispatchOperation(cmd.Context(), d, rc, env, "", map[string]string{actionInput: actionRotate, variableInput: variable})
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Asked, as %s, for %s's %s to be rotated: the operations workflow of %s/%s runs it (%s). Its job adds a random version as %s's operations identity and runs the live release again, whose plan pins the revision to the new version; every session the old value signed ends.\n",
-				login, env, variable, rc.owner, rc.repo, workflowURL(rc), env)
+			then := "whose plan pins the revision to the new version; every session the old value signed ends"
+			if declared.Versioned {
+				then = "whose plan hands the revision every enabled version, the new one the current, so what was written under the earlier ones still opens. A revision that does not start leaves the one before it serving: the new version stays enabled in Secret Manager, and the next release takes it up"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Asked, as %s, for %s's %s to be rotated: the operations workflow of %s/%s runs it (%s). Its job adds a random version as %s's operations identity and runs the live release again, %s.\n",
+				login, env, variable, rc.owner, rc.repo, workflowURL(rc), env, then)
 
 			return nil
 		},
@@ -127,22 +147,101 @@ as the person signed in to gh (or GITHUB_TOKEN) and prints where to watch it.`,
 	return cmd
 }
 
-// generatedSecret checks that the variable is one the repository's code declares
-// secret:"generated", read the way render reads it, and refuses any other with what
-// the code declares.
-func generatedSecret(rc *repositoryContext, variable string) error {
+// secretVersionRE is a Secret Manager version's number, as retire takes it.
+var secretVersionRE = regexp.MustCompile(`^[1-9]\d*$`)
+
+func newSecretRetire(d deps) *cobra.Command {
+	var dirFlag, placementFlag string
+	cmd := &cobra.Command{
+		Use:   "retire <env> <VARIABLE> <version>",
+		Short: "Retire a version of a versioned secret: its values rewritten, the live release run again without it, the version disabled, from GitHub",
+		Long: `retire takes one version of a versioned secret out of use in an environment. It starts the
+operations workflow of the application's repository for the environment with the retire action,
+the variable and the version. The workflow's job, in the GitHub Environment named after the
+environment, exchanges its GitHub token for the environment's operations identity and runs the
+environment's version trigger for the live release with the instruction. That build:
+
+  - refuses, at its plan step and with nothing changed, a version that is not enabled, the newest
+    enabled version (every value is written under it: rotate first), and a version the live
+    release holds nothing newer than (it still writes under it: bedrock rerun first);
+  - hands the revision every enabled version but the one retiring;
+  - after its migrations, runs the release's migrate command once more with
+    -retire-secret <VARIABLE>_<version>, which rewrites every stored value that names the version
+    under the current one and confirms none is left, or fails the build;
+  - deploys the revision without the version and moves the traffic to it.
+
+Only after the build has succeeded does the job disable the version in Secret Manager (the stack
+grants the operations identity the disabling of a version on the versioned containers alone). The
+version is disabled and never destroyed: a backup taken before holds values under it, and gcloud
+secrets versions enable brings it back. Destroying it is a step by hand, once those backups have
+aged out. A build that fails leaves the version enabled and the revision before it serving.
+Production is reached like any environment: the trigger's approval gate applies as to any release.
+
+The variable is one the code declares secret:"versioned"; the version a positive integer, as the
+Secret Manager console lists it. The command itself changes nothing: it checks the variable against
+the code, the version's shape and that the placement records the environment's project, then
+dispatches the workflow as the person signed in to gh (or GITHUB_TOKEN) and prints where to watch
+it.`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			env, variable, version := args[0], args[1], args[2]
+			rc, err := d.operationTarget(dirFlag, placementFlag, env)
+			if err != nil {
+				return err
+			}
+			if err := secret.ValidateVariable(variable); err != nil {
+				return err
+			}
+			if !secretVersionRE.MatchString(version) {
+				return errors.Newf("version %q: retire takes the number of the Secret Manager version to take out of use, a positive integer (the console lists the versions of %s's container; the newest stays)", version, variable)
+			}
+			if err := versionedSecret(rc, variable); err != nil {
+				return err
+			}
+			login, err := dispatchOperation(cmd.Context(), d, rc, env, "", map[string]string{actionInput: actionRetire, variableInput: variable, versionInput: version})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Asked, as %s, for version %s of %s's %s to be retired: the operations workflow of %s/%s runs it (%s). The live release's build runs again: it refuses a version that is not enabled, the newest one, and one the live release still writes under; its migrate command rewrites every stored value that names the version and confirms none is left; and the revision without the version takes traffic. The job then disables the version in Secret Manager as %s's operations identity. It is disabled, never destroyed: a backup taken before holds values under it. A build that fails leaves the version enabled.\n",
+				login, version, env, variable, rc.owner, rc.repo, workflowURL(rc), env)
+
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&dirFlag, "dir", "", "the stack directory holding the placement (default: the application's stack, found from the working directory)")
+	cmd.Flags().StringVar(&placementFlag, "placement", "", "placement file (default: placement.json in the stack directory)")
+
+	return cmd
+}
+
+// repositorySecrets are the secrets the repository's code declares, read the way render
+// reads them.
+func repositorySecrets(rc *repositoryContext) ([]derive.Secret, error) {
 	a, err := app.Discover(rc.root)
 	if err != nil {
-		return errors.Wrap(err, "reading the application")
+		return nil, errors.Wrap(err, "reading the application")
 	}
 	m, err := derive.Derive(a, rc.placement)
 	if err != nil {
-		return errors.Wrap(err, "deriving the application")
+		return nil, errors.Wrap(err, "deriving the application")
+	}
+
+	return m.Secrets, nil
+}
+
+// generatedSecret answers the variable's secret when the repository's code declares it
+// secret:"generated" or secret:"versioned", the two kinds a rotation serves, and refuses
+// any other with what the code declares.
+func generatedSecret(rc *repositoryContext, variable string) (*derive.Secret, error) {
+	secrets, err := repositorySecrets(rc)
+	if err != nil {
+		return nil, err
 	}
 	var generated []string
-	for _, s := range m.Secrets {
+	for i := range secrets {
+		s := &secrets[i]
 		if s.Variable.Name == variable && s.Generated {
-			return nil
+			return s, nil
 		}
 		if s.Generated {
 			generated = append(generated, s.Variable.Name)
@@ -153,7 +252,32 @@ func generatedSecret(rc *repositoryContext, variable string) error {
 		declares = strings.Join(generated, ", ")
 	}
 
-	return errors.Newf("%s is not a secret the code declares secret:%q (it declares %s): a value someone puts in place is rotated by adding a version (the Secret Manager console, gcloud secrets versions add, or bedrock secret add) and pinning it (bedrock secret pin)", variable, secret.Generated, declares)
+	return nil, errors.Newf("%s is not a secret the code declares secret:%q or secret:%q (it declares %s): a value someone puts in place is rotated by adding a version (the Secret Manager console, gcloud secrets versions add, or bedrock secret add) and pinning it (bedrock secret pin)", variable, secret.Generated, secret.Versioned, declares)
+}
+
+// versionedSecret checks that the variable is one the repository's code declares
+// secret:"versioned", the one kind a version is retired of, and refuses any other with
+// what the code declares.
+func versionedSecret(rc *repositoryContext, variable string) error {
+	secrets, err := repositorySecrets(rc)
+	if err != nil {
+		return err
+	}
+	var versioned []string
+	for _, s := range secrets {
+		if s.Variable.Name == variable && s.Versioned {
+			return nil
+		}
+		if s.Versioned {
+			versioned = append(versioned, s.Variable.Name)
+		}
+	}
+	declares := noneWord
+	if len(versioned) > 0 {
+		declares = strings.Join(versioned, ", ")
+	}
+
+	return errors.Newf("%s is not a secret the code declares secret:%q (it declares %s): a version is retired of a secret whose every enabled version the service holds; a secret of any other kind runs on one version, and its earlier versions are held by nothing", variable, secret.Versioned, declares)
 }
 
 // pinFlags are the flags of secret pin, each an override of what the command finds.

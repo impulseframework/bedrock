@@ -693,8 +693,10 @@ It also refuses:
 - an entry of `secret_versions` in `terraform.tfvars` that disagrees with the code's
   secret tags: a version number, `latest` or no entry for a secret declared
   `secret:"generated"`, whose version the pipeline derives at each build and whose entry
-  is the word `generated` in every environment; and the word on a secret someone puts in
-  place. Each line names the environment, the entry and what to write.
+  is the word `generated` in every environment; the same for a secret declared
+  `secret:"versioned"`, whose entry is the word `versioned` (the other word is refused
+  there as a number is); and either word on a secret someone puts in place. Each line
+  names the environment, the entry and what to write.
 - a variable in `retired` in `terraform.tfvars` that nothing declares: no secret, no
   build secret (any environment's `build_secrets`), no file store and no Firestore
   database by that variable. The list names what a release retires (the stack README,
@@ -1150,7 +1152,17 @@ thing one step hands the next. In order:
   generated secrets' pins (`secret:"generated"`): the newest enabled version of each
   container, read as the apply identity, version 1 added when the container has none
   (the container created ahead of the apply, which adopts it), passed to the plan as
-  `var.generated_secret_versions` and left for the record. Before the plan, in an
+  `var.generated_secret_versions` and left for the record. A versioned secret
+  (`secret:"versioned"`) is read the same way, and every enabled version of its container
+  is listed, oldest first, and passed as `var.versioned_secret_versions`, so the revision
+  receives one variable per version. A run that retires a version (`bedrock secret
+  retire`, `_RETIRE_SECRET` and `_RETIRE_VERSION` on the build) is refused here, with
+  nothing changed, when the release does not declare the variable versioned, when the
+  version is not enabled, when it is the newest enabled version, and when the
+  environment's live release holds no version newer than it by its deployment record
+  (that release still writes under it: `bedrock rerun` first); otherwise the plan is
+  told every enabled version but the one retiring, and the versions are left for the
+  migrate step. Before the plan, in an
   environment other than the first, it refuses the release when the code declares a
   secret the environment's `secret_versions` in `terraform.tfvars` pins no version for
   (the process would start without the variable): the refusal names the environment,
@@ -1207,8 +1219,9 @@ thing one step hands the next. In order:
   yet (the capacity guard `deploy plan-environments` runs, with the same refusal, so a
   sixth application's first apply on a full shared instance stops here and not inside
   tofu's apply), plans with the environment and the
-  generated secrets' pins derived from their containers the way a pull request's plan
-  derives them (each container's newest enabled version; nothing while a container has
+  generated secrets' pins and the versioned secrets' versions derived from their
+  containers the way a pull request's plan derives them (each container's newest enabled
+  version, or every enabled one for a versioned secret; nothing while a container has
   none, since the first release adds it), prints the plan's summary and applies it. After
   a teardown the workflow's `run` action then runs the release the environment ran.
 - `deploy migrate`: runs the release's migrate command, which `deploy build-image` took
@@ -1234,7 +1247,16 @@ thing one step hands the next. In order:
   <n>`), leaves the force for the record, then runs it as it always does; `rerun` is the
   command as it always does. An operation that cannot run (an unknown action or table, a
   force whose version is missing or not an integer, a force without a requester) is
-  refused by `deploy resolve` and again here, before the command runs.
+  refused by `deploy resolve` and again here, before the command runs. A build that
+  retires a version of a versioned secret (`bedrock secret retire`: `_RETIRE_SECRET`,
+  `_RETIRE_VERSION` and `_REQUESTER`, with no restore, rollback or migration operation
+  beside them) runs the migrations as always and then the command once more with
+  `-retire-secret <VARIABLE>_<version>`, with every enabled version of the secret in its
+  environment, each read as the deploy identity (the plan step leaves their names,
+  `RETIRE_SECRET_VERSIONS`; the values are never printed): an exit 0 is the application's
+  word that no stored value names the version, and the step leaves the retirement for
+  the record; any other exit stops the build before a revision without the version
+  deploys, and so does a build that would skip its migrations.
 - `deploy jobs`: makes this build's job for the job process (`cmd/jobs`) after the
   stack's apply, before the migrations, from the release's job template (the
   `revision_templates` output's `job`: identity, variables, secret mounts, timeout,
@@ -1445,6 +1467,8 @@ version. Two commands move them along.
 bedrock secret add tst APP_MAIL_API_KEY --from-file key.txt     # a new version, the container created when absent
 bedrock secret pin tst APP_MAIL_API_KEY 2                       # terraform.tfvars secret_versions.tst
 bedrock secret rotate tst APP_COOKIE_KEY                        # a generated secret: a random version, the live release run again
+bedrock secret rotate tst APP_SECRET_KEY                        # a versioned secret: a random version beside the earlier ones
+bedrock secret retire tst APP_SECRET_KEY 1                      # a versioned secret: version 1 rewritten away, dropped, then disabled
 ```
 
 `secret add` stores a value as a new version of the container the stack names for the
@@ -1491,6 +1515,54 @@ random version (the stack grants that identity and the apply identity the adding
 versions on the generated containers alone) and runs the live release again, so a
 revision pinned to the new version takes traffic in the same action; a rotated cookie key
 signs every user of the environment out, which is the point.
+
+A secret the code declares `secret:"versioned"` (the application's own secret, under which
+its stored secret fields are encrypted) is generated the same way, and a service is handed
+every enabled version of it, not the newest alone: a value written under an earlier version
+still opens after a rotation. Its entry in `secret_versions` is the word `versioned` in
+every environment (`render` seeds it and `check` holds it to the word), `secret add` and
+`secret pin` refuse the variable, and a variable in a role the framework reads under its
+one name (the cookie key, a client secret) cannot be declared so. At each build the plan
+step lists the container's enabled versions as the apply identity (adding version 1 when
+it has none) and passes them to the plan (`var.versioned_secret_versions`); the revision
+gets one variable per version, the declared variable's name, an underscore and the Secret
+Manager version's number: `APP_SECRET_KEY_1` from version 1, `APP_SECRET_KEY_2` from
+version 2. The highest number is the current version, no variable carries the bare name,
+and code that declares a variable under such a name beside the secret is refused. The
+deployment record names the versions (`versionedSecrets`), and the migrate command
+receives the same variables for a versioned secret at a level it constructs.
+
+`secret rotate <env> <VARIABLE>` serves a versioned secret as it serves a generated one: a
+new random version, the live release run again. The same image runs under the new
+configuration, holding the new version beside the earlier ones; a revision that does not
+start leaves the one before it serving, and the run then says that the new version stays
+enabled in Secret Manager and that the next release takes it up.
+
+`secret retire <env> <VARIABLE> <version>` takes a version out of use, through the
+operations workflow's `retire` action, in three moves whose order protects the running
+service. The live release's build runs again with the instruction, and its plan step
+refuses, with nothing changed and a sentence saying what to do, a version that is not
+enabled, the newest enabled version (every value is written under it: rotate first), and a
+version the live release holds nothing newer than (it still writes under it: `bedrock
+rerun` first). First, after the build's migrations, the release's migrate command is run
+once more as `migrate -retire-secret <VARIABLE>_<version>` (`-retire-secret
+APP_SECRET_KEY_1`), on the build worker as the deploy identity, from the checkout's root,
+with the variables a migration runs with and one variable per enabled version of the
+secret, the retiring one included: the application rewrites every stored value that still
+names the version under the current one and confirms none is left by exiting 0. Any other
+exit fails the build there, with the version enabled, no revision deployed and nothing
+disabled; a release whose migrate command does not know the flag fails the same way.
+Second, the build deploys a revision that was handed every enabled version but that one,
+and moves the traffic to it, so the service no longer holds the version. Third, and only
+once the build has succeeded, the workflow's job disables the version in Secret Manager as
+the environment's operations identity, which the stack grants `1-org`'s
+`secretVersionDisabler` role on the versioned containers alone (so `1-org` is applied by a
+bedrock that has the role before a stack that grants it). A version is disabled and never
+destroyed by the command: a backup taken before the retirement holds values under it, and
+`gcloud secrets versions enable` brings it back; destroying one is a step by hand once
+those backups have aged out. The record of the run names what was retired
+(`retiredSecret`). The service drops the version before it is disabled, never after: a
+revision that names a disabled version cannot start an instance.
 
 A secret's container is protected from a destroy in every environment (`deletion_protection`
 in `secret-manager.tf`), as the file stores' buckets and the Firestore database are: a

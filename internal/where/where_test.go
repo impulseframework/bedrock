@@ -466,6 +466,7 @@ func TestLocalsSecrets(t *testing.T) {
 	}{
 		{name: "the keys in order", src: "locals {\n  secrets = {\n    APP_A_KEY = { name = \"a-key\" }\n    \"APP_B_KEY\" = { name = \"b-key\" }\n  }\n}\n", want: []SecretVariable{{Name: "APP_A_KEY"}, {Name: "APP_B_KEY"}}},
 		{name: "a generated entry says so, a plain one or a false one does not", src: "locals {\n  secrets = {\n    APP_A_KEY = { name = \"a-key\", generated = true }\n    APP_B_KEY = { name = \"b-key\", generated = false }\n    APP_C_KEY = \"c\"\n  }\n}\n", want: []SecretVariable{{Name: "APP_A_KEY", Generated: true}, {Name: "APP_B_KEY"}, {Name: "APP_C_KEY"}}},
+		{name: "a versioned entry says both, as render writes it", src: "locals {\n  secrets = {\n    APP_SECRET_KEY = { name = \"secret-key\", generated = true, versioned = true }\n    APP_COOKIE_KEY = { name = \"cookie-key\", generated = true, versioned = false }\n  }\n}\n", want: []SecretVariable{{Name: "APP_SECRET_KEY", Generated: true, Versioned: true}, {Name: "APP_COOKIE_KEY", Generated: true}}},
 		{name: "the secrets local in a second locals block", src: "locals {\n  app = \"quill\"\n}\nlocals {\n  secrets = {}\n}\n", want: []SecretVariable{}},
 		{name: "no secrets local", src: "locals {\n  app = \"quill\"\n}\n", wantErr: "no secrets local in"},
 		{name: "a secrets local that is not written out", src: "locals {\n  secrets = merge({}, {})\n}\n", wantErr: "is not a map written out"},

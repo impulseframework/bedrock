@@ -43,8 +43,9 @@ environment): it runs in the GitHub Environment named after the environment,
 as the environment's operations identity, and starts the stack trigger `2-env`
 holds for this application there, which applies the stack from the default
 branch as the apply identity (`bedrock deploy stack first`: the plan with the
-environment and the generated secrets' pins derived from their containers,
-nothing while a container has no version, which the first release adds).
+environment and the generated and versioned secrets' versions derived from
+their containers, nothing while a container has no version, which the first
+release adds).
 Nobody holds a cloud role for it: repository write and the Environment's
 approval are what the action takes, and the audit log names who asked. GitHub
 lists a workflow once a run of it exists or once a push to the default branch
@@ -465,8 +466,8 @@ holding the secret operator entitlement for the time asked (`2-env`'s
 secret pin`) in the same pull request as the rotation and rolled out by the
 next apply and deploy. `latest` is allowed only where the map says so, for a
 secret whose placement marks it as tracking; a pinned number is the default
-posture. A secret the code declares `secret:"generated"` needs none of this
-(next section).
+posture. A secret the code declares `secret:"generated"` or
+`secret:"versioned"` needs none of this (next two sections).
 
 A new secret's value goes in ahead of the release that first reads it: the
 operator creates the container and adds the value (`bedrock secret add`
@@ -506,6 +507,51 @@ identities Secret Version Adder on the generated containers alone (adding,
 never reading). A rotated cookie key signs every user of that environment
 out, which is the point. `bedrock secret add` and `bedrock secret pin` refuse
 a generated variable.
+
+### Versioned secrets
+
+A secret declared `secret:"versioned"` in the code (none here) is
+generated the same way, and a process receives every enabled version of it,
+not the newest alone: values written under an earlier version still open
+after a rotation. Its entry in `secret_versions` is the word `versioned` in
+every environment (`bedrock render` seeds it, `bedrock check` holds it to the
+word, and `bedrock secret add` and `bedrock secret pin` refuse the variable).
+The release's plan step, as the apply identity, lists the container's enabled
+versions, adds version 1 when it has none, and passes the numbers to the plan
+(`var.versioned_secret_versions`); `locals.tf` (`secret_mounts`) names one
+variable per version, the variable's name, an underscore and the version's
+number: `APP_SECRET_KEY_1` and `APP_SECRET_KEY_2` for versions 1 and 2 of
+`APP_SECRET_KEY`. The highest number is the current version, and no variable
+carries the bare name. The deployment record names the versions
+(`versionedSecrets`). The migrate command receives the same variables for a
+versioned secret at a level it constructs.
+
+`bedrock secret rotate <env> <VARIABLE>` adds a random version as for a
+generated secret and runs the live release again: the same image under the
+new configuration, holding the new version beside the earlier ones. A
+revision that does not start leaves the one before it serving; the new version
+stays enabled in Secret Manager, and the next release takes it up.
+
+`bedrock secret retire <env> <VARIABLE> <version>` takes a version out of use,
+through the operations workflow's `retire` action. The live release's build
+runs again with the instruction. Its plan step refuses a version that is not
+enabled, the newest enabled version, and a version the live release holds
+nothing newer than (it still writes under it: run the release again first),
+and hands the revision every enabled version but that one. After its
+migrations, the release's migrate command runs once more with `-retire-secret
+<VARIABLE>_<version>` (`-retire-secret APP_SECRET_KEY_1`), with every enabled
+version in its environment, the retiring one included: the application
+rewrites every stored value that names the version under the current one and
+confirms none is left by exiting 0; any other exit fails the build before a
+revision deploys, with the version still enabled. The revision without the
+version then takes traffic, and only then does the workflow's job disable the
+version in Secret Manager, as the environment's operations identity, which
+holds 1-org's `secretVersionDisabler` on the versioned containers alone
+(`secret-manager.tf`; a 1-org applied by a bedrock that has the role comes
+first). A version is disabled and never destroyed by any of this: a backup
+taken before the retirement holds values under it, and `gcloud secrets
+versions enable` brings it back. Destroying one is a step by hand, once those
+backups have aged out.
 
 ### Build secrets
 
@@ -1210,11 +1256,12 @@ Per environment, after the first apply:
 | `placeholder_image` | Image the services and job are created with. | `string` | `ghcr.io/impulseframework/welcome@sha256:106eb632ba7ae2857a044cec68c6efd8d647f67b2355f3b37e206b1686fee6aa` | no |
 | `restore` | Set by a restore run alone: the database's protection (and tst's file stores') lifted at the apply before the plan that replaces them. | `bool` | `false` | no |
 | `retired` | The secrets and file stores a release retires, by variable: each one's protection lifted, so that the next release can remove it ("Retiring a secret or a file store"). | `list(string)` | `[]` | no |
-| `secret_versions` | Pinned secret version per environment per variable; the word `generated` for a generated secret. | `map(map(string))` | all empty | no |
+| `secret_versions` | Pinned secret version per environment per variable; the word `generated` for a generated secret, `versioned` for a versioned one. | `map(map(string))` | all empty | no |
 | `substitutions` | Extra trigger substitutions per environment, for the hooks and the image build. | `map(map(string))` | `{}` | no |
 | `tasks_max_attempts` | Attempts per task of the queue. | `number` | `5` | no |
 | `tasks_max_concurrent` | Tasks of the queue in flight at once. | `number` | `10` | no |
 | `teardown` | Set by `bedrock teardown` alone: the services' deletion protection lifted at the apply before its destroy. | `bool` | `false` | no |
+| `versioned_secret_versions` | The versioned secrets' enabled versions, listed and passed by the pipeline's plan step; never written here. | `map(list(string))` | `{}` | no |
 | `members_directory_client_id` | Client ID of the members auth's directory registration, per environment. | `map(string)` | all empty | no |
 | `members_directory_tenant_id` | Tenant id of the Entra tenant the members auth's directory registration admits. | `string` | `""` | no |
 | `members_directory_administered_tenants` | The Entra tenants the deployment administers among those the members auth's directory registration admits, by tenant id; their sign-ins are asked for no sign-in code. | `string` | `""` | no |
@@ -1243,7 +1290,7 @@ Per environment, after the first apply:
 | `net_hosts` | The `hosts` entries for `2-net`: each hostname mapped to the backend service URI. |
 | `registry` | `<hostname>/<project>/<repository>`; null until `2-shr` registers harbor. |
 | `revision_templates` | Per service name, what its revision runs with (`serviceAccount`, `maxInstances`, `timeout`, `port`, `http2`, `args`, `cpu`, `memory`, `labels`, `env`, `secrets` by variable as `{ secret, version }`), and `job` for the job process; the pipeline builds every revision and job from it. |
-| `secrets` | Per variable: `secret_id` and the pinned `version` (null when unpinned). |
+| `secrets` | Per variable: `secret_id`, the pinned `version` (null when unpinned, and for a versioned secret) and the `versions` a versioned secret's processes receive. |
 | `services` | Per region code: `name`, `region`, `uri`. |
 | `stack_id` | The stack's id (four hex characters): the suffix of the names Google keeps after a delete, and the prefix of the stack's deployment records. |
 | `tasks_queue` | The task queue's resource name. |

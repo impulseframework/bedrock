@@ -52,8 +52,8 @@ func (*keyReader) Create(context.Context, string, string, map[string]string) err
 	return nil
 }
 
-func (*keyReader) Newest(context.Context, string) (string, error) {
-	return "", nil
+func (*keyReader) EnabledVersions(context.Context, string) ([]string, error) {
+	return nil, nil
 }
 
 func (*keyReader) Grant(context.Context, string, string, string) error {

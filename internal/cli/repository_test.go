@@ -47,6 +47,28 @@ func generatedConfig(t *testing.T) string {
 	return strings.Replace(string(data), tagged, strings.Replace(tagged, "true", "generated", 1), 1)
 }
 
+// versionedConfig is harbor's data-level configuration with an application secret
+// declared secret:"versioned" on the line after its cookie key, which generated says is
+// declared secret:"generated".
+func versionedConfig(t *testing.T, generated bool) string {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(fixtureApp, "pkg", "config", "data.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const cookie = "`env:\"APP_COOKIE_KEY\" secret:\"true\"`\n"
+	if !strings.Contains(string(data), cookie) {
+		t.Fatalf("harbor's data.go lacks %s", cookie)
+	}
+	tagged := cookie
+	if generated {
+		tagged = strings.Replace(cookie, "true", "generated", 1)
+	}
+
+	return strings.Replace(string(data), cookie, tagged+"\tSecretKey string `env:\"APP_SECRET_KEY\" secret:\"versioned\"`\n", 1)
+}
+
 // labGitHub is the stand-in GitHub with harbor at v0.1.4 (c4) on master, plus what the
 // test adds.
 func labGitHub(t *testing.T) (*githubtest.Server, *githubtest.Repo) {
@@ -292,17 +314,81 @@ func TestRestoreAndPatch(t *testing.T) {
 			wantDispatch: "operations.yml master action=rotate environment=prd release= variable=APP_COOKIE_KEY",
 		},
 		{
-			name:    "secret rotate refuses a secret the code does not declare generated, naming what it declares",
+			name:    "secret rotate refuses a secret the code does not declare generated or versioned, naming what it declares",
 			remote:  "git@github.com:impulseframework/harbor.git",
 			args:    []string{"secret", "rotate", "tst", "APP_COOKIE_KEY", "--placement", placement},
-			wantErr: `APP_COOKIE_KEY is not a secret the code declares secret:"generated" (it declares none): a value someone puts in place is rotated by adding a version (the Secret Manager console, gcloud secrets versions add, or bedrock secret add) and pinning it (bedrock secret pin)`,
+			wantErr: `APP_COOKIE_KEY is not a secret the code declares secret:"generated" or secret:"versioned" (it declares none): a value someone puts in place is rotated by adding a version (the Secret Manager console, gcloud secrets versions add, or bedrock secret add) and pinning it (bedrock secret pin)`,
 		},
 		{
 			name:    "secret rotate refuses a variable the code declares generated but names another",
 			remote:  "git@github.com:impulseframework/harbor.git",
 			files:   map[string]string{"pkg/config/data.go": generatedConfig(t)},
 			args:    []string{"secret", "rotate", "tst", "APP_STAFF_OIDC_CLIENT_SECRET", "--placement", placement},
-			wantErr: `APP_STAFF_OIDC_CLIENT_SECRET is not a secret the code declares secret:"generated" (it declares APP_COOKIE_KEY)`,
+			wantErr: `APP_STAFF_OIDC_CLIENT_SECRET is not a secret the code declares secret:"generated" or secret:"versioned" (it declares APP_COOKIE_KEY)`,
+		},
+		{
+			name:   "secret rotate dispatches the rotate action for a secret the code declares versioned, and says the earlier versions stay",
+			remote: "git@github.com:impulseframework/harbor.git",
+			files:  map[string]string{"pkg/config/data.go": versionedConfig(t, false)},
+			args:   []string{"secret", "rotate", "stg", "APP_SECRET_KEY", "--placement", placement},
+			wantOut: []string{
+				"Asked, as octocat, for stg's APP_SECRET_KEY to be rotated: the operations workflow of impulseframework/harbor runs it (https://github.com/impulseframework/harbor/actions/workflows/operations.yml). Its job adds a random version as stg's operations identity and runs the live release again, whose plan hands the revision every enabled version, the new one the current, so what was written under the earlier ones still opens. A revision that does not start leaves the one before it serving: the new version stays enabled in Secret Manager, and the next release takes it up.",
+			},
+			wantDispatch: "operations.yml master action=rotate environment=stg release= variable=APP_SECRET_KEY",
+		},
+		{
+			name:   "secret retire dispatches the retire action with the variable and the version, production included",
+			remote: "git@github.com:impulseframework/harbor.git",
+			files:  map[string]string{"pkg/config/data.go": versionedConfig(t, false)},
+			args:   []string{"secret", "retire", "prd", "APP_SECRET_KEY", "1", "--placement", placement},
+			wantOut: []string{
+				"Asked, as octocat, for version 1 of prd's APP_SECRET_KEY to be retired: the operations workflow of impulseframework/harbor runs it (https://github.com/impulseframework/harbor/actions/workflows/operations.yml). The live release's build runs again: it refuses a version that is not enabled, the newest one, and one the live release still writes under; its migrate command rewrites every stored value that names the version and confirms none is left; and the revision without the version takes traffic. The job then disables the version in Secret Manager as prd's operations identity. It is disabled, never destroyed: a backup taken before holds values under it. A build that fails leaves the version enabled.",
+			},
+			wantDispatch: "operations.yml master action=retire environment=prd release= variable=APP_SECRET_KEY version=1",
+		},
+		{
+			name:    "secret retire refuses a secret the code declares generated, which runs on one version, naming the versioned ones",
+			remote:  "git@github.com:impulseframework/harbor.git",
+			files:   map[string]string{"pkg/config/data.go": versionedConfig(t, true)},
+			args:    []string{"secret", "retire", "tst", "APP_COOKIE_KEY", "1", "--placement", placement},
+			wantErr: `APP_COOKIE_KEY is not a secret the code declares secret:"versioned" (it declares APP_SECRET_KEY): a version is retired of a secret whose every enabled version the service holds; a secret of any other kind runs on one version, and its earlier versions are held by nothing`,
+		},
+		{
+			name:    "secret retire refuses a secret where the code declares none versioned",
+			remote:  "git@github.com:impulseframework/harbor.git",
+			args:    []string{"secret", "retire", "tst", "APP_COOKIE_KEY", "1", "--placement", placement},
+			wantErr: `APP_COOKIE_KEY is not a secret the code declares secret:"versioned" (it declares none)`,
+		},
+		{
+			name:    "secret retire refuses a version that is not a number before reading the code",
+			remote:  "git@github.com:impulseframework/harbor.git",
+			args:    []string{"secret", "retire", "tst", "APP_SECRET_KEY", "latest", "--placement", placement},
+			wantErr: `version "latest": retire takes the number of the Secret Manager version to take out of use, a positive integer (the console lists the versions of APP_SECRET_KEY's container; the newest stays)`,
+		},
+		{
+			name:    "secret retire refuses version zero",
+			remote:  "git@github.com:impulseframework/harbor.git",
+			files:   map[string]string{"pkg/config/data.go": versionedConfig(t, false)},
+			args:    []string{"secret", "retire", "tst", "APP_SECRET_KEY", "0", "--placement", placement},
+			wantErr: `version "0": retire takes the number of the Secret Manager version to take out of use`,
+		},
+		{
+			name:    "secret retire refuses a variable of the wrong shape",
+			remote:  "git@github.com:impulseframework/harbor.git",
+			args:    []string{"secret", "retire", "tst", "secret-key", "1", "--placement", placement},
+			wantErr: `variable "secret-key": an environment variable in upper snake case under the APP_ prefix`,
+		},
+		{
+			name:    "secret retire refuses an environment the placement does not list",
+			remote:  "git@github.com:impulseframework/harbor.git",
+			args:    []string{"secret", "retire", "qa", "APP_SECRET_KEY", "1", "--placement", placement},
+			wantErr: `"qa" is not one of the environments (tst, stg, prd)`,
+		},
+		{
+			name:    "secret retire takes the version",
+			remote:  "git@github.com:impulseframework/harbor.git",
+			args:    []string{"secret", "retire", "tst", "APP_SECRET_KEY", "--placement", placement},
+			wantErr: "accepts 3 arg(s), received 2",
 		},
 		{
 			name:    "secret rotate refuses a variable of the wrong shape before reading the code",

@@ -99,6 +99,24 @@ type Record struct {
 	// declares generated (generated.go), by variable: what the revisions mount for each.
 	// Absent when the code declares none, and in a pull-request build.
 	GeneratedSecrets map[string]string `json:"generatedSecrets,omitempty"`
+	// VersionedSecrets are the versions the run's plan listed for the secrets the code
+	// declares versioned (generated.go), by variable, oldest first: the revisions receive
+	// every one, each under the variable's name with the version's number after it, and
+	// the highest is the current version. Absent when the code declares none, and in a
+	// pull-request build.
+	VersionedSecrets map[string][]string `json:"versionedSecrets,omitempty"`
+	// RetiredSecret says the run retired a version of a versioned secret (the operations
+	// workflow's retire): the variable, the version and who asked. The run's revisions do
+	// not receive the version, and VersionedSecrets does not name it. Absent otherwise.
+	RetiredSecret *RetiredSecret `json:"retiredSecret,omitempty"`
+}
+
+// RetiredSecret is a retirement as the record keeps it: the versioned secret's variable,
+// the version the application rewrote its stored values away from, and who asked.
+type RetiredSecret struct {
+	Variable  string `json:"variable"`
+	Version   string `json:"version"`
+	Requester string `json:"requester"`
 }
 
 // ReleaseBackup is the backup a release build took as of its cut, as the record keeps it.
@@ -407,6 +425,8 @@ func NewRecordRequest(ctx context.Context, open StoreFunc, w Workspace, now time
 		Window:           windowOf(env),
 		Cut:              env[cutFact],
 		GeneratedSecrets: generatedOf(env),
+		VersionedSecrets: versionedOf(env),
+		RetiredSecret:    retiredOf(env, build),
 		ReleaseBackup:    releaseBackupOf(env),
 		Database:         databaseOf(env),
 		Rollback:         rollbackOf(env),

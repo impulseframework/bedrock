@@ -44,6 +44,10 @@ const (
 	// code declares secret:"generated": its value is made by the tooling and its version
 	// derived at each build, so there is nothing to pin.
 	Generated = "generated"
+	// Versioned is the word for a secret the code declares secret:"versioned": a generated
+	// value whose every enabled version the pipeline hands the processes, so there is
+	// nothing to pin either.
+	Versioned = "versioned"
 	// Enabled is the state Secret Manager reports for a version that can be accessed.
 	Enabled = "ENABLED"
 	// variablePrefix is the prefix of every environment variable the application reads;

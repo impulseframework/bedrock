@@ -18,7 +18,6 @@ import (
 	"github.com/impulseframework/bedrock/internal/derive"
 	"github.com/impulseframework/bedrock/internal/hook"
 	"github.com/impulseframework/bedrock/internal/release"
-	"github.com/impulseframework/bedrock/internal/secret"
 	"github.com/impulseframework/impulse/app"
 )
 
@@ -223,19 +222,27 @@ type view struct {
 	// SecretsCell lists the secrets for the README table.
 	SecretsCell string
 	// GeneratedSecrets are the secrets the code declares secret:"generated", whose values
-	// the tooling makes; PinnedSecrets the rest, which someone puts in place and pins.
-	// GeneratedCell lists the generated ones for the README, GeneratedPairs for the
-	// operations workflow (VARIABLE=<container name segment>, space separated), and
-	// TfvarsSecretVersions is the seeded secret_versions block: the word generated for
-	// each generated secret in every environment, nothing else.
+	// the tooling makes and whose newest enabled version a process receives;
+	// VersionedSecrets the ones it declares secret:"versioned", made the same way, whose
+	// every enabled version a process receives; PinnedSecrets the rest, which someone puts
+	// in place and pins. GeneratedCell and VersionedCell list the first two for the README;
+	// GeneratedPairs lists both for the operations workflow's rotate action, which serves
+	// both (VARIABLE=<container name segment>, space separated), and VersionedPairs the
+	// versioned alone for its retire action; TfvarsSecretVersions is the seeded
+	// secret_versions block: each one's own word, generated or versioned, in every
+	// environment, nothing else.
 	GeneratedSecrets []derive.Secret
+	VersionedSecrets []derive.Secret
 	PinnedSecrets    []derive.Secret
 	// MigrateSecrets are the secrets the migrate command reads, alone among the runtime
 	// secrets: the generated password of each auth's first administrator, which the command
-	// seeds the administrator user with, and the mailbox's app password, which the data
-	// level opens the mail sender with. The deploy identity holds accessor on their
-	// containers and on no other.
-	MigrateSecrets []derive.Secret
+	// seeds the administrator user with, the mailbox's app password, which the data
+	// level opens the mail sender with, and the versioned secrets at the levels the
+	// command constructs (MigrateVersionedCell lists those for the README), which it
+	// opens its database client with and rewrites the stored values of at a retirement.
+	// The deploy identity holds accessor on their containers and on no other.
+	MigrateSecrets       []derive.Secret
+	MigrateVersionedCell string
 	// PublicURL is the variable in the public-url role and Mailbox the one in the
 	// mail-mailbox role, nil when the application declares none; MailFrom the one in the
 	// mail-from role (the address the mail is from when it is not the mailbox), nil
@@ -248,6 +255,8 @@ type view struct {
 	MailboxStep          int
 	GeneratedCell        string
 	GeneratedPairs       string
+	VersionedCell        string
+	VersionedPairs       string
 	TfvarsSecretVersions string
 	// CookieKeyStep and PinStep number the README's hand steps (the directory
 	// registrations first, one step each); HandSteps reports there is any.
@@ -1614,31 +1623,34 @@ func (v *view) regions() {
 }
 
 // secrets spells the secrets: the files declaring them, the README's cells and example
-// pin, the generated ones apart (the workflow's pairs, the seeded placement's word), and
-// the hand steps' numbers.
+// pin, the ones the tooling makes apart (the workflow's pairs, the seeded placement's
+// word for each, generated or versioned), the migrate command's, and the hand steps'
+// numbers.
 func (v *view) secrets() {
-	var files, example, generatedCells, pairs, entries []string
+	var files, example, generatedCells, versionedCells, pairs, versionedPairs, entries []string
 	cells := make([]string, 0, len(v.Secrets))
 	for i, s := range v.Secrets {
 		if len(files) == 0 || files[len(files)-1] != s.Variable.File {
 			files = append(files, s.Variable.File)
 		}
-		cells = append(cells, "`"+s.Variable.Name+"`")
+		cell := "`" + s.Variable.Name + "`"
+		cells = append(cells, cell)
 		version := `"1"`
-		if s.Variable.Role == derive.RoleAdministratorPassword || s.Variable.Role == derive.RoleMailAppPassword {
-			v.MigrateSecrets = append(v.MigrateSecrets, s)
-		}
-		if s.Variable.Role == derive.RoleMailAppPassword {
-			v.MailAppPassword = ptr(s)
+		switch {
+		case s.Versioned:
+			v.VersionedSecrets = append(v.VersionedSecrets, s)
+			versionedCells = append(versionedCells, cell)
+			versionedPairs = append(versionedPairs, s.Variable.Name+"="+s.Name)
+		case s.Generated:
+			v.GeneratedSecrets = append(v.GeneratedSecrets, s)
+			generatedCells = append(generatedCells, cell)
+		default:
+			v.PinnedSecrets = append(v.PinnedSecrets, s)
 		}
 		if s.Generated {
-			version = `"` + secret.Generated + `"`
-			v.GeneratedSecrets = append(v.GeneratedSecrets, s)
-			generatedCells = append(generatedCells, "`"+s.Variable.Name+"`")
+			version = `"` + s.Word() + `"`
 			pairs = append(pairs, s.Variable.Name+"="+s.Name)
 			entries = append(entries, s.Variable.Name+" = "+version)
-		} else {
-			v.PinnedSecrets = append(v.PinnedSecrets, s)
 		}
 		if i < 2 {
 			example = append(example, s.Variable.Name+" = "+version)
@@ -1649,6 +1661,8 @@ func (v *view) secrets() {
 	v.SecretExample = strings.Join(example, ", ")
 	v.GeneratedCell = strings.Join(generatedCells, ", ")
 	v.GeneratedPairs = strings.Join(pairs, " ")
+	v.VersionedCell = strings.Join(versionedCells, ", ")
+	v.VersionedPairs = strings.Join(versionedPairs, " ")
 	value := "{}"
 	if len(entries) > 0 {
 		value = "{ " + strings.Join(entries, ", ") + " }"
@@ -1658,6 +1672,34 @@ func (v *view) secrets() {
 		versions = append(versions, [2]string{env, value})
 	}
 	v.TfvarsSecretVersions = aligned("  ", versions)
+	v.migrateSecrets()
+	v.handSteps()
+}
+
+// migrateSecrets collects the secrets the migrate command reads, in declaration order:
+// each auth's first administrator's password and the mailbox's app password, by their
+// roles, and the versioned secrets at the levels the command constructs, which the
+// README lists apart.
+func (v *view) migrateSecrets() {
+	var versioned []string
+	for _, s := range v.Secrets {
+		switch {
+		case s.Variable.Role == derive.RoleAdministratorPassword || s.Variable.Role == derive.RoleMailAppPassword:
+			v.MigrateSecrets = append(v.MigrateSecrets, s)
+		case s.Versioned && v.Migrate != nil && v.Migrate.Reads(s.Variable.Level):
+			v.MigrateSecrets = append(v.MigrateSecrets, s)
+			versioned = append(versioned, "`"+s.Variable.Name+"`")
+		}
+		if s.Variable.Role == derive.RoleMailAppPassword {
+			v.MailAppPassword = ptr(s)
+		}
+	}
+	v.MigrateVersionedCell = strings.Join(versioned, ", ")
+}
+
+// handSteps numbers the README's hand steps (the directory registrations first, one step
+// each) and says whether there is any.
+func (v *view) handSteps() {
 	cookieGenerated := v.CookieKeySecret != nil && v.CookieKeySecret.Generated
 	v.CookieKeyStep = len(v.Methods) + len(v.Administrators) + 1
 	if v.Mailbox != nil {

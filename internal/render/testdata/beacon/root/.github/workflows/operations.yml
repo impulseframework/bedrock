@@ -15,9 +15,10 @@
 # view over the bucket holding this application's build logs, and no other log), and nothing else.
 # Started by bedrock restore <env>, bedrock rerun <env> <release>, bedrock release, bedrock rollback
 # <env> --reason, bedrock backups <env>, bedrock maintenance off <env>, bedrock secret rotate <env>
-# <VARIABLE>, bedrock migration version|rerun|force, or the Run workflow button; a release waits for
-# its approval in Cloud Build as any release does, a rerun, a restore, a rollback, a rotation and the
-# maintenance step in production included. The release action is the one job that runs no version
+# <VARIABLE>, bedrock secret retire <env> <VARIABLE> <version>, bedrock migration version|rerun|force,
+# or the Run workflow button; a release waits for its approval in Cloud Build as any release does, a
+# rerun, a restore, a rollback, a rotation, a retirement and the maintenance step in production
+# included. The release action is the one job that runs no version
 # trigger: it runs the release trigger, which lives in tst alone, on master's
 # head, as a push to the branch runs it, for the release a merged release pull request is owed when
 # the platform ended the push's build before release-please ran; with nothing pending it cuts nothing.
@@ -74,13 +75,31 @@
 # the migrations' rerun does not reach; nobody runs a trigger by hand.
 #
 # rotate (tst, stg, or prd): a generated secret (secret:"generated" in the code: `APP_COOKIE_KEY`, `APP_KEEPERS_ADMINISTRATOR_PASSWORD`)
+# or a versioned one (secret:"versioned": `APP_SECRET_KEY`)
 # gets a new version, 32 bytes of cryptographically secure random data, base64, made on the runner
 # and never printed, added by the job as the environment's operations identity (the stack grants it
-# the adding of versions on the generated containers alone), and the live release's build runs
-# again with nothing but who asked: its plan step derives the newest version as the pin, so the
-# revision that takes traffic carries it, and the record names the version. A cookie key rotated
-# this way signs every user of the environment out, which is the point. With no release live yet,
-# the version waits for the next release's build.
+# the adding of versions on those containers alone), and the live release's build runs
+# again with nothing but who asked: its plan step derives the newest version as a generated
+# secret's pin, and lists every enabled version of a versioned one, the new one the current, so the
+# revision that takes traffic carries it, and the record names the versions. A cookie key rotated
+# this way signs every user of the environment out, which is the point; a versioned secret's earlier
+# versions stay with the revision, so what was written under them still opens. The same image runs
+# under the new configuration: a revision that does not start leaves the one before it serving, the
+# new version stays enabled in Secret Manager, and the next release takes it up. With no release
+# live yet, the version waits for the next release's build.
+#
+# retire (tst, stg, or prd): a version of a versioned secret is taken out of use. The live
+# release's build runs again with the instruction (_RETIRE_SECRET, _RETIRE_VERSION and who asked):
+# its plan step refuses a version that is not enabled, the newest enabled version, and a version
+# the live release still writes under (one it holds nothing newer than), and hands the revision
+# every enabled version but that one; after its migrations the release's migrate command is run
+# once more with -retire-secret <VARIABLE>_<version>, and rewrites every stored value that still
+# names the version under the current one and confirms none is left, or fails the build; the
+# revision without the version then takes traffic. Only after that build has succeeded does the job
+# disable the version in Secret Manager, as the environment's operations identity (the stack grants
+# it the disabling of a version on the versioned containers alone). The version is disabled, never
+# destroyed: a backup taken before holds values under it, and gcloud secrets versions enable brings
+# it back. A build that fails leaves the version enabled and the revision before it serving.
 #
 # teardown and destroy (tst, stg, or prd): the pipeline's path to take the environment down, for
 # a person who is not an organization owner. The environment's name is typed into the confirm input,
@@ -116,7 +135,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "What to do: restore the environment's database (an empty database or production's backup below production; a backup by name, @<moment> or a release's cut anywhere, production included); run the release again (its tag build, with no instruction; production included); release (the release trigger again on master's head in tst, where it lives, for the release a merged release pull request is owed when the platform ended the push's build before release-please ran; nothing pending, nothing cut; the environment input is not read); apply (the environment's stack when no release's build can, from the default branch: for the first time, before any release exists there, or again after a teardown); teardown or destroy (the environment's stack taken down to what it keeps, or destroyed whole, through the stack trigger as the apply identity; the environment's name typed into confirm); rollback (return the environment to an earlier release, with nothing of the database); list (the releases, their cuts and backups, and the database generations the environment can be restored to, in this run's summary); maintenance (take the application out of a maintenance an earlier run left on); or a migration operation (version, rerun, force, below production)"
+        description: "What to do: restore the environment's database (an empty database or production's backup below production; a backup by name, @<moment> or a release's cut anywhere, production included); run the release again (its tag build, with no instruction; production included); release (the release trigger again on master's head in tst, where it lives, for the release a merged release pull request is owed when the platform ended the push's build before release-please ran; nothing pending, nothing cut; the environment input is not read); apply (the environment's stack when no release's build can, from the default branch: for the first time, before any release exists there, or again after a teardown); teardown or destroy (the environment's stack taken down to what it keeps, or destroyed whole, through the stack trigger as the apply identity; the environment's name typed into confirm); rollback (return the environment to an earlier release, with nothing of the database); list (the releases, their cuts and backups, and the database generations the environment can be restored to, in this run's summary); maintenance (take the application out of a maintenance an earlier run left on); rotate (a generated or versioned secret gets a new random version and the live release runs again); retire (a version of a versioned secret: the application rewrites what names it, the live release runs again without it, and the version is disabled); or a migration operation (version, rerun, force, below production)"
         type: choice
         required: true
         default: restore
@@ -134,6 +153,7 @@ on:
           - rerun
           - force
           - rotate
+          - retire
       environment:
         description: The environment (tst, stg, or prd)
         type: choice
@@ -171,11 +191,11 @@ on:
           - schema
           - data
       version:
-        description: "For force: the version the database is at (an integer 0 or above, or -1 for no version)"
+        description: "For force: the version the database is at (an integer 0 or above, or -1 for no version). For retire: the secret version to retire (a positive integer, enabled and not the newest)"
         type: string
         default: ""
       variable:
-        description: "For rotate: the generated secret's variable (APP_COOKIE_KEY)"
+        description: "For rotate: the generated or versioned secret's variable (APP_COOKIE_KEY). For retire: the versioned secret's variable (APP_SECRET_KEY)"
         type: string
         default: ""
       confirm:
@@ -197,7 +217,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: the listing
-        run: echo "GitHub lists this workflow from this push. An operation starts from the Run workflow button, or from a bedrock command (restore, rerun, release, rollback, backups, maintenance off, secret rotate, migration)." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "GitHub lists this workflow from this push. An operation starts from the Run workflow button, or from a bedrock command (restore, rerun, release, rollback, backups, maintenance off, secret rotate, secret retire, migration)." >> "$GITHUB_STEP_SUMMARY"
 
   restore:
     name: restore the environment
@@ -692,7 +712,7 @@ jobs:
           done
 
   rotate:
-    name: rotate a generated secret
+    name: rotate a generated or versioned secret
     if: ${{ inputs.action == 'rotate' }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
@@ -705,16 +725,16 @@ jobs:
       REGION: us-central1
       APP: beacon
       PREFIX: imp
-      # The generated secrets the code declares, VARIABLE=<container name segment>.
-      GENERATED: "APP_COOKIE_KEY=cookie-key APP_KEEPERS_ADMINISTRATOR_PASSWORD=keepers-administrator-password"
+      # The secrets the code declares generated or versioned, VARIABLE=<container name segment>.
+      GENERATED: "APP_COOKIE_KEY=cookie-key APP_SECRET_KEY=secret-key APP_KEEPERS_ADMINISTRATOR_PASSWORD=keepers-administrator-password"
     steps:
-      # The variable is one the code declares generated, else nothing runs; then the
-      # environment's values, from the placement's projects, and the secret's container.
+      # The variable is one the code declares generated or versioned, else nothing runs; then
+      # the environment's values, from the placement's projects, and the secret's container.
       - name: The environment's project, identity, trigger and the secret's container
         id: target
         run: |
           if [ -z "$VARIABLE" ]; then
-            echo "::error::rotate names the generated secret's variable (the code declares: ${GENERATED:-none})"
+            echo "::error::rotate names the generated or versioned secret's variable (the code declares: ${GENERATED:-none})"
             exit 1
           fi
           suffix=
@@ -722,7 +742,7 @@ jobs:
             case "$pair" in "$VARIABLE="*) suffix=${pair#*=} ;; esac
           done
           if [ -z "$suffix" ]; then
-            echo "::error::$VARIABLE is not a secret the code declares secret:\"generated\" (it declares: ${GENERATED:-none}): a value someone puts in place is rotated by adding a version (the Secret Manager console, gcloud secrets versions add, or bedrock secret add) and pinning it (bedrock secret pin)"
+            echo "::error::$VARIABLE is not a secret the code declares secret:\"generated\" or secret:\"versioned\" (it declares: ${GENERATED:-none}): a value someone puts in place is rotated by adding a version (the Secret Manager console, gcloud secrets versions add, or bedrock secret add) and pinning it (bedrock secret pin)"
             exit 1
           fi
           project=$(eval "printf '%s' \"\${PROJECT_$ENVIRONMENT:-}\"")
@@ -752,8 +772,9 @@ jobs:
           echo "Version ${version##*/} of $CONTAINER added for $VARIABLE in $ENVIRONMENT (32 random bytes, base64, never printed), asked for by $REQUESTER."
           printf 'version=%s\n' "${version##*/}" >> "$GITHUB_OUTPUT"
       # The live release's build again, from the environment's deployment records, waited for
-      # to its end: its plan derives the new version as the pin. No live release: the version
-      # waits for the next release's build.
+      # to its end: its plan derives the new version as the pin, or lists it among a versioned
+      # secret's enabled versions. No live release: the version waits for the next release's
+      # build. A build that fails leaves the revision before it serving and the version enabled.
       - name: Run the live release again on it
         env:
           PROJECT: ${{ steps.target.outputs.project }}
@@ -777,11 +798,11 @@ jobs:
           fi
           records "$bucket" "$ENVIRONMENT" || case $? in
             1) echo "::error::$ENVIRONMENT's stack says no id (nothing at gs://$bucket/$APP/stacks/$ENVIRONMENT/stack.json): its apply writes it, so the stack has not been applied by a bedrock with stack ids; apply it once, and version $VERSION waits for the next release's build"; exit 1 ;;
-            2) echo "No release is live in $ENVIRONMENT by its deployment records (gs://$bucket/$APP/$ENVIRONMENT/$id/releases/): version $VERSION waits for the next release's build, whose plan pins it."; exit 0 ;;
+            2) echo "No release is live in $ENVIRONMENT by its deployment records (gs://$bucket/$APP/$ENVIRONMENT/$id/releases/): version $VERSION waits for the next release's build, whose plan takes it up."; exit 0 ;;
           esac
           live=$(gcloud storage cat $objects | jq -r -s '[.[] | select(.status == "live")] | sort_by(.timestamp) | last | .version // empty')
           if [ -z "$live" ]; then
-            echo "No release is live in $ENVIRONMENT by its deployment records: version $VERSION waits for the next release's build, whose plan pins it."
+            echo "No release is live in $ENVIRONMENT by its deployment records: version $VERSION waits for the next release's build, whose plan takes it up."
             exit 0
           fi
           build=$(gcloud builds triggers run "$TRIGGER" --tag "$live" --region "$REGION" --project "$PROJECT" \
@@ -792,15 +813,128 @@ jobs:
             status=$(gcloud builds describe "$build" --region "$REGION" --project "$PROJECT" --format='value(status)')
             case "$status" in
               SUCCESS) echo "Build $build succeeded: $ENVIRONMENT runs $live on version $VERSION of $VARIABLE."; exit 0 ;;
-              FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR|EXPIRED) echo "::error::Build $build ended $status; its log says why. Version $VERSION stands, and the next build pins it."; exit 1 ;;
+              FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR|EXPIRED) echo "::error::Build $build ended $status; its log says why, and the revision that served before it still serves. Version $VERSION of $VARIABLE stays enabled in Secret Manager, and the next release takes it up."; exit 1 ;;
               PENDING) echo "Build $build is pending: an approval in Cloud Build may be waiting." ;;
             esac
             sleep 30
           done
 
+  retire:
+    name: retire a version of a versioned secret
+    if: ${{ inputs.action == 'retire' }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      VARIABLE: ${{ inputs.variable }}
+      VERSION: ${{ inputs.version }}
+      REQUESTER: ${{ github.actor }}
+      REGION: us-central1
+      APP: beacon
+      PREFIX: imp
+      # The versioned secrets the code declares, VARIABLE=<container name segment>.
+      VERSIONED: "APP_SECRET_KEY=secret-key"
+    steps:
+      # The variable is one the code declares versioned and the version a number, else
+      # nothing runs; then the environment's values, from the placement's projects, and the
+      # secret's container.
+      - name: The environment's project, identity, trigger and the secret's container
+        id: target
+        run: |
+          if [ -z "$VARIABLE" ]; then
+            echo "::error::retire names the versioned secret's variable (the code declares: ${VERSIONED:-none})"
+            exit 1
+          fi
+          suffix=
+          for pair in $VERSIONED; do
+            case "$pair" in "$VARIABLE="*) suffix=${pair#*=} ;; esac
+          done
+          if [ -z "$suffix" ]; then
+            echo "::error::$VARIABLE is not a secret the code declares secret:\"versioned\" (it declares: ${VERSIONED:-none}): a version is retired of a secret whose every enabled version the service holds; any other secret runs on one version, and its earlier ones are nobody's"
+            exit 1
+          fi
+          if ! printf '%s' "$VERSION" | grep -Eq '^[1-9][0-9]*$'; then
+            echo "::error::retire names the version of $VARIABLE to retire, a positive integer (got \"$VERSION\"): the Secret Manager console lists the versions of $PREFIX-$ENVIRONMENT-gbl-$APP-$suffix, and the newest stays"
+            exit 1
+          fi
+          project=$(eval "printf '%s' \"\${PROJECT_$ENVIRONMENT:-}\"")
+          if [ -z "$project" ]; then
+            echo "::error::$ENVIRONMENT is not wired for operations: record its project (projects.$ENVIRONMENT, the id and the number bedrock org render prints) in infrastructure/placement.json and render"
+            exit 1
+          fi
+          printf 'container=%s\n' "$PREFIX-$ENVIRONMENT-gbl-$APP-$suffix" >> "$GITHUB_OUTPUT"
+          for name in project provider identity trigger; do
+            upper=$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')
+            printf '%s=%s\n' "$name" "$(eval "printf '%s' \"\${${upper}_$ENVIRONMENT}\"")" >> "$GITHUB_OUTPUT"
+          done
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ steps.target.outputs.provider }}
+          service_account: ${{ steps.target.outputs.identity }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      # The live release's build with the instruction, from the environment's deployment
+      # records, waited for to its end. The build refuses what cannot be retired, has the
+      # release's migrate command rewrite every value that names the version and confirm none
+      # is left, and deploys a revision without the version. Anything but its success stops
+      # the job here, with the version enabled and nothing changed for the service.
+      - name: Rewrite what names the version and run the live release again without it
+        env:
+          PROJECT: ${{ steps.target.outputs.project }}
+          TRIGGER: ${{ steps.target.outputs.trigger }}
+        run: |
+          # records <bucket> <env> [<n>]: the environment's newest <n> (forty) deployment records
+          # as the objects variable, newest first: the release records under the stack the
+          # bucket's pointer names (<app>/stacks/<env>/stack.json, which the stack's apply
+          # writes). 1 when the stack says no id, 2 when it has no record yet.
+          records() {
+            id=$(gcloud storage cat "gs://$1/$APP/stacks/$2/stack.json" 2>/dev/null | jq -r '.id // empty')
+            [ -n "$id" ] || return 1
+            objects=$(gcloud storage ls -l "gs://$1/$APP/$2/$id/releases/*/*.json" 2>/dev/null | grep '^ *[0-9]' | sort -k2,2r | head -"${3:-40}" | awk '{print $3}')
+            [ -n "$objects" ] || return 2
+          }
+          bucket=$(gcloud builds triggers describe "$TRIGGER" --region "$REGION" --project "$PROJECT" --format='value(substitutions._RECORDS_BUCKET)')
+          if [ -z "$bucket" ]; then
+            echo "::error::the version trigger $TRIGGER names no records bucket (_RECORDS_BUCKET): the stack has not been applied with this bedrock yet; apply it, release, and ask again. Version $VERSION of $VARIABLE stays enabled"
+            exit 1
+          fi
+          records "$bucket" "$ENVIRONMENT" || case $? in
+            1) echo "::error::$ENVIRONMENT's stack says no id (nothing at gs://$bucket/$APP/stacks/$ENVIRONMENT/stack.json): its apply writes it, so the stack has not been applied by a bedrock with stack ids; apply it once, release, and ask again. Version $VERSION of $VARIABLE stays enabled"; exit 1 ;;
+            2) echo "::error::No release is live in $ENVIRONMENT by its deployment records (gs://$bucket/$APP/$ENVIRONMENT/$id/releases/): a version is retired by the live release, whose migrate command rewrites the values that name it. Release first, then ask again. Version $VERSION of $VARIABLE stays enabled"; exit 1 ;;
+          esac
+          live=$(gcloud storage cat $objects | jq -r -s '[.[] | select(.status == "live")] | sort_by(.timestamp) | last | .version // empty')
+          if [ -z "$live" ]; then
+            echo "::error::No release is live in $ENVIRONMENT by its deployment records: a version is retired by the live release, whose migrate command rewrites the values that name it. Release first, then ask again. Version $VERSION of $VARIABLE stays enabled"
+            exit 1
+          fi
+          build=$(gcloud builds triggers run "$TRIGGER" --tag "$live" --region "$REGION" --project "$PROJECT" \
+            --substitutions "_REQUESTER=$REQUESTER,_RETIRE_SECRET=$VARIABLE,_RETIRE_VERSION=$VERSION" --format='value(metadata.build.id)')
+          echo "Build $build in $ENVIRONMENT runs $live again to retire version $VERSION of $VARIABLE, asked for by $REQUESTER."
+          echo "https://console.cloud.google.com/cloud-build/builds;region=$REGION/$build?project=$PROJECT"
+          while :; do
+            status=$(gcloud builds describe "$build" --region "$REGION" --project "$PROJECT" --format='value(status)')
+            case "$status" in
+              SUCCESS) echo "Build $build succeeded: no stored value names version $VERSION of $VARIABLE, and $ENVIRONMENT runs $live without it."; exit 0 ;;
+              FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR|EXPIRED) echo "::error::Build $build ended $status; its log says why (a refusal names what to do). Version $VERSION of $VARIABLE stays enabled, nothing was disabled, and the next release hands it to the service as before."; exit 1 ;;
+              PENDING) echo "Build $build is pending: an approval in Cloud Build may be waiting." ;;
+            esac
+            sleep 30
+          done
+      # The version, disabled now that no value names it and no serving revision holds it; the
+      # identity may disable a version of this container and nothing else of it. Disabled and
+      # never destroyed: a backup taken before holds values under it.
+      - name: Disable the version
+        env:
+          PROJECT: ${{ steps.target.outputs.project }}
+          CONTAINER: ${{ steps.target.outputs.container }}
+        run: |
+          gcloud secrets versions disable "$VERSION" --secret "$CONTAINER" --project "$PROJECT" --quiet
+          echo "Version $VERSION of $CONTAINER is disabled in $ENVIRONMENT, asked for by $REQUESTER: no stored value names it and the service no longer holds it. It is not destroyed: a backup taken before this holds values under it, and gcloud secrets versions enable $VERSION --secret $CONTAINER --project $PROJECT brings it back; destroying it is a step by hand once those backups have aged out."
+
   migration:
     name: the migrations' operation
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.action != 'restore' && inputs.action != 'run' && inputs.action != 'release' && inputs.action != 'rollback' && inputs.action != 'list' && inputs.action != 'maintenance' && inputs.action != 'apply' && inputs.action != 'teardown' && inputs.action != 'destroy' && inputs.action != 'rotate' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.action != 'restore' && inputs.action != 'run' && inputs.action != 'release' && inputs.action != 'rollback' && inputs.action != 'list' && inputs.action != 'maintenance' && inputs.action != 'apply' && inputs.action != 'teardown' && inputs.action != 'destroy' && inputs.action != 'rotate' && inputs.action != 'retire' }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     permissions:

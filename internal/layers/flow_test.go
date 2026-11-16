@@ -252,8 +252,8 @@ func (*fakeSecrets) Create(context.Context, string, string, map[string]string) e
 	return nil
 }
 
-func (*fakeSecrets) Newest(context.Context, string) (string, error) {
-	return "", nil
+func (*fakeSecrets) EnabledVersions(context.Context, string) ([]string, error) {
+	return nil, nil
 }
 
 func (*fakeSecrets) Grant(context.Context, string, string, string) error {
