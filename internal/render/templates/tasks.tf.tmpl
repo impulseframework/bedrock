@@ -55,7 +55,7 @@ resource "google_cloud_tasks_queue_iam_member" "tasks_deploy" {
   project  = local.project_id
   location = local.primary_region
   name     = local.tasks_queue_name
-  role     = local.org.cloud_tasks_queue_operator_role
+  role     = local.org.cloud_tasks_queue_operator_role[var.environment]
   member   = local.identities.deploy_identity_member
 
   depends_on = [google_cloud_tasks_queue.tasks]
