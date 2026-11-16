@@ -617,12 +617,16 @@ nothing newer than (it still writes under it: run the release again first),
 and hands the revision every enabled version but that one. After its
 migrations, the release's migrate command runs once more with `-retire-secret
 <VARIABLE>_<version>` (`-retire-secret APP_SECRET_KEY_1`), with every enabled
-version in its environment, the retiring one included: the application
+version in its environment, the retiring one included (the deploy identity,
+which runs the command, reads every versioned secret's container for this:
+`migrate_accessor` in `secret-manager.tf`): the application
 rewrites every stored value that names the version under the current one and
 confirms none is left by exiting 0; any other exit fails the build before a
 revision deploys, with the version still enabled. The revision without the
-version then takes traffic, and only then does the workflow's job disable the
-version in Secret Manager, as the environment's operations identity, which
+version then takes traffic, and the deployment record says what was retired
+(`retiredSecret`). Only when the build has succeeded and its record says so
+does the workflow's job disable the version in Secret Manager, as the
+environment's operations identity, which
 holds 1-org's `secretVersionDisabler` on the versioned containers alone
 (`secret-manager.tf`; a 1-org applied by a bedrock that has the role comes
 first). A version is disabled and never destroyed by any of this: a backup

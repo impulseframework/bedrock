@@ -95,9 +95,10 @@
 # every enabled version but that one; after its migrations the release's migrate command is run
 # once more with -retire-secret <VARIABLE>_<version>, and rewrites every stored value that still
 # names the version under the current one and confirms none is left, or fails the build; the
-# revision without the version then takes traffic. Only after that build has succeeded does the job
-# disable the version in Secret Manager, as the environment's operations identity (the stack grants
-# it the disabling of a version on the versioned containers alone). The version is disabled, never
+# revision without the version then takes traffic. Only after that build has succeeded, and its
+# deployment record says the version was retired, does the job disable the version in Secret
+# Manager, as the environment's operations identity (the stack grants it the disabling of a
+# version on the versioned containers alone). The version is disabled, never
 # destroyed: a backup taken before holds values under it, and gcloud secrets versions enable brings
 # it back. A build that fails leaves the version enabled and the revision before it serving.
 #
@@ -877,8 +878,9 @@ jobs:
       # The live release's build with the instruction, from the environment's deployment
       # records, waited for to its end. The build refuses what cannot be retired, has the
       # release's migrate command rewrite every value that names the version and confirm none
-      # is left, and deploys a revision without the version. Anything but its success stops
-      # the job here, with the version enabled and nothing changed for the service.
+      # is left, and deploys a revision without the version. Anything but its success, with
+      # a deployment record that says the version was retired, stops the job here, with the
+      # version enabled and nothing changed for the service.
       - name: Rewrite what names the version and run the live release again without it
         env:
           PROJECT: ${{ steps.target.outputs.project }}
@@ -915,12 +917,23 @@ jobs:
           while :; do
             status=$(gcloud builds describe "$build" --region "$REGION" --project "$PROJECT" --format='value(status)')
             case "$status" in
-              SUCCESS) echo "Build $build succeeded: no stored value names version $VERSION of $VARIABLE, and $ENVIRONMENT runs $live without it."; exit 0 ;;
+              SUCCESS) break ;;
               FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR|EXPIRED) echo "::error::Build $build ended $status; its log says why (a refusal names what to do). Version $VERSION of $VARIABLE stays enabled, nothing was disabled, and the next release hands it to the service as before."; exit 1 ;;
               PENDING) echo "Build $build is pending: an approval in Cloud Build may be waiting." ;;
             esac
             sleep 30
           done
+          # The build's own word, from the record it wrote last: the application confirmed
+          # that no value names the version, and the revision without it took traffic. A build
+          # that succeeded without saying so (a release on a bedrock before retirements, which
+          # does not read the instruction) retired nothing, and nothing is disabled.
+          records "$bucket" "$ENVIRONMENT" || true
+          retired=$(gcloud storage cat $objects | jq -r -s --arg build "$build" '[.[] | select(.build == $build and .status == "live" and .retiredSecret != null)] | last | if . == null then "" else "\(.retiredSecret.variable)/\(.retiredSecret.version)" end' || true)
+          if [ "$retired" != "$VARIABLE/$VERSION" ]; then
+            echo "::error::Build $build succeeded, but its deployment record does not say that version $VERSION of $VARIABLE was retired: the release it ran, $live, is built on a bedrock that does not read the instruction, or wrote no record. Nothing was disabled, and the version stays enabled. Release on this bedrock, then ask again."
+            exit 1
+          fi
+          echo "Build $build succeeded, and its record says so: no stored value names version $VERSION of $VARIABLE, and $ENVIRONMENT runs $live without it."
       # The version, disabled now that no value names it and no serving revision holds it; the
       # identity may disable a version of this container and nothing else of it. Disabled and
       # never destroyed: a backup taken before holds values under it.

@@ -199,7 +199,7 @@ func (r *Retirement) heldBehind(ctx context.Context, clients *Clients, subs map[
 // migrate command run once more with the flag and the variable the retiring version is
 // handed over under, and with every enabled version of the secret in its environment
 // (the plan step's fact, each read as the deploy identity, which the stack grants
-// accessor on the versioned secrets the command constructs; the values are never
+// accessor on every versioned secret's container for this; the values are never
 // printed). The application rewrites every stored value that names the version and
 // confirms none is left by exiting 0, and the step leaves the retirement for the record.
 // Any other exit fails the build here, before a revision deploys, with nothing disabled.

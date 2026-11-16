@@ -28,6 +28,7 @@ func stackFunctions() map[string]function.Function {
 		"join":       stdlib.JoinFunc,
 		"jsonencode": stdlib.JSONEncodeFunc,
 		"setproduct": stdlib.SetProductFunc,
+		"setunion":   stdlib.SetUnionFunc,
 		"toset": function.New(&function.Spec{
 			Params: []function.Parameter{{Name: "v", Type: cty.DynamicPseudoType}},
 			Type:   function.StaticReturnType(cty.Set(cty.String)),
@@ -62,14 +63,16 @@ func stackFunctions() map[string]function.Function {
 	}
 }
 
-// secretLocals evaluates the rendered secret locals of a golden stack, in the order they
-// depend on one another, over the variables a plan is given: the environment, the
-// placement's secret_versions for it, the generated secrets' versions and the versioned
-// secrets' lists. secrets replaces the golden's own secrets local when it is not nil.
-// What it answers is the stack's local object with every one of them evaluated.
-func secretLocals(t *testing.T, golden, environment string, declared, generated map[string]string, versioned map[string][]string, secrets *cty.Value) map[string]cty.Value {
+// secretLocals evaluates the rendered secret locals of a golden stack for the tst
+// environment, in the order they depend on one another, over the variables a plan is
+// given: the placement's secret_versions for the environment, the generated secrets'
+// versions and the versioned secrets' lists. secrets replaces the golden's own secrets
+// local when it is not nil. What it answers is the stack's local object with every one of
+// them evaluated.
+func secretLocals(t *testing.T, golden string, declared, generated map[string]string, versioned map[string][]string, secrets *cty.Value) map[string]cty.Value {
 	t.Helper()
 
+	const environment = "tst"
 	locals := localsOf(t, parseBody(t, filepath.Join("testdata", golden, "locals.tf")))
 	local := map[string]cty.Value{
 		"name":       cty.StringVal("imp-" + environment),
@@ -182,6 +185,18 @@ func mountLines(mounts cty.Value) []string {
 	return lines
 }
 
+// harborVersionedSecrets is a secrets local for the harbor golden, whose code declares no
+// versioned secret: a versioned application secret at the data level, which harbor's job
+// process constructs, one at the site level, which it does not, and a generated one. The
+// golden's migrate command reads none of the three.
+func harborVersionedSecrets() cty.Value {
+	return cty.ObjectVal(map[string]cty.Value{
+		"APP_SECRET_KEY": cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal("secret-key"), "level": cty.StringVal("data"), "generated": cty.True, "versioned": cty.True}),
+		"APP_SITE_KEY":   cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal("site-key"), "level": cty.StringVal("site"), "generated": cty.True, "versioned": cty.True}),
+		"APP_COOKIE_KEY": cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal("cookie-key"), "level": cty.StringVal("data"), "generated": cty.True, "versioned": cty.False}),
+	})
+}
+
 // TestVersionedSecretMounts evaluates what the rendered stack hands a process from Secret
 // Manager, as tofu evaluates it at a plan: the revision_templates output's secret mounts
 // of the service (and of the job process where it reads the level), and the migrate
@@ -194,13 +209,7 @@ func TestVersionedSecretMounts(t *testing.T) {
 
 	beaconDeclared := map[string]string{"APP_COOKIE_KEY": "generated", "APP_SECRET_KEY": "versioned", "APP_KEEPERS_ADMINISTRATOR_PASSWORD": "generated", "APP_MAIL_APP_PASSWORD": "4"}
 	beaconGenerated := map[string]string{"APP_COOKIE_KEY": "3", "APP_KEEPERS_ADMINISTRATOR_PASSWORD": "1"}
-	// harbor with a versioned application secret at the data level, which its job process
-	// constructs, and one at the site level, which it does not.
-	harborSecrets := cty.ObjectVal(map[string]cty.Value{
-		"APP_SECRET_KEY": cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal("secret-key"), "level": cty.StringVal("data"), "generated": cty.True, "versioned": cty.True}),
-		"APP_SITE_KEY":   cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal("site-key"), "level": cty.StringVal("site"), "generated": cty.True, "versioned": cty.True}),
-		"APP_COOKIE_KEY": cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal("cookie-key"), "level": cty.StringVal("data"), "generated": cty.True, "versioned": cty.False}),
-	})
+	harborSecrets := harborVersionedSecrets()
 	tests := []struct {
 		name      string
 		golden    string
@@ -309,7 +318,7 @@ func TestVersionedSecretMounts(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			local := secretLocals(t, tt.golden, "tst", tt.declared, tt.generated, tt.versioned, tt.secrets)
+			local := secretLocals(t, tt.golden, tt.declared, tt.generated, tt.versioned, tt.secrets)
 			ctx := &hcl.EvalContext{Variables: map[string]cty.Value{"local": cty.ObjectVal(local)}, Functions: stackFunctions()}
 			templates := outputValue(t, tt.golden, "revision_templates")
 			services, ok := objectItem(t, templates, "services").(*hclsyntax.ForExpr)
@@ -385,7 +394,7 @@ func TestVersionedSecretGrants(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			local := secretLocals(t, "beacon", "tst", nil, nil, nil, nil)
+			local := secretLocals(t, "beacon", nil, nil, nil, nil)
 			local["is_pr"] = cty.BoolVal(tt.pullRequest)
 			local["identities"] = cty.ObjectVal(map[string]cty.Value{"apply_identity_member": cty.StringVal("serviceAccount:apply"), "operations_identity_member": cty.StringVal("serviceAccount:ops")})
 			local["org"] = cty.ObjectVal(map[string]cty.Value{"secret_version_disabler_role": cty.ObjectVal(map[string]cty.Value{"tst": cty.StringVal(disabler)})})
@@ -427,6 +436,51 @@ func TestVersionedSecretGrants(t *testing.T) {
 	}
 }
 
+// TestMigrateAccessor evaluates which containers the rendered stack lets the deploy
+// identity read (secret-manager.tf, migrate_accessor): the migrate command's own secrets,
+// and every versioned secret's container whether or not the command constructs its level,
+// because a retirement hands the command every enabled version of the secret it rewrites;
+// never a generated secret the command does not read; nothing on a pull-request stack.
+func TestMigrateAccessor(t *testing.T) {
+	t.Parallel()
+
+	harborSecrets := harborVersionedSecrets()
+	tests := []struct {
+		name        string
+		golden      string
+		secrets     *cty.Value
+		pullRequest bool
+		want        []string
+	}{
+		{name: "the command's secrets, the versioned one among them", golden: "beacon", want: []string{"APP_KEEPERS_ADMINISTRATOR_PASSWORD", "APP_MAIL_APP_PASSWORD", "APP_SECRET_KEY"}},
+		{name: "versioned secrets the command does not read", golden: "harbor", secrets: &harborSecrets, want: []string{"APP_MAIL_APP_PASSWORD", "APP_SECRET_KEY", "APP_SITE_KEY"}},
+		{name: "no versioned secret", golden: "harbor", want: []string{"APP_MAIL_APP_PASSWORD"}},
+		{name: "a pull-request stack", golden: "harbor", secrets: &harborSecrets, pullRequest: true, want: []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			local := secretLocals(t, tt.golden, nil, nil, nil, tt.secrets)
+			local["is_pr"] = cty.BoolVal(tt.pullRequest)
+			ctx := &hcl.EvalContext{Variables: map[string]cty.Value{"local": cty.ObjectVal(local)}, Functions: stackFunctions()}
+			grant := resourceBody(t, parseBody(t, filepath.Join("testdata", tt.golden, "secret-manager.tf")), "google_secret_manager_secret_iam_member.migrate_accessor")
+			got := []string{}
+			for it := evalAttribute(t, ctx, grant, "for_each").ElementIterator(); it.Next(); {
+				_, v := it.Element()
+				got = append(got, v.AsString())
+			}
+			slices.Sort(got)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("the containers the deploy identity reads (-want +got):\n%s", diff)
+			}
+			if role := evalAttribute(t, ctx, grant, "role").AsString(); role != "roles/secretmanager.secretAccessor" {
+				t.Errorf("role = %s, want roles/secretmanager.secretAccessor", role)
+			}
+		})
+	}
+}
+
 // TestSecretWordPreconditions evaluates the two preconditions the rendered service
 // declares on secret_versions (cloud-run.tf), as tofu evaluates them at a plan: the entry
 // of a secret the tooling makes is its own tag's word or absent, and neither word stands
@@ -454,7 +508,7 @@ func TestSecretWordPreconditions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			local := secretLocals(t, "beacon", "tst", tt.declared, nil, nil, nil)
+			local := secretLocals(t, "beacon", tt.declared, nil, nil, nil)
 			ctx := &hcl.EvalContext{Variables: map[string]cty.Value{"local": cty.ObjectVal(local), "var": cty.ObjectVal(map[string]cty.Value{"environment": cty.StringVal("tst")})}, Functions: stackFunctions()}
 			service := resourceBody(t, parseBody(t, filepath.Join("testdata", "beacon", "cloud-run.tf")), "google_cloud_run_v2_service.app")
 			var verdicts []bool
@@ -521,7 +575,8 @@ func jobOf(t *testing.T, workflow, job string) string {
 // on the action alone and no other job runs with it; it takes the versioned secrets the
 // code declares, by container; it runs the live release's build with the instruction and
 // who asked, and disables the version only in a step after that build's step, which fails
-// unless the build succeeded; it never destroys a version. The rotate action takes a
+// unless the build succeeded and its deployment record says the version was retired; it
+// never destroys a version. The rotate action takes a
 // versioned secret as it takes a generated one, and says of a build that failed that the
 // version stays enabled and the next release takes it up.
 func TestRetireWorkflow(t *testing.T) {
@@ -564,10 +619,22 @@ func TestRetireWorkflow(t *testing.T) {
 			if build < 0 || disableStep < build || disable < disableStep {
 				t.Errorf("the version is not disabled in a step of its own after the build's (build at %d, the step at %d, the command at %d)", build, disableStep, disable)
 			}
-			// The build's step ends the job on anything but success, so the step after it
-			// never runs on a build that failed.
+			// The build's step ends the job on anything but success, and on a success whose
+			// deployment record does not say the version was retired, so the step after it
+			// never runs on a build that failed or that retired nothing.
 			buildStep := retire[build:disableStep]
-			containsAll(t, buildStep, "SUCCESS) echo", "exit 0 ;;", "              FAILURE|", "|TIMEOUT|INTERNAL_ERROR|EXPIRED) echo \"::error::", "exit 1 ;;")
+			containsAll(t, buildStep,
+				"SUCCESS) break ;;", "              FAILURE|", "|TIMEOUT|INTERNAL_ERROR|EXPIRED) echo \"::error::", "exit 1 ;;",
+				`select(.build == $build and .status == "live" and .retiredSecret != null)`,
+				`if [ "$retired" != "$VARIABLE/$VERSION" ]; then`,
+				"its deployment record does not say that version $VERSION of $VARIABLE was retired",
+			)
+			if confirm, refuse := strings.Index(buildStep, `if [ "$retired" != "$VARIABLE/$VERSION" ]; then`), strings.LastIndex(buildStep, "exit 1"); confirm < 0 || refuse < confirm {
+				t.Errorf("a build whose record does not say the version was retired does not end the job before the version is disabled")
+			}
+			if strings.Contains(buildStep, "exit 0") {
+				t.Errorf("the build's step ends well somewhere before its record is read")
+			}
 			if !strings.Contains(jobOf(t, workflow, "migration"), "inputs.action != 'rotate' && inputs.action != 'retire' }}") {
 				t.Errorf("the migration job, which runs on every action no other job names, does not stand down on retire")
 			}
