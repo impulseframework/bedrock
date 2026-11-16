@@ -162,8 +162,8 @@ environment, exchanges its GitHub token for the environment's operations identit
 environment's version trigger for the live release with the instruction. That build:
 
   - refuses, at its plan step and with nothing changed, a version that is not enabled, the newest
-    enabled version (every value is written under it: rotate first), and a version the live
-    release holds nothing newer than (it still writes under it: bedrock rerun first);
+    enabled version (every value is written under it: rotate first), and any version while the
+    live release does not hold the newest (it could not open the rewrite: bedrock rerun first);
   - hands the revision every enabled version but the one retiring;
   - after its migrations, runs the release's migrate command once more with
     -retire-secret <VARIABLE>_<version>, which rewrites every stored value that names the version

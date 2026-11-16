@@ -130,9 +130,9 @@ func TestRetirementOf(t *testing.T) {
 // a versioned secret. It lists the container's enabled versions as the apply identity,
 // tells the plan every one and leaves them for the record; an empty container gets its
 // first version as a generated secret's does. With a retirement it refuses, before the
-// plan and with nothing changed, a version that is not enabled, the newest, a version the
-// live release holds nothing newer than, a run with no live release and a variable that
-// is not versioned; a retirement that may run tells the plan every enabled version but
+// plan and with nothing changed, a version that is not enabled, the newest, any version
+// while the live release does not hold the newest, a run with no live release and a
+// variable that is not versioned; a retirement that may run tells the plan every enabled version but
 // the one retiring and leaves the migrate step all of them.
 func TestPlanVersionedSecrets(t *testing.T) {
 	t.Parallel()
@@ -147,6 +147,13 @@ func TestPlanVersionedSecrets(t *testing.T) {
 	both := func() map[string]string {
 		pins := enabledPins()
 		pins[versionedContainer+"/versions/1"], pins[versionedContainer+"/versions/2"], pins[versionedContainer+"/versions/3"] = enabledState, enabledState, "DISABLED"
+
+		return pins
+	}
+	// three are versions 1, 2 and 3 enabled: a rotation after the one that added version 2.
+	three := func() map[string]string {
+		pins := both()
+		pins[versionedContainer+"/versions/3"] = enabledState
 
 		return pins
 	}
@@ -233,12 +240,20 @@ func TestPlanVersionedSecrets(t *testing.T) {
 			wantErr:  "Build REJECTED: version 1 of imp-stg-gbl-quill-secret-key is its newest enabled version in stg",
 		},
 		{
-			name:     "a version the live release holds nothing newer than is refused: a rotation whose run did not deploy left it writing under that version",
+			name:     "a live release that does not hold the newest version is refused: a rotation whose run did not deploy left it writing under the version retiring",
 			subs:     retireSubs("APP_SECRET_KEY", "1"),
 			states:   both(),
 			objects:  liveHolding("1"),
 			wantTofu: []string{initLine},
-			wantErr:  "Build REJECTED: the release live in stg (v1.2.3) holds no version of APP_SECRET_KEY newer than 1 (its record names version 1): it still writes every value under a version at or below the one retiring, and what it writes while this run rewrites would name a version the next revision does not hold. Nothing was changed. Run the live release again first (bedrock rerun stg v1.2.3), so that it takes up version 2, then retire 1",
+			wantErr:  "Build REJECTED: the release live in stg (v1.2.3) does not hold version 2 of APP_SECRET_KEY, the newest enabled (its record names version 1): this run rewrites every value under version 2, which the revision serving now could not open, and that revision may still write under version 1. Nothing was changed. Run the live release again first (bedrock rerun stg v1.2.3), so that it takes up version 2, then retire 1",
+		},
+		{
+			name:     "a live release that holds a newer version, and not the newest, is refused: it could not open what the rewrite writes",
+			subs:     retireSubs("APP_SECRET_KEY", "1"),
+			states:   three(),
+			objects:  liveHolding("1", "2"),
+			wantTofu: []string{initLine},
+			wantErr:  "Build REJECTED: the release live in stg (v1.2.3) does not hold version 3 of APP_SECRET_KEY, the newest enabled (its record names versions 1 and 2): this run rewrites every value under version 3, which the revision serving now could not open",
 		},
 		{
 			name:     "a live release whose record names no version of the secret is refused the same way",
@@ -246,7 +261,7 @@ func TestPlanVersionedSecrets(t *testing.T) {
 			states:   both(),
 			objects:  liveHolding(),
 			wantTofu: []string{initLine},
-			wantErr:  "Build REJECTED: the release live in stg (v1.2.3) holds no version of APP_SECRET_KEY newer than 1 (its record names none)",
+			wantErr:  "Build REJECTED: the release live in stg (v1.2.3) does not hold version 2 of APP_SECRET_KEY, the newest enabled (its record names none)",
 		},
 		{
 			name:     "a retirement with no release live is refused",

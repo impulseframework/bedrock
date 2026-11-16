@@ -465,8 +465,8 @@ stays enabled in Secret Manager, and the next release takes it up.
 `bedrock secret retire <env> <VARIABLE> <version>` takes a version out of use,
 through the operations workflow's `retire` action. The live release's build
 runs again with the instruction. Its plan step refuses a version that is not
-enabled, the newest enabled version, and a version the live release holds
-nothing newer than (it still writes under it: run the release again first),
+enabled, the newest enabled version, and any version while the live release
+does not hold the newest (it could not open the rewrite: run it again first),
 and hands the revision every enabled version but that one. After its
 migrations, the release's migrate command runs once more with `-retire-secret
 <VARIABLE>_<version>` (`-retire-secret APP_SECRET_KEY_1`), with every enabled

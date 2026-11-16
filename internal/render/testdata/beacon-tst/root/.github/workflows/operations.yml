@@ -90,11 +90,11 @@
 #
 # retire (tst): a version of a versioned secret is taken out of use. The live
 # release's build runs again with the instruction (_RETIRE_SECRET, _RETIRE_VERSION and who asked):
-# its plan step refuses a version that is not enabled, the newest enabled version, and a version
-# the live release still writes under (one it holds nothing newer than), and hands the revision
-# every enabled version but that one; after its migrations the release's migrate command is run
-# once more with -retire-secret <VARIABLE>_<version>, and rewrites every stored value that still
-# names the version under the current one and confirms none is left, or fails the build; the
+# its plan step refuses a version that is not enabled, the newest enabled version, and any version
+# while the live release does not hold the newest (it could not open the rewrite), and hands the
+# revision every enabled version but that one; after its migrations the release's migrate command
+# is run once more with -retire-secret <VARIABLE>_<version>, and rewrites every stored value that
+# still names the version under the current one and confirms none is left, or fails the build; the
 # revision without the version then takes traffic. Only after that build has succeeded, and its
 # deployment record says the version was retired, does the job disable the version in Secret
 # Manager, as the environment's operations identity (the stack grants it the disabling of a

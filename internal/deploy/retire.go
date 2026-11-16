@@ -23,7 +23,6 @@ import (
 	"maps"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -103,9 +102,10 @@ func (r *Retirement) target() string {
 // planRetirement is the plan step's part of a retirement, nothing for a build that
 // carries none. It refuses, before anything changes, a variable the release does not
 // declare versioned, a version that is not enabled, the newest enabled version (every
-// value is written under it), and a version the live release holds nothing newer than
-// (that release still writes under it, and what it writes while this run rewrites would
-// be lost to the next revision). It then takes the version out of what the plan is told,
+// value is written under it), and any version while the live release does not hold the
+// newest enabled one (the rewrite writes under it, so the revision serving now could not
+// open what was rewritten, and a release that does not hold it may still write under the
+// version retiring). It then takes the version out of what the plan is told,
 // so that the revision this build deploys does not receive it, and answers the fact the
 // migrate step reads: every enabled version, the retiring one included, since the
 // rewrite opens values under the one and writes them under the newest.
@@ -167,11 +167,12 @@ func planRetirement(ctx context.Context, clients *Clients, m *derive.Model, subs
 	return map[string]string{retireVersionsFact: string(encoded)}, nil
 }
 
-// heldBehind refuses the retirement unless the release live in the environment holds a
-// version of the secret newer than the one retiring, by its deployment record: a release
-// writes every value under the newest version it holds, so one that holds nothing newer
-// (a rotation whose run did not deploy) still writes under the retiring version, while
-// and after this run rewrites.
+// heldBehind refuses the retirement unless the release live in the environment holds the
+// newest enabled version of the secret, by its deployment record. The rewrite writes every
+// value under the newest enabled version, and a release writes under the newest version
+// it holds: a live release without the newest (a rotation whose run did not deploy)
+// could not open what this run rewrites until the next revision serves, and not at all
+// when that revision does not start, and it may still write under the version retiring.
 func (r *Retirement) heldBehind(ctx context.Context, clients *Clients, subs map[string]string, newest string) error {
 	env := subs[envSub]
 	live, err := liveRelease(ctx, clients.Storage, subs)
@@ -181,18 +182,16 @@ func (r *Retirement) heldBehind(ctx context.Context, clients *Clients, subs map[
 	if live == nil {
 		return errors.Newf("%sno release is live in %s by its deployment records: a version is retired by the live release, whose migrate command rewrites the values that name it, and nothing was changed. Release first, then retire version %s of %s", rejected, env, r.Version, r.Variable)
 	}
-	retiring, _ := strconv.Atoi(r.Version)
-	for _, version := range live.VersionedSecrets[r.Variable] {
-		if n, err := strconv.Atoi(version); err == nil && n > retiring {
-			return nil
-		}
+	held := live.VersionedSecrets[r.Variable]
+	if slices.Contains(held, newest) {
+		return nil
 	}
 	holds := "names none"
-	if held := live.VersionedSecrets[r.Variable]; len(held) > 0 {
+	if len(held) > 0 {
 		holds = "names " + versionsPhrase(held)
 	}
 
-	return errors.Newf("%sthe release live in %s (%s) holds no version of %s newer than %s (its record %s): it still writes every value under a version at or below the one retiring, and what it writes while this run rewrites would name a version the next revision does not hold. Nothing was changed. Run the live release again first (bedrock rerun %s %s), so that it takes up version %s, then retire %s", rejected, env, live.Version, r.Variable, r.Version, holds, env, live.Version, newest, r.Version)
+	return errors.Newf("%sthe release live in %s (%s) does not hold version %s of %s, the newest enabled (its record %s): this run rewrites every value under version %s, which the revision serving now could not open, and that revision may still write under version %s. Nothing was changed. Run the live release again first (bedrock rerun %s %s), so that it takes up version %s, then retire %s", rejected, env, live.Version, newest, r.Variable, holds, newest, r.Version, env, live.Version, newest, r.Version)
 }
 
 // retire is the migrate step's part of a retirement, after the migrations: the release's
