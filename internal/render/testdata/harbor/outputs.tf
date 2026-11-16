@@ -131,6 +131,11 @@ output "members_directory_logout_url" {
   value       = local.members_directory_logout_url
 }
 
+output "members_okta_redirect_url" {
+  description = "Redirect URI to register on the members auth's okta registration with the identity provider (APP_MEMBERS_OKTA_REDIRECT_URL)."
+  value       = local.members_okta_redirect_url
+}
+
 output "staff_directory_redirect_url" {
   description = "Redirect URI to register on the staff auth's directory registration with Google (APP_STAFF_DIRECTORY_REDIRECT_URL)."
   value       = local.staff_directory_redirect_url

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -207,18 +208,11 @@ func TestMicrosoftHandStep(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Render() error = %v", err)
 			}
-			var readme string
-			for _, f := range files {
-				if f.Path == "README.md" && !f.Root {
-					readme = string(f.Content)
-				}
+			readme := stackReadme(files)
+			step, ok := handStep(readme, "In the Microsoft Entra admin center")
+			if !ok {
+				t.Fatalf("the README renders no Microsoft hand step:\n%s", readme)
 			}
-			start := strings.Index(readme, "In the Microsoft Entra admin center")
-			end := strings.Index(readme, "In the Google Cloud console")
-			if start < 0 || end < start {
-				t.Fatalf("the README renders no Microsoft hand step before the Google one:\n%s", readme)
-			}
-			step := readme[start:end]
 			for _, want := range tt.want {
 				if !strings.Contains(step, want) {
 					t.Errorf("the step lacks %q:\n%s", want, step)
@@ -231,6 +225,100 @@ func TestMicrosoftHandStep(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestIdentityProviderHandStep renders the README's hand step for a registration with an
+// organization's own identity provider (harbor's okta registration, the generic OpenID
+// Connect method with a client secret) under either authority for role membership: the
+// client made at the provider with the callback the stack outputs, the client id per
+// environment, the issuer once for the organization, the client secret's container, and
+// a pull request's callback; under the provider's authority, the roles claim the provider
+// has to send, which the application's authority never asks for.
+func TestIdentityProviderHandStep(t *testing.T) {
+	t.Parallel()
+
+	const rolesClaim = "the role names the ID token carries in its `roles` claim"
+	common := []string{
+		"At the identity provider, for the members auth's okta registration: one client per",
+		"sign-in redirect URI = output `members_okta_redirect_url`",
+		"its client ID in `terraform.tfvars` (`members_okta_client_id`)",
+		"issuer URL in `members_okta_issuer`",
+		"once for the organization",
+		"add the client secret as version 1 of\n   `imp-<env>-gbl-harbor-members-okta-client-secret`",
+		"`https://harbor-pr<N>.impulseframework.dev/portal/api/user/okta/callback`",
+	}
+	tests := []struct {
+		name      string
+		authority string
+		want      []string
+		wantNot   []string
+	}{
+		{name: "the application's authority", authority: app.AuthorityApplication, want: common, wantNot: []string{rolesClaim, "front-channel logout"}},
+		{name: "the provider's authority", authority: app.AuthorityDirectory, want: append(slices.Clone(common), rolesClaim)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := deriveFixture(t, "harbor", "placement.json")
+			var method *derive.Method
+			for _, d := range m.DirectoryMethods() {
+				if d.Kind == app.MethodOIDC {
+					method = d
+				}
+			}
+			if method == nil {
+				t.Fatal("harbor registers no identity provider's method")
+			}
+			method.Authority = tt.authority
+			files, err := Render(m)
+			if err != nil {
+				t.Fatalf("Render() error = %v", err)
+			}
+			readme := stackReadme(files)
+			step, ok := handStep(readme, "At the identity provider")
+			if !ok {
+				t.Fatalf("the README renders no identity provider's hand step:\n%s", readme)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(step, want) {
+					t.Errorf("the step lacks %q:\n%s", want, step)
+				}
+			}
+			for _, wantNot := range tt.wantNot {
+				if strings.Contains(step, wantNot) {
+					t.Errorf("the step carries %q:\n%s", wantNot, step)
+				}
+			}
+		})
+	}
+}
+
+// stackReadme is the stack's README among the rendered files, empty when there is none.
+func stackReadme(files []File) string {
+	for _, f := range files {
+		if f.Path == "README.md" && !f.Root {
+			return string(f.Content)
+		}
+	}
+
+	return ""
+}
+
+// handStep is the README's hand step that opens with the phrase: from the phrase to the
+// end of the step, the first line after it that is not one of the step's own indented
+// lines (the next step, or the blank line that ends the list).
+func handStep(readme, opening string) (string, bool) {
+	start := strings.Index(readme, opening)
+	if start < 0 {
+		return "", false
+	}
+	step := readme[start:]
+	if end := regexp.MustCompile(`\n[^ ]`).FindStringIndex(step); end != nil {
+		step = step[:end[0]]
+	}
+
+	return step, true
 }
 
 // firstDiff shows the first differing line of two texts, with a little context.

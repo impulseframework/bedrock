@@ -8,8 +8,8 @@
 //	default (/api), sessions of the staff auth (directory):
 //	  NoCaching, CompressionMiddleware, StartSession, SetXSRFToken: GET /api/user/methods, GET /api/user/session, DELETE /api/user/session, GET /api/user/pending, GET /api/user/directory/login, GET /api/user/directory/callback
 //	  + ValidateSession, ValidateXSRFToken: hooks.Default, generatedRoutes
-//	portal (/portal/api), sessions of the members auth (directory):
-//	  NoCaching, CompressionMiddleware, StartSession, SetXSRFToken: GET /portal/api/user/methods, GET /portal/api/user/session, DELETE /portal/api/user/session, GET /portal/api/user/pending, GET /portal/api/user/directory/login, GET /portal/api/user/directory/callback, GET /portal/api/user/directory/logout
+//	portal (/portal/api), sessions of the members auth (directory, okta):
+//	  NoCaching, CompressionMiddleware, StartSession, SetXSRFToken: GET /portal/api/user/methods, GET /portal/api/user/session, DELETE /portal/api/user/session, GET /portal/api/user/pending, GET /portal/api/user/directory/login, GET /portal/api/user/directory/callback, GET /portal/api/user/directory/logout, GET /portal/api/user/okta/login, GET /portal/api/user/okta/callback
 //	  + ValidateSession, ValidateXSRFToken: hooks.Portal, generatedPortalRoutes
 //	scheduled (/_scheduled), Cloud Scheduler's token:
 //	  NoCaching, CompressionMiddleware, SchedulerAuth: generatedScheduledRoutes

@@ -88,6 +88,7 @@ variable "hostnames" {
     host: each directory registration's redirect URL is built from it, the
     callback the generated router (pkg/router) registers for it:
     https://<host>/portal/api/user/directory/callback for the members auth's directory registration (APP_MEMBERS_DIRECTORY_REDIRECT_URL),
+    https://<host>/portal/api/user/okta/callback for the members auth's okta registration (APP_MEMBERS_OKTA_REDIRECT_URL),
     https://<host>/api/user/directory/callback for the staff auth's directory registration (APP_STAFF_DIRECTORY_REDIRECT_URL).
     Every hostname here is registered with the
     load balancer by an entry in 2-net's hosts; output net_hosts is that entry.
@@ -403,6 +404,44 @@ variable "members_directory_administered_tenants" {
   default     = ""
 }
 
+variable "members_okta_client_id" {
+  description = <<-EOT
+    Per environment, the client ID of the members auth's okta registration with the identity provider
+    (APP_MEMBERS_OKTA_CLIENT_ID, pkg/config/data.go dataConfig.MembersOktaClientID).
+    Created by hand at the identity provider, one client per environment: a
+    confidential web application client, with a client secret, and the redirect
+    URI this stack outputs as members_okta_redirect_url.
+    The client ID is public; its secret goes into the members-okta-client-secret
+    container. Empty until registered.
+  EOT
+  type        = map(string)
+  default = {
+    tst = ""
+    stg = ""
+    prd = ""
+  }
+}
+
+variable "members_okta_issuer" {
+  description = <<-EOT
+    The issuer URL of the identity provider the members auth's okta registration signs in through
+    (APP_MEMBERS_OKTA_ISSUER, dataConfig.MembersOktaIssuer): the provider's configuration is
+    read at <issuer>/.well-known/openid-configuration, and every sign-in's token
+    must carry it. It names the organization's provider, once for the
+    organization: another issuer is another provider, whose people no link made
+    so far knows. The session library refuses a missing or malformed one when the
+    registration is made, at construction, so every data-level process carries it
+    and the first release in an environment waits on it (README, "Hand steps").
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.members_okta_issuer == "" || can(regex("^https?://[^/?#]+(/[^?#]*)?$", var.members_okta_issuer))
+    error_message = "members_okta_issuer is the provider's issuer URL: absolute, http or https, with no query or fragment, or empty before the registration."
+  }
+}
+
 variable "staff_directory_client_id" {
   description = <<-EOT
     Per environment, the client ID of the staff auth's directory registration with Google
@@ -473,11 +512,12 @@ variable "members_administrator" {
   description = <<-EOT
     Per environment, the sign-in name of the members auth's first administrator
     (APP_MEMBERS_ADMINISTRATOR, pkg/config/data.go dataConfig.MembersAdministrator): the name the
-    directory presents, the user principal name on Entra or the email on Google.
-    The migrate command seeds the administrator role membership under it while
-    the auth's users table holds no rows, so the first person to sign in holds
-    the role; empty until named, and the first release in an environment refuses
-    to seed without it (README, "Hand steps").
+    directory presents, the user principal name on Entra, the email on Google, or
+    the preferred username at an organization's own identity provider (the email
+    when it sends none). The migrate command seeds the administrator role
+    membership under it while the auth's users table holds no rows, so the first
+    person to sign in holds the role; empty until named, and the first release in
+    an environment refuses to seed without it (README, "Hand steps").
   EOT
   type        = map(string)
   default = {

@@ -505,7 +505,7 @@ above them.
 {{- end}}
 | {{.SecretsCell}} | {{.CookieKeySecret.Variable.Level}} | secret, at the pinned version | yes | |{{if .Jobs}} {{if .JobsReadsData}}yes{{end}} |{{end}}
 
-{{if .DirectoryEnv}}The migrate command{{if .JobsReadsData}} and the job process{{end}} carr{{if .JobsReadsData}}y{{else}}ies{{end}} the registrations' organization slots and group prefixes because the session
+{{if .DirectoryEnv}}The migrate command{{if .JobsReadsData}} and the job process{{end}} carr{{if .JobsReadsData}}y{{else}}ies{{end}} the registrations' organization slots{{if .IdentityProviders}}, identity providers' issuers{{end}} and group prefixes because the session
 library validates them when it makes each registration, at construction. {{end}}{{if .Persona}}The persona method ({{range $i, $p := .Personas}}{{if $i}}, {{end}}{{$p.Label}}{{end}}) is
 registered where its issuer is set and nowhere else, so a later environment never offers
 it and nothing in the build differs; the pipeline registers each deployment, its callback
@@ -1250,6 +1250,32 @@ Per environment, after the first apply:
    `https://{{$.App}}-pr<N>.{{$.P.AppsDomain}}{{.Callback.Path}}`, to the
    registration's redirect URIs before signing in there, until the organization
    runs a test identity gateway.
+{{else if .IdentityProvider -}}
+{{.Step}}. At the identity provider, for {{.Label}}: one client per
+   environment at the organization's own OpenID Connect provider (an Okta, a
+   Keycloak, or Google used as a plain OpenID Connect provider), a confidential
+   web application client signing in by authorization code, with a client
+   secret, and the sign-in redirect URI = output `{{.Var "REDIRECT_URL"}}`. Put
+   its client ID in `terraform.tfvars` (`{{.Var "CLIENT_ID"}}`) and the provider's
+   issuer URL in `{{.Var "ISSUER"}}` (once for the organization; Google's is
+   `https://accounts.google.com`), and add the client secret as version 1 of
+   `{{$.Prefix}}-<env>-gbl-{{$.App}}-{{.Secret.Name}}`. The issuer is the URL the provider's
+   configuration is read under (`<issuer>/.well-known/openid-configuration`) and
+   every sign-in's token carries, so another issuer is another provider, whose
+   people no link made so far knows; the session library refuses a missing or
+   malformed one at construction, so the first release in an environment waits
+   on it.
+{{- if eq .Authority "directory"}}
+   The provider is the authority for role membership: every sign-in reconciles
+   the person's roles to the role names the ID token carries in its `roles` claim
+   and refuses a sign-in naming none the auth's role file defines, so set the
+   provider up to send that claim before anyone signs in.
+{{- end}}
+   In {{$.Integration}}, each pull request's environment signs in through the same
+   client: add its callback,
+   `https://{{$.App}}-pr<N>.{{$.P.AppsDomain}}{{.Callback.Path}}`, to the client's
+   sign-in redirect URIs before signing in there, until the organization runs a
+   test identity gateway.
 {{else -}}
 {{.Step}}. In the Google Cloud console, in the environment project, for {{.Label}}:
    first the project's consent screen, if the organization has not configured
@@ -1294,10 +1320,12 @@ Per environment, after the first apply:
 {{range .Administrators -}}
 {{.Step}}. Name {{.Label}}'s first administrator in `terraform.tfvars` (`{{.Var}}`), per
    environment: the sign-in name the directory presents (the user principal name
-   on Entra, the email on Google). The migrate command of the first release in the
-   environment seeds the administrator role membership under it while the auth's
-   users table holds no rows, and refuses to seed while the name is empty; the
-   person then signs in through the directory and holds the role.
+   on Entra, the email on Google, the preferred username at an organization's own
+   identity provider, or its email when it sends none). The migrate command of the
+   first release in the environment seeds the administrator role membership under
+   it while the auth's users table holds no rows, and refuses to seed while the
+   name is empty; the person then signs in through the directory and holds the
+   role.
 {{end -}}
 {{if .Mailbox -}}
 {{.MailboxStep}}. In the Google Workspace Admin console, once for the organization: a mailbox the
@@ -1370,6 +1398,9 @@ none yet), and the sign-in needs no registration.
 {{- end}}
 {{- with .Setting "Workspaces"}}
 | `{{$m.Var "WORKSPACES"}}` | The Workspaces {{$m.Label}} admits, named. | `string` | `""` | no |
+{{- end}}
+{{- with .Setting "Issuer"}}
+| `{{$m.Var "ISSUER"}}` | Issuer URL of the identity provider {{$m.Label}} signs in through. | `string` | `""` | no |
 {{- end}}
 {{- with .Setting "GroupLookup"}}
 | `{{$m.Var "GROUP_LOOKUP"}}` | How far the groups read of {{$m.Label}} reaches: direct or nested. | `string` | `"{{$m.GroupLookupDefault}}"` | no |

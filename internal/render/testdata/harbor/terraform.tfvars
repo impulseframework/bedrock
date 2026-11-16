@@ -24,6 +24,17 @@ members_directory_tenant_id = ""
 # is asked for the code.
 members_directory_administered_tenants = ""
 
+# The members auth's okta registration with the identity provider (README, "Hand
+# steps"): the client id of each environment's registration, and the provider's
+# issuer URL, the one its configuration is read under, once for the
+# organization.
+members_okta_client_id = {
+  tst = ""
+  stg = ""
+  prd = ""
+}
+members_okta_issuer = ""
+
 # The staff auth's directory registration with Google (README, "Hand
 # steps"): the client id of each environment's registration.
 staff_directory_client_id = {

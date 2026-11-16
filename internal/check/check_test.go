@@ -159,7 +159,7 @@ func TestRun(t *testing.T) {
 				m.Scheduled = []derive.ScheduledRoute{{Path: "/_scheduled/send-daily-digest", Schedule: "0 6 * * 1-5", TimeZone: "America/New_York"}}
 			},
 			wantFindings: []Finding{
-				{Path: "README.md", Line: 294, Want: "  | `POST /_scheduled/send-daily-digest` | `0 6 * * 1-5` | America/New_York |", Got: "  | `POST /_scheduled/send-daily-digest` | `0 7 * * 1-5` | America/New_York |"},
+				{Path: "README.md", Line: 295, Want: "  | `POST /_scheduled/send-daily-digest` | `0 6 * * 1-5` | America/New_York |", Got: "  | `POST /_scheduled/send-daily-digest` | `0 7 * * 1-5` | America/New_York |"},
 				{Path: "scheduler.tf", Line: 29, Want: `      schedule  = "0 6 * * 1-5"`, Got: `      schedule  = "0 7 * * 1-5"`},
 			},
 			wantOutput: []string{"2 of 22 owned file(s) differ", "differs  scheduler.tf:29"},
@@ -171,7 +171,7 @@ func TestRun(t *testing.T) {
 				m.Scheduled = append([]derive.ScheduledRoute{{Path: "/_scheduled/close-stale-holds", Schedule: "*/15 * * * *", TimeZone: "UTC"}}, m.Scheduled...)
 			},
 			wantFindings: []Finding{
-				{Path: "README.md", Line: 294, Want: "  | `POST /_scheduled/close-stale-holds` | `*/15 * * * *` | UTC |", Got: "  | `POST /_scheduled/send-daily-digest` | `0 7 * * 1-5` | America/New_York |"},
+				{Path: "README.md", Line: 295, Want: "  | `POST /_scheduled/close-stale-holds` | `*/15 * * * *` | UTC |", Got: "  | `POST /_scheduled/send-daily-digest` | `0 7 * * 1-5` | America/New_York |"},
 				{Path: "scheduler.tf", Line: 27, Want: `    "close-stale-holds" = {`, Got: `    "send-daily-digest" = {`},
 			},
 			wantOutput: []string{"2 of 22 owned file(s) differ", "differs  scheduler.tf:27"},
@@ -606,13 +606,13 @@ func TestRunRetired(t *testing.T) {
 			retired:   "retired = [\"APP_FILE_STORE\", \"APP_COOKIE_KEY\", \"APP_FIRESTORE_DATABASE\"]\n",
 			wantClean: true,
 			want: []Retirement{
-				{Variable: "APP_FILE_STORE", What: "a file store (pkg/config/data.go:297)"},
-				{Variable: "APP_COOKIE_KEY", What: "a secret (pkg/config/data.go:264)"},
+				{Variable: "APP_FILE_STORE", What: "a file store (pkg/config/data.go:312)"},
+				{Variable: "APP_COOKIE_KEY", What: "a secret (pkg/config/data.go:270)"},
 				{Variable: "APP_FIRESTORE_DATABASE", What: "the Firestore database (pkg/config/data.go:58)"},
 			},
 			wantOutput: []string{
-				"  retire   APP_FILE_STORE is retired (retired in terraform.tfvars), a file store (pkg/config/data.go:297): this release's apply lifts its protection against a destroy in every environment, and the next release removes the declaration and takes the name out of retired",
-				"  retire   APP_COOKIE_KEY is retired (retired in terraform.tfvars), a secret (pkg/config/data.go:264)",
+				"  retire   APP_FILE_STORE is retired (retired in terraform.tfvars), a file store (pkg/config/data.go:312): this release's apply lifts its protection against a destroy in every environment, and the next release removes the declaration and takes the name out of retired",
+				"  retire   APP_COOKIE_KEY is retired (retired in terraform.tfvars), a secret (pkg/config/data.go:270)",
 				"  retire   APP_FIRESTORE_DATABASE is retired (retired in terraform.tfvars), the Firestore database (pkg/config/data.go:58)",
 			},
 		},
@@ -626,7 +626,7 @@ func TestRunRetired(t *testing.T) {
 		{
 			name:       "a name nothing declares is refused",
 			retired:    "retired = [\"APP_COOKIE_KEY\", \"APP_GONE\"]\n",
-			want:       []Retirement{{Variable: "APP_COOKIE_KEY", What: "a secret (pkg/config/data.go:264)"}, {Variable: "APP_GONE", Problem: gone}},
+			want:       []Retirement{{Variable: "APP_COOKIE_KEY", What: "a secret (pkg/config/data.go:270)"}, {Variable: "APP_GONE", Problem: gone}},
 			wantOutput: []string{"  refused  " + gone},
 		},
 		{
@@ -751,17 +751,17 @@ func TestRunGenerated(t *testing.T) {
 			generated: true,
 			versions:  "secret_versions = {\n  tst = { APP_COOKIE_KEY = 3 }\n  stg = { APP_COOKIE_KEY = \"latest\" }\n  prd = {}\n}\n",
 			want: []GeneratedFinding{
-				{Environment: "tst", Variable: "APP_COOKIE_KEY", Problem: `APP_COOKIE_KEY is generated (secret:"generated" at pkg/config/data.go:264) and secret_versions.tst in terraform.tfvars pins "3" where the word generated belongs: write APP_COOKIE_KEY = "generated" there; its version is derived at each build, and bedrock secret rotate tst APP_COOKIE_KEY adds the next`},
-				{Environment: "stg", Variable: "APP_COOKIE_KEY", Problem: `APP_COOKIE_KEY is generated (secret:"generated" at pkg/config/data.go:264) and secret_versions.stg in terraform.tfvars pins "latest" where the word generated belongs: write APP_COOKIE_KEY = "generated" there; its version is derived at each build, and bedrock secret rotate stg APP_COOKIE_KEY adds the next`},
-				{Environment: "prd", Variable: "APP_COOKIE_KEY", Problem: `APP_COOKIE_KEY is generated (secret:"generated" at pkg/config/data.go:264) and secret_versions.prd in terraform.tfvars has no entry for it: write APP_COOKIE_KEY = "generated" there; its version is derived at each build`},
+				{Environment: "tst", Variable: "APP_COOKIE_KEY", Problem: `APP_COOKIE_KEY is generated (secret:"generated" at pkg/config/data.go:270) and secret_versions.tst in terraform.tfvars pins "3" where the word generated belongs: write APP_COOKIE_KEY = "generated" there; its version is derived at each build, and bedrock secret rotate tst APP_COOKIE_KEY adds the next`},
+				{Environment: "stg", Variable: "APP_COOKIE_KEY", Problem: `APP_COOKIE_KEY is generated (secret:"generated" at pkg/config/data.go:270) and secret_versions.stg in terraform.tfvars pins "latest" where the word generated belongs: write APP_COOKIE_KEY = "generated" there; its version is derived at each build, and bedrock secret rotate stg APP_COOKIE_KEY adds the next`},
+				{Environment: "prd", Variable: "APP_COOKIE_KEY", Problem: `APP_COOKIE_KEY is generated (secret:"generated" at pkg/config/data.go:270) and secret_versions.prd in terraform.tfvars has no entry for it: write APP_COOKIE_KEY = "generated" there; its version is derived at each build`},
 			},
-			wantOut: []string{"  refused  APP_COOKIE_KEY is generated (secret:\"generated\" at pkg/config/data.go:264) and secret_versions.tst in terraform.tfvars pins \"3\" where the word generated belongs"},
+			wantOut: []string{"  refused  APP_COOKIE_KEY is generated (secret:\"generated\" at pkg/config/data.go:270) and secret_versions.tst in terraform.tfvars pins \"3\" where the word generated belongs"},
 		},
 		{
 			name:     "the word on a secret someone puts in place is refused",
 			versions: "secret_versions = {\n  tst = { APP_STAFF_DIRECTORY_CLIENT_SECRET = \"generated\" }\n  stg = {}\n  prd = {}\n}\n",
 			want: []GeneratedFinding{
-				{Environment: "tst", Variable: "APP_STAFF_DIRECTORY_CLIENT_SECRET", Problem: `APP_STAFF_DIRECTORY_CLIENT_SECRET carries the word generated in secret_versions.tst in terraform.tfvars, and the code declares it secret:"true" (pkg/config/data.go:279): pin a version number (bedrock secret pin tst APP_STAFF_DIRECTORY_CLIENT_SECRET <version>), or declare it secret:"generated" in the code`},
+				{Environment: "tst", Variable: "APP_STAFF_DIRECTORY_CLIENT_SECRET", Problem: `APP_STAFF_DIRECTORY_CLIENT_SECRET carries the word generated in secret_versions.tst in terraform.tfvars, and the code declares it secret:"true" (pkg/config/data.go:285): pin a version number (bedrock secret pin tst APP_STAFF_DIRECTORY_CLIENT_SECRET <version>), or declare it secret:"generated" in the code`},
 			},
 		},
 		{

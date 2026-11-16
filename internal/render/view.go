@@ -141,6 +141,10 @@ type view struct {
 	// method alone has none of that, and its stack carries the cookie key alone.
 	Methods   []*methodView
 	Directory bool
+	// IdentityProviders reports a method among them that signs in through an
+	// organization's own identity provider, whose issuer every data-level process
+	// carries beside the organization slots.
+	IdentityProviders bool
 	// Personas are the persona methods of every auth, auths by name and methods in
 	// registration order, each with what the stack carries for it: the issuer and the
 	// client id it derives from the placement's persona block, the callback, and the
@@ -1171,11 +1175,13 @@ func (m *methodView) Var(suffix string) string {
 }
 
 // Slot is the registration's organization slot besides the hosted domain, as a setting:
-// the tenant id, the listed tenants or the listed Workspaces, or nil for a registration
-// that admits any organization or names its Workspace by the hosted domain.
+// the tenant id, the listed tenants or the listed Workspaces, or the issuer of an
+// organization's own identity provider, which stands where a slot does since it names
+// the one organization the provider signs in; nil for a registration that admits any
+// organization or names its Workspace by the hosted domain.
 func (m *methodView) Slot() *derive.RegistrationSetting {
 	for _, f := range m.Fields() {
-		if f.Field == derive.FieldTenantID || f.Field == derive.FieldTenants || f.Field == derive.FieldWorkspaces {
+		if f.Field == derive.FieldTenantID || f.Field == derive.FieldTenants || f.Field == derive.FieldWorkspaces || f.Field == derive.FieldIssuer {
 			return &f
 		}
 	}
@@ -1204,6 +1210,14 @@ func (m *methodView) Groups() bool {
 // front-channel logout URL.
 func (m *methodView) Microsoft() bool {
 	return m.FrontChannelLogout()
+}
+
+// IdentityProvider reports a registration with an organization's own identity provider
+// (the generic OpenID Connect method with a client secret: an Okta, a Keycloak, or Google
+// used as a plain OpenID Connect provider), whose client is made at the provider and
+// whose issuer the placement names.
+func (m *methodView) IdentityProvider() bool {
+	return m.Kind == app.MethodOIDC
 }
 
 // TenantShape is the tenant shape a Microsoft registration's hand step follows, the one
@@ -1276,6 +1290,9 @@ func (v *view) methods() error {
 		}
 		mv.SiteEnv = aligned("    ", site)
 		v.Methods = append(v.Methods, mv)
+		if mv.IdentityProvider() {
+			v.IdentityProviders = true
+		}
 	}
 	if len(v.Methods) > 0 {
 		v.Methods[len(v.Methods)-1].Last = true

@@ -135,8 +135,8 @@ func TestEngineFromNothing(t *testing.T) {
 		"GitHub: sets the merge settings of imp-example/imr-root-infrastructure",
 		"GitHub: rules the default branch of imp-example/imr-root-infrastructure: pull requests alone with 1 approving review(s), squash merges, the plan trigger's build required, the infrastructure app bypassing",
 		"GitHub: sets the organization variable CI_LARGE_RUNNER to ci-large",
-		"GitHub: makes the runner group applications, open to every repository",
-		"GitHub: makes the larger runner ci-large (8-core, at most 10 at once) in the group applications",
+		"GitHub: makes the runner group bedrock-applications, open to every repository",
+		"GitHub: makes the larger runner ci-large (8-core, at most 10 at once) in the group bedrock-applications",
 	)
 	containsAll(t, report.Findings,
 		"the root organization lacks a grant the bootstrap makes: grants serviceAccount:imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/resourcemanager.folderCreator at the organization node; an Organization Administrator makes it",

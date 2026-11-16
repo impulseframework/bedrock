@@ -122,6 +122,11 @@ locals {
   # The front-channel logout the app registration names, GET /portal/api/user/directory/logout.
   members_directory_logout_url = "https://${local.hostnames[0]}/portal/api/user/directory/logout"
 
+  # From .envrc.template: APP_MEMBERS_OKTA_REDIRECT_URL is the browser-facing
+  # callback of the members auth's okta registration, the route the generated router (pkg/router)
+  # registers as GET /portal/api/user/okta/callback, on the environment's canonical host.
+  members_okta_redirect_url = "https://${local.hostnames[0]}/portal/api/user/okta/callback"
+
   # From .envrc.template: APP_STAFF_DIRECTORY_REDIRECT_URL is the browser-facing
   # callback of the staff auth's directory registration, the route the generated router (pkg/router)
   # registers as GET /api/user/directory/callback, on the environment's canonical host.
@@ -240,6 +245,14 @@ locals {
       # generated: the tooling makes the value (secret:"generated"); nobody types it.
       generated = false
     }
+    APP_MEMBERS_OKTA_CLIENT_SECRET = {
+      name    = "members-okta-client-secret"
+      level   = "data"
+      source  = "pkg/config/data.go dataConfig.MembersOktaClientSecret"
+      purpose = "Client secret of the members auth's okta registration with the identity provider (pairs with APP_MEMBERS_OKTA_CLIENT_ID)."
+      # generated: the tooling makes the value (secret:"generated"); nobody types it.
+      generated = false
+    }
   }
 
   # The container each secret lives in, by the naming convention: this
@@ -314,6 +327,7 @@ locals {
     # each registration, at construction, so every data-level process gets them.
     APP_MEMBERS_DIRECTORY_TENANT_ID             = var.members_directory_tenant_id
     APP_MEMBERS_DIRECTORY_ADMINISTERED_TENANTS  = var.members_directory_administered_tenants
+    APP_MEMBERS_OKTA_ISSUER                     = var.members_okta_issuer
     APP_STAFF_DIRECTORY_HOSTED_DOMAIN           = var.staff_directory_hosted_domain
     APP_STAFF_DIRECTORY_ADMINISTERED_WORKSPACES = var.staff_directory_administered_workspaces
     APP_STAFF_DIRECTORY_GROUP_PREFIX            = var.staff_directory_group_prefix
@@ -340,6 +354,11 @@ locals {
     # hostname.
     APP_MEMBERS_DIRECTORY_CLIENT_ID    = var.members_directory_client_id[var.environment]
     APP_MEMBERS_DIRECTORY_REDIRECT_URL = local.members_directory_redirect_url
+    # The members auth's okta registration: the client id, public half of the
+    # registration, per environment; the redirect URL, built from the canonical
+    # hostname.
+    APP_MEMBERS_OKTA_CLIENT_ID    = var.members_okta_client_id[var.environment]
+    APP_MEMBERS_OKTA_REDIRECT_URL = local.members_okta_redirect_url
     # The staff auth's directory registration: the client id, public half of the
     # registration, per environment; the redirect URL, built from the canonical
     # hostname; how far the groups read reaches, direct or nested.

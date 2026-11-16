@@ -1,6 +1,7 @@
 package render
 
 import (
+	"cmp"
 	"io/fs"
 	"maps"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/ext/tryfunc"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
@@ -546,6 +548,60 @@ func evalAttribute(t *testing.T, ctx *hcl.EvalContext, body *hclsyntax.Body, nam
 	}
 
 	return value
+}
+
+// TestProviderIssuerValidation evaluates the validation the stack declares on an identity
+// provider's issuer (harbor's okta registration, variables.tf), as tofu evaluates it at
+// the plan: it admits the empty value of a placement not yet filled and an absolute http
+// or https URL with no query or fragment, the shape the session library's registration
+// takes (oidc.SignIn refuses any other at construction), and refuses the rest at the
+// plan, before a release could carry it.
+func TestProviderIssuerValidation(t *testing.T) {
+	t.Parallel()
+
+	const variable = "members_okta_issuer"
+	var condition hcl.Expression
+	for _, b := range parseBody(t, filepath.Join("testdata", "harbor", "variables.tf")).Blocks {
+		if b.Type == "variable" && len(b.Labels) == 1 && b.Labels[0] == variable {
+			condition = nestedBlock(t, b.Body, "validation").Attributes["condition"].Expr
+		}
+	}
+	if condition == nil {
+		t.Fatalf("variables.tf declares no validation on %s", variable)
+	}
+	tests := []struct {
+		issuer string
+		want   bool
+	}{
+		{issuer: "", want: true},
+		{issuer: "https://accounts.google.com", want: true},
+		{issuer: "https://dev-123456.okta.com/oauth2/default", want: true},
+		{issuer: "https://sso.example.com/realms/partners/", want: true},
+		{issuer: "http://127.0.0.1:8080", want: true},
+		{issuer: "accounts.google.com"},
+		{issuer: "ftp://idp.example.com"},
+		{issuer: "https://"},
+		{issuer: "https:///path"},
+		{issuer: "https://idp.example.com/?tenant=a"},
+		{issuer: "https://idp.example.com/#issuer"},
+	}
+	for _, tt := range tests {
+		t.Run(cmp.Or(tt.issuer, "empty"), func(t *testing.T) {
+			t.Parallel()
+
+			ctx := &hcl.EvalContext{
+				Variables: map[string]cty.Value{"var": cty.ObjectVal(map[string]cty.Value{variable: cty.StringVal(tt.issuer)})},
+				Functions: map[string]function.Function{"can": tryfunc.CanFunc, "regex": stdlib.RegexFunc},
+			}
+			got, diags := condition.Value(ctx)
+			if diags.HasErrors() {
+				t.Fatalf("condition: %s", diags.Error())
+			}
+			if got.True() != tt.want {
+				t.Errorf("the validation admits %q: %t, want %t", tt.issuer, got.True(), tt.want)
+			}
+		})
+	}
 }
 
 // nestedBlock is the body of the first block of the type inside body.

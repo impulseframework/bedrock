@@ -168,3 +168,10 @@ func (c *Client) UpdateHostedRunner(ctx context.Context, org string, id, group i
 
 	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/orgs/%s/actions/hosted-runners/%d", org, id), in, nil)
 }
+
+// DeleteHostedRunner removes the runner. GitHub takes the removal (202) and the listing
+// shows the runner as Deleting until it is gone, whether or not the runner is running a
+// job; a job it is running finishes.
+func (c *Client) DeleteHostedRunner(ctx context.Context, org string, id int64) error {
+	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/orgs/%s/actions/hosted-runners/%d", org, id), nil, nil)
+}

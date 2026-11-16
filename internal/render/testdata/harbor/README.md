@@ -221,6 +221,7 @@ from `2-env`'s state.
   | `APP_MAIL_APP_PASSWORD` | `dataConfig.MailAppPassword` | `...-mail-app-password` |
   | `APP_STAFF_DIRECTORY_CLIENT_SECRET` | `dataConfig.StaffDirectoryClientSecret` | `...-staff-directory-client-secret` |
   | `APP_MEMBERS_DIRECTORY_CLIENT_SECRET` | `dataConfig.MembersDirectoryClientSecret` | `...-members-directory-client-secret` |
+  | `APP_MEMBERS_OKTA_CLIENT_SECRET` | `dataConfig.MembersOktaClientSecret` | `...-members-okta-client-secret` |
 
   The site's identity holds accessor, and so does the job process's, on
   the secrets at the levels it constructs: it runs the application's own
@@ -418,6 +419,9 @@ above them.
 | `APP_MEMBERS_DIRECTORY_ADMINISTERED_TENANTS` | data | `var.members_directory_administered_tenants` | yes | yes | yes |
 | `APP_MEMBERS_DIRECTORY_CLIENT_ID` | data | `var.members_directory_client_id[env]` | yes | | |
 | `APP_MEMBERS_DIRECTORY_REDIRECT_URL` | data | `https://<first hostname>/portal/api/user/directory/callback` | yes | | |
+| `APP_MEMBERS_OKTA_ISSUER` | data | `var.members_okta_issuer` | yes | yes | yes |
+| `APP_MEMBERS_OKTA_CLIENT_ID` | data | `var.members_okta_client_id[env]` | yes | | |
+| `APP_MEMBERS_OKTA_REDIRECT_URL` | data | `https://<first hostname>/portal/api/user/okta/callback` | yes | | |
 | `APP_STAFF_DIRECTORY_HOSTED_DOMAIN` | data | `var.staff_directory_hosted_domain` | yes | yes | yes |
 | `APP_STAFF_DIRECTORY_ADMINISTERED_WORKSPACES` | data | `var.staff_directory_administered_workspaces` | yes | yes | yes |
 | `APP_STAFF_DIRECTORY_CLIENT_ID` | data | `var.staff_directory_client_id[env]` | yes | | |
@@ -429,9 +433,9 @@ above them.
 | `APP_MAIL_MAILBOX` | data | `var.mail_mailbox` | yes | yes | yes |
 | `APP_JOBS_TEMPLATE` | site | the job process's template job, which the site's own build's job is named from (the job driver's settings, `siteConfig.Template`) | yes | | |
 | `APP_SCHEDULER_INVOKER` | none, the framework reads it | the scheduler's invoker identity, unset in a pull-request stack | yes | | |
-| `APP_COOKIE_KEY`, `APP_MAIL_APP_PASSWORD`, `APP_STAFF_DIRECTORY_CLIENT_SECRET`, `APP_MEMBERS_DIRECTORY_CLIENT_SECRET` | data | secret, at the pinned version | yes | | yes |
+| `APP_COOKIE_KEY`, `APP_MAIL_APP_PASSWORD`, `APP_STAFF_DIRECTORY_CLIENT_SECRET`, `APP_MEMBERS_DIRECTORY_CLIENT_SECRET`, `APP_MEMBERS_OKTA_CLIENT_SECRET` | data | secret, at the pinned version | yes | | yes |
 
-The migrate command and the job process carry the registrations' organization slots and group prefixes because the session
+The migrate command and the job process carry the registrations' organization slots, identity providers' issuers and group prefixes because the session
 library validates them when it makes each registration, at construction. The migrate command carries the Firestore
 database because the data level opens its live service when it is constructed, and
 the release's role migration signals the running instances through it; the web
@@ -1115,7 +1119,26 @@ Per environment, after the first apply:
    `https://harbor-pr<N>.impulseframework.dev/portal/api/user/directory/callback`, to the
    registration's redirect URIs before signing in there, until the organization
    runs a test identity gateway.
-2. In the Google Cloud console, in the environment project, for the staff auth's directory registration:
+2. At the identity provider, for the members auth's okta registration: one client per
+   environment at the organization's own OpenID Connect provider (an Okta, a
+   Keycloak, or Google used as a plain OpenID Connect provider), a confidential
+   web application client signing in by authorization code, with a client
+   secret, and the sign-in redirect URI = output `members_okta_redirect_url`. Put
+   its client ID in `terraform.tfvars` (`members_okta_client_id`) and the provider's
+   issuer URL in `members_okta_issuer` (once for the organization; Google's is
+   `https://accounts.google.com`), and add the client secret as version 1 of
+   `imp-<env>-gbl-harbor-members-okta-client-secret`. The issuer is the URL the provider's
+   configuration is read under (`<issuer>/.well-known/openid-configuration`) and
+   every sign-in's token carries, so another issuer is another provider, whose
+   people no link made so far knows; the session library refuses a missing or
+   malformed one at construction, so the first release in an environment waits
+   on it.
+   In tst, each pull request's environment signs in through the same
+   client: add its callback,
+   `https://harbor-pr<N>.impulseframework.dev/portal/api/user/okta/callback`, to the client's
+   sign-in redirect URIs before signing in there, until the organization runs a
+   test identity gateway.
+3. In the Google Cloud console, in the environment project, for the staff auth's directory registration:
    first the project's consent screen, if the organization has not configured
    it there yet (APIs & Services > OAuth consent screen, audience **Internal**,
    so only the organization's own users sign in; one per project, shared by
@@ -1146,13 +1169,15 @@ Per environment, after the first apply:
    its members can view its member list (the infrastructure repository's
    README, "The role groups"). If the role groups
    are nested, set `staff_directory_group_lookup = "nested"` in `terraform.tfvars`.
-3. Name the members auth's first administrator in `terraform.tfvars` (`members_administrator`), per
+4. Name the members auth's first administrator in `terraform.tfvars` (`members_administrator`), per
    environment: the sign-in name the directory presents (the user principal name
-   on Entra, the email on Google). The migrate command of the first release in the
-   environment seeds the administrator role membership under it while the auth's
-   users table holds no rows, and refuses to seed while the name is empty; the
-   person then signs in through the directory and holds the role.
-4. In the Google Workspace Admin console, once for the organization: a mailbox the
+   on Entra, the email on Google, the preferred username at an organization's own
+   identity provider, or its email when it sends none). The migrate command of the
+   first release in the environment seeds the administrator role membership under
+   it while the auth's users table holds no rows, and refuses to seed while the
+   name is empty; the person then signs in through the directory and holds the
+   role.
+5. In the Google Workspace Admin console, once for the organization: a mailbox the
    application sends its mail as (a no-reply address of the organization's domain),
    with 2-step verification turned on and an app password generated for it, and the
    SMTP relay service (Apps > Google Workspace > Gmail > Routing) accepting mail from
@@ -1163,9 +1188,9 @@ Per environment, after the first apply:
    pin. Until the mailbox is named the application writes its mail (the
    invitations and address verifications its auths send, link included) to the log
    and sends nothing, which a deployed environment is not left at.
-5. Generate a cookie key (`openssl rand -base64 32`) and add it as version 1
+6. Generate a cookie key (`openssl rand -base64 32`) and add it as version 1
    of `imp-<env>-gbl-harbor-cookie-key`.
-6. Pin the versions in `secret_versions` and apply.
+7. Pin the versions in `secret_versions` and apply.
 
 ## Inputs
 
@@ -1193,6 +1218,8 @@ Per environment, after the first apply:
 | `members_directory_client_id` | Client ID of the members auth's directory registration, per environment. | `map(string)` | all empty | no |
 | `members_directory_tenant_id` | Tenant id of the Entra tenant the members auth's directory registration admits. | `string` | `""` | no |
 | `members_directory_administered_tenants` | The Entra tenants the deployment administers among those the members auth's directory registration admits, by tenant id; their sign-ins are asked for no sign-in code. | `string` | `""` | no |
+| `members_okta_client_id` | Client ID of the members auth's okta registration, per environment. | `map(string)` | all empty | no |
+| `members_okta_issuer` | Issuer URL of the identity provider the members auth's okta registration signs in through. | `string` | `""` | no |
 | `staff_directory_client_id` | Client ID of the staff auth's directory registration, per environment. | `map(string)` | all empty | no |
 | `staff_directory_group_lookup` | How far the groups read of the staff auth's directory registration reaches: direct or nested. | `string` | `"direct"` | no |
 | `staff_directory_group_prefix` | Prefix of the role groups of the staff auth's directory registration. | `string` | `"staff-"` | no |
@@ -1222,6 +1249,7 @@ Per environment, after the first apply:
 | `tasks_queue` | The task queue's resource name. |
 | `members_directory_redirect_url` | The redirect URI to register on the members auth's directory registration. |
 | `members_directory_logout_url` | The front-channel logout URL to register on the members auth's directory registration. |
+| `members_okta_redirect_url` | The redirect URI to register on the members auth's okta registration. |
 | `staff_directory_redirect_url` | The redirect URI to register on the staff auth's directory registration. |
 | `substitutions` | What the triggers pass to `cloudbuild.yaml`. |
 | `triggers` | `{ version, pr }` trigger IDs (`pr` null outside tst). |

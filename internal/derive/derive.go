@@ -338,6 +338,17 @@ const (
 	// environment.
 	RoleIssuer          Role = "issuer"
 	RolePersonaClientID Role = "persona-client-id"
+	// RoleProviderIssuer is the issuer URL of an organization's own identity provider
+	// (APP_<AUTH>_<REGISTRATION>_ISSUER of an oidc method: an Okta, a Keycloak, or Google
+	// used as a plain OpenID Connect provider), a placement variable once for the
+	// organization, unlike the persona provider's issuer, which the stack derives. It
+	// names the provider the way a Google registration's hosted domain or a Microsoft
+	// registration's tenant names the directory: the provider's configuration is read
+	// under it and every sign-in's token carries it, so another issuer is another provider,
+	// whose people no link made so far knows. The registration refuses a missing or
+	// malformed issuer when it is made, at construction, so every process that constructs
+	// the level carries it.
+	RoleProviderIssuer Role = "provider-issuer"
 	// RoleAdministrator is the sign-in name of an auth's first administrator
 	// (APP_<AUTH>_ADMINISTRATOR), placed per environment: the deployment's migrate command
 	// seeds the administrator role membership under it while the auth's users table holds
@@ -368,7 +379,7 @@ func (r Role) Derived() bool {
 // Placed reports a role whose value is a placement variable.
 func (r Role) Placed() bool {
 	switch r {
-	case RoleClientID, RoleHostedDomain, RoleGroupPrefix, RoleGroupLookup, RoleTenantID, RoleTenants, RoleWorkspaces, RoleAdministeredTenants, RoleAdministeredWorkspaces, RoleAdministrator, RoleMailbox, RoleMailFrom:
+	case RoleClientID, RoleHostedDomain, RoleGroupPrefix, RoleGroupLookup, RoleTenantID, RoleTenants, RoleWorkspaces, RoleAdministeredTenants, RoleAdministeredWorkspaces, RoleProviderIssuer, RoleAdministrator, RoleMailbox, RoleMailFrom:
 		return true
 	default:
 		return false
@@ -383,13 +394,13 @@ func (r Role) PerEnvironment() bool {
 }
 
 // ConstructionTime reports a directory role the session library reads when the method is
-// registered on the Auth, at construction (the organization slot it validates, the group
-// prefix role synchronization needs), so every process that constructs the level needs
-// it; the other directory roles are read when someone signs in, which only the served
-// site does.
+// registered on the Auth, at construction (the organization slot it validates, an
+// identity provider's issuer whose shape it checks, the group prefix role
+// synchronization needs), so every process that constructs the level needs it; the other
+// directory roles are read when someone signs in, which only the served site does.
 func (r Role) ConstructionTime() bool {
 	switch r {
-	case RoleHostedDomain, RoleGroupPrefix, RoleTenantID, RoleTenants, RoleWorkspaces, RoleAdministeredTenants, RoleAdministeredWorkspaces:
+	case RoleHostedDomain, RoleGroupPrefix, RoleTenantID, RoleTenants, RoleWorkspaces, RoleAdministeredTenants, RoleAdministeredWorkspaces, RoleProviderIssuer:
 		return true
 	default:
 		return false
@@ -717,7 +728,8 @@ type Method struct {
 	// Name is the registration name: the segment of the method's routes
 	// (user/<name>/callback) and of its variables.
 	Name string
-	// Kind is the method: password, azure, google, or persona.
+	// Kind is the method: password, azure, google, oidc (an organization's own identity
+	// provider), or persona.
 	Kind string
 	// Authority is who owns role membership for a directory method: directory or
 	// application (app.AuthorityDirectory, app.AuthorityApplication).
@@ -754,12 +766,14 @@ type Method struct {
 	CastFile string
 }
 
-// Directory reports a method whose people sign in through a directory, Microsoft Entra
-// or Google: the stack carries the registration's placement variables, its client secret
-// and a hand step for the registration at the directory. The persona method is none: its
-// provider is configured by the placement alone.
+// Directory reports a method whose people sign in through a directory, Microsoft Entra,
+// Google, or an organization's own identity provider through the generic OpenID Connect
+// method (an Okta, a Keycloak, or Google used as a plain OpenID Connect provider): the
+// stack carries the registration's placement variables, its client secret and a hand
+// step for the registration at the directory. The persona method is none: its provider
+// is configured by the placement alone.
 func (m *Method) Directory() bool {
-	return m.Kind == app.MethodAzure || m.Kind == app.MethodGoogle
+	return m.Kind == app.MethodAzure || m.Kind == app.MethodGoogle || m.Kind == app.MethodOIDC
 }
 
 // Persona reports the persona method: the sign-in of the test environments through the
@@ -786,13 +800,16 @@ func (m *Method) Stem() string {
 	return strings.ReplaceAll(m.Auth+"_"+m.Name, "-", "_")
 }
 
-// Provider names who the browser is sent to: Microsoft or Google.
+// Provider names who the browser is sent to: Microsoft, Google, the identity provider
+// (an organization's own, in impulse's words for it), or the persona provider.
 func (m *Method) Provider() string {
 	switch m.Kind {
 	case app.MethodAzure:
 		return "Microsoft"
 	case app.MethodGoogle:
 		return "Google"
+	case app.MethodOIDC:
+		return "the identity provider"
 	case app.MethodPersona:
 		return "the persona provider"
 	default:

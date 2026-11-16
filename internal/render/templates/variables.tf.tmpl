@@ -401,6 +401,10 @@ variable "{{$m.Var "CLIENT_ID"}}" {
     per environment, with the redirect URI this stack outputs as
     {{$m.Var "REDIRECT_URL"}} and the front-channel logout URL it outputs as
     {{$m.Var "LOGOUT_URL"}}.
+{{- else if $m.IdentityProvider}}
+    Created by hand at the identity provider, one client per environment: a
+    confidential web application client, with a client secret, and the redirect
+    URI this stack outputs as {{$m.Var "REDIRECT_URL"}}.
 {{- else}}
     Created by hand in the environment project's console (APIs & Services >
     Credentials > OAuth client ID, Web application) with the redirect URI this
@@ -459,6 +463,28 @@ variable "{{$m.Var "WORKSPACES"}}" {
   description = "The Google Workspaces {{$m.Label}} admits, each named with its domains: <name>=<domain>[+<domain>], comma-separated ({{.Variable.Name}}, {{.Variable.Declaration}}); the name is the connection every link made through it carries. The session library validates the list when the registration is made, at construction, so every data-level process carries it and the first release in an environment waits on it (README, \"Hand steps\")."
   type        = string
   default     = ""
+}
+
+{{end -}}
+{{with .Setting "Issuer" -}}
+variable "{{$m.Var "ISSUER"}}" {
+  description = <<-EOT
+    The issuer URL of the identity provider {{$m.Label}} signs in through
+    ({{.Variable.Name}}, {{.Variable.Declaration}}): the provider's configuration is
+    read at <issuer>/.well-known/openid-configuration, and every sign-in's token
+    must carry it. It names the organization's provider, once for the
+    organization: another issuer is another provider, whose people no link made
+    so far knows. The session library refuses a missing or malformed one when the
+    registration is made, at construction, so every data-level process carries it
+    and the first release in an environment waits on it (README, "Hand steps").
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.{{$m.Var "ISSUER"}} == "" || can(regex("^https?://[^/?#]+(/[^?#]*)?$", var.{{$m.Var "ISSUER"}}))
+    error_message = "{{$m.Var "ISSUER"}} is the provider's issuer URL: absolute, http or https, with no query or fragment, or empty before the registration."
+  }
 }
 
 {{end -}}
@@ -534,11 +560,12 @@ variable "{{.Var}}" {
   description = <<-EOT
     Per environment, the sign-in name of {{.Label}}'s first administrator
     ({{.Variable.Name}}, {{.Variable.File}} {{.Variable.Declaration}}): the name the
-    directory presents, the user principal name on Entra or the email on Google.
-    The migrate command seeds the administrator role membership under it while
-    the auth's users table holds no rows, so the first person to sign in holds
-    the role; empty until named, and the first release in an environment refuses
-    to seed without it (README, "Hand steps").
+    directory presents, the user principal name on Entra, the email on Google, or
+    the preferred username at an organization's own identity provider (the email
+    when it sends none). The migrate command seeds the administrator role
+    membership under it while the auth's users table holds no rows, so the first
+    person to sign in holds the role; empty until named, and the first release in
+    an environment refuses to seed without it (README, "Hand steps").
   EOT
   type        = map(string)
   default = {

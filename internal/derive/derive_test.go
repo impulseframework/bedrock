@@ -130,6 +130,7 @@ func TestDerive(t *testing.T) {
 				"APP_MAIL_APP_PASSWORD mail-app-password pkg/config/data.go dataConfig.MailAppPassword",
 				"APP_STAFF_DIRECTORY_CLIENT_SECRET staff-directory-client-secret pkg/config/data.go dataConfig.StaffDirectoryClientSecret",
 				"APP_MEMBERS_DIRECTORY_CLIENT_SECRET members-directory-client-secret pkg/config/data.go dataConfig.MembersDirectoryClientSecret",
+				"APP_MEMBERS_OKTA_CLIENT_SECRET members-okta-client-secret pkg/config/data.go dataConfig.MembersOktaClientSecret",
 			},
 			wantCore: []string{varVersion, varServiceName, varLoggingProject, varTraceSampling},
 			wantData: []string{
@@ -139,6 +140,7 @@ func TestDerive(t *testing.T) {
 				"APP_STAFF_DIRECTORY_CLIENT_ID", "APP_STAFF_DIRECTORY_CLIENT_SECRET", "APP_STAFF_DIRECTORY_REDIRECT_URL", "APP_STAFF_DIRECTORY_HOSTED_DOMAIN",
 				"APP_STAFF_DIRECTORY_ADMINISTERED_WORKSPACES", "APP_STAFF_DIRECTORY_GROUP_PREFIX", "APP_STAFF_DIRECTORY_GROUP_LOOKUP",
 				"APP_MEMBERS_DIRECTORY_TENANT_ID", "APP_MEMBERS_DIRECTORY_ADMINISTERED_TENANTS", "APP_MEMBERS_DIRECTORY_CLIENT_ID", "APP_MEMBERS_DIRECTORY_CLIENT_SECRET", "APP_MEMBERS_DIRECTORY_REDIRECT_URL",
+				"APP_MEMBERS_OKTA_ISSUER", "APP_MEMBERS_OKTA_CLIENT_ID", "APP_MEMBERS_OKTA_CLIENT_SECRET", "APP_MEMBERS_OKTA_REDIRECT_URL",
 				varFileStore, varTasksQueue, "APP_MEMBERS_ADMINISTRATOR",
 			},
 			wantSite:     []string{varPort, "APP_CONSOLE_DIST", "APP_PORTAL_DIST", JobsTemplateVariable},
@@ -149,6 +151,10 @@ func TestDerive(t *testing.T) {
 				// The members registration builds its tenant through a helper that reads the
 				// administered tenants, the way impulse writes it, so the scan reads no shape.
 				"members/directory azure application: outlet portal, callback GET /portal/api/user/directory/callback, logout GET /portal/api/user/directory/logout; TenantID=APP_MEMBERS_DIRECTORY_TENANT_ID AdministeredTenants=APP_MEMBERS_DIRECTORY_ADMINISTERED_TENANTS ClientID=APP_MEMBERS_DIRECTORY_CLIENT_ID ClientSecret=APP_MEMBERS_DIRECTORY_CLIENT_SECRET RedirectURL=APP_MEMBERS_DIRECTORY_REDIRECT_URL; tenants one",
+				// The okta registration is an organization's own identity provider (the generic
+				// OpenID Connect method with a client secret): a directory method whose issuer
+				// stands where a Microsoft or Google registration's organization slot does.
+				"members/okta oidc application: outlet portal, callback GET /portal/api/user/okta/callback; Issuer=APP_MEMBERS_OKTA_ISSUER ClientID=APP_MEMBERS_OKTA_CLIENT_ID ClientSecret=APP_MEMBERS_OKTA_CLIENT_SECRET RedirectURL=APP_MEMBERS_OKTA_REDIRECT_URL",
 				"staff/directory google directory: outlet default, callback GET /api/user/directory/callback; HostedDomain=APP_STAFF_DIRECTORY_HOSTED_DOMAIN AdministeredWorkspaces=APP_STAFF_DIRECTORY_ADMINISTERED_WORKSPACES ClientID=APP_STAFF_DIRECTORY_CLIENT_ID ClientSecret=APP_STAFF_DIRECTORY_CLIENT_SECRET RedirectURL=APP_STAFF_DIRECTORY_REDIRECT_URL GroupPrefix=APP_STAFF_DIRECTORY_GROUP_PREFIX GroupLookup=APP_STAFF_DIRECTORY_GROUP_LOOKUP; groups staff- direct",
 			},
 			wantSchema: Schema{MigrationsDir: "schema/migrations", MigrateCall: "pkg/deploy MigrateSchema", GenerateDir: "cmd/generate", GeneratePackage: "generate"},
@@ -174,6 +180,10 @@ func TestDerive(t *testing.T) {
 				"APP_MEMBERS_DIRECTORY_TENANT_ID":     SupplyPlacement,
 				"APP_MEMBERS_DIRECTORY_CLIENT_SECRET": SupplySecret,
 				"APP_MEMBERS_DIRECTORY_REDIRECT_URL":  SupplyDerived,
+				"APP_MEMBERS_OKTA_ISSUER":             SupplyPlacement,
+				"APP_MEMBERS_OKTA_CLIENT_ID":          SupplyPlacement,
+				"APP_MEMBERS_OKTA_CLIENT_SECRET":      SupplySecret,
+				"APP_MEMBERS_OKTA_REDIRECT_URL":       SupplyDerived,
 				varPort:                               SupplyPlatform,
 				"APP_CONSOLE_DIST":                    SupplyImage,
 				"APP_PORTAL_DIST":                     SupplyImage,
@@ -1554,7 +1564,7 @@ func TestDeriveJobsTemplate(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			wantErr: dataFile + ":256: APP_JOBS_TEMPLATE (dataConfig.Template) is declared at the data level, which cmd/deployment/migrate and cmd/jobs construct as well as the served site (main.go), and the stack sets the variable on the service alone: a process other than the served site would start with the job driver's template unset; embed the job driver's settings (jobstarter.Settings, resource/jobs/cloudrun) in the served site's configuration level, the one no other process constructs",
+			wantErr: dataFile + ":262: APP_JOBS_TEMPLATE (dataConfig.Template) is declared at the data level, which cmd/deployment/migrate and cmd/jobs construct as well as the served site (main.go), and the stack sets the variable on the service alone: a process other than the served site would start with the job driver's template unset; embed the job driver's settings (jobstarter.Settings, resource/jobs/cloudrun) in the served site's configuration level, the one no other process constructs",
 		},
 	}
 	for _, tt := range tests {

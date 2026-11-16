@@ -16,6 +16,9 @@ state_bucket = "{{.P.StateBucket}}"
 # registration's overview page), once for the organization
 {{- else if eq .Slot.Field "Tenants"}} the tenants it admits,
 # each named: <name>=<tenant id>, comma-separated, once for the organization
+{{- else if eq .Slot.Field "Issuer"}} the provider's
+# issuer URL, the one its configuration is read under, once for the
+# organization
 {{- else}} the Workspaces it admits, each
 # named with its domains: <name>=<domain>[+<domain>], comma-separated, once for
 # the organization

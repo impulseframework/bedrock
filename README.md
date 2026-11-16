@@ -467,7 +467,12 @@ local, `max_instances` in `locals.tf`, so one rendered stack serves every enviro
 
 What the stack carries comes from declarations in the code: a config variable tagged as
 a secret becomes a Secret Manager container mounted at a pinned version; a directory auth
-becomes the registration variables, the redirect output and the hand steps in the README;
+(a registration with Microsoft Entra, with Google, or with an organization's own identity
+provider through the generic OpenID Connect method, `impulse add method <auth> oidc
+<registration>`: an Okta, a Keycloak, or Google used as a plain OpenID Connect provider,
+whose issuer URL becomes a stack variable once for the organization,
+`<auth>_<registration>_issuer`) becomes the registration variables, the redirect output
+and the hand steps in the README;
 an auth's first-administrator variable (`APP_<AUTH>_ADMINISTRATOR`, the sign-in name the
 migrate command seeds the administrator role membership under while the auth has no users)
 becomes a stack variable per environment, carried by every data-level process, and a hand
@@ -729,14 +734,15 @@ It also refuses:
   them, so render and check both stop before the stack is written. `APP_FIREBASE_API_KEY`
   without the database, or at another level than it, is refused the same way.
 
-- an auth registering the persona method (`oidc.SignIn`, `impulse add method persona`)
-  under a `placement.json` that names no persona provider (`persona`), since the method is
-  registered where the stack sets the issuer and nowhere else; a `persona` block that no
-  auth's method reads; a persona method whose registration synchronizes roles from the
-  provider (`RoleSync`), since the provider asserts who a persona is and the cast seeds
-  what it may do; and a persona method whose cast (`pkg/auth/<auth>/cast.json`) is
-  missing or does not read (no persona, a login outside its shape, a login twice), naming
-  the registration and the file.
+- an auth registering the persona method (`oidc.SignIn` with no client secret, `impulse
+  add method persona`; with a client secret it is an organization's own identity provider,
+  a directory method) under a `placement.json` that names no persona provider (`persona`),
+  since the method is registered where the stack sets the issuer and nowhere else; a
+  `persona` block that no auth's method reads; a persona method whose registration
+  synchronizes roles from the provider (`RoleSync`), since the provider asserts who a
+  persona is and the cast seeds what it may do; and a persona method whose cast
+  (`pkg/auth/<auth>/cast.json`) is missing or does not read (no persona, a login outside
+  its shape, a login twice), naming the registration and the file.
 
 It also warns, without failing, about the maintenance windows (Maintenance windows,
 below): production with no maintenance setting in `placement.json`, when the application
@@ -3028,8 +3034,8 @@ for the run; `GITHUB_TOKEN`, or gh's token, for
 organization owner's). It says what goes, project by project, and asks for the prefix typed
 back before anything runs (`--yes` stands in for it where there is no terminal). It destroys
 1-org, its GitHub repositories taken out of the state first so that they stay with their
-code, pull requests and releases (the rulesets, the operations environments, the runner group
-and the organization variable go), then 0-bootstrap on a local copy of its state, since the
+code, pull requests and releases (the rulesets and the operations environments go), then
+0-bootstrap on a local copy of its state, since the
 state bucket goes with the boot project; in each an apply with `destroy=true` records the
 projects' deletion policy, that no API is disabled first (one a resource outside the layer's
 state uses would refuse) and lifts the folders' protection, and the destroy is tried
@@ -3170,13 +3176,18 @@ runs the jobs their `//impulse:ci` lines choose on, the two test legs and the im
 without a line (`ciLargeRunner`, a runner's name, a runner label or a runner group set as
 the organization's Actions variable `CI_LARGE_RUNNER`, which takes the infrastructure
 app's Variables organization permission; empty for the standard runner). With
-`ciLargeRunnerSize` (`8-core`, say) 1-org creates that runner itself: a GitHub-hosted
-runner of the name and size on GitHub's current Ubuntu, in a runner group of the
-application repositories alone, capped at `ciLargeRunnerMaximum` running at once (0 for
-GitHub's default), through the app's Self-hosted runners organization permission; GitHub
-bills it per minute by its size on the Team and Enterprise plans. The runner's group
-admits public repositories when the placement lists a public library (a group that did not
-would leave that library's jobs waiting for a runner), and is closed to them otherwise. A repository that existed before the layer
+`ciLargeRunnerSize` (`8-core`, say) the root organization's apply creates that runner
+itself: a GitHub-hosted runner of the name and size on GitHub's current Ubuntu, in
+bedrock's runner group `bedrock-applications`, capped at `ciLargeRunnerMaximum` running at
+once (0 for GitHub's default), through the infrastructure app's Self-hosted runners
+organization permission; GitHub bills it per minute by its size on the Team and Enterprise
+plans. The group admits public repositories when the placement lists a public library (a
+group that did not would leave that library's jobs waiting for a runner), and is closed to
+them otherwise. The group and every runner in it are bedrock's: the apply removes a runner
+in the group that `ciLargeRunner` does not name, and its plan names each one, so a new
+size, which is a new name, replaces the runner, and a placement that sizes none leaves the
+group empty. A job that is running on a runner the apply removes finishes: GitHub takes the
+runner out of the listing and lets the job end. A repository that existed before the layer
 declared it is adopted on the first apply: `bedrock org register` records `adopted` on the
 application's entry when GitHub has the repository, and an import block in 1-org adopts it
 into the state; a ruleset or Environment made on it by hand is imported first, and

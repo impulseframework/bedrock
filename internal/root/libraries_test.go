@@ -1268,10 +1268,10 @@ func TestEngineRunnerGroupAndPublicLibraries(t *testing.T) {
 	t.Parallel()
 
 	const (
-		makes       = "GitHub: makes the runner group applications, open to every repository"
+		makes       = "GitHub: makes the runner group bedrock-applications, open to every repository"
 		makesPublic = makes + ", the public ones too"
-		opens       = "GitHub: opens the runner group applications to public repositories (placement.json lists a public library, whose jobs the group refuses until then)"
-		closes      = "GitHub: closes the runner group applications to public repositories (placement.json lists no public library)"
+		opens       = "GitHub: opens the runner group bedrock-applications to public repositories (placement.json lists a public library, whose jobs the group refuses until then)"
+		closes      = "GitHub: closes the runner group bedrock-applications to public repositories (placement.json lists no public library)"
 	)
 	tests := []struct {
 		name string
@@ -1284,9 +1284,9 @@ func TestEngineRunnerGroupAndPublicLibraries(t *testing.T) {
 	}{
 		{name: "a public library, no group yet", want: makesPublic, wantPublic: true},
 		{name: "private libraries alone, no group yet", private: true, want: makes},
-		{name: "a public library, the group closed to public repositories", stands: &github.RunnerGroup{ID: 9001, Name: "applications", Visibility: github.VisibilityAll}, want: opens, wantPublic: true},
-		{name: "private libraries alone, the group open to public repositories", private: true, stands: &github.RunnerGroup{ID: 9001, Name: "applications", Visibility: github.VisibilityAll, AllowsPublicRepositories: true}, want: closes},
-		{name: "a public library, the group open already", stands: &github.RunnerGroup{ID: 9001, Name: "applications", Visibility: github.VisibilityAll, AllowsPublicRepositories: true}, wantPublic: true},
+		{name: "a public library, the group closed to public repositories", stands: &github.RunnerGroup{ID: 9001, Name: "bedrock-applications", Visibility: github.VisibilityAll}, want: opens, wantPublic: true},
+		{name: "private libraries alone, the group open to public repositories", private: true, stands: &github.RunnerGroup{ID: 9001, Name: "bedrock-applications", Visibility: github.VisibilityAll, AllowsPublicRepositories: true}, want: closes},
+		{name: "a public library, the group open already", stands: &github.RunnerGroup{ID: 9001, Name: "bedrock-applications", Visibility: github.VisibilityAll, AllowsPublicRepositories: true}, wantPublic: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1312,8 +1312,8 @@ func TestEngineRunnerGroupAndPublicLibraries(t *testing.T) {
 			if tt.want != "" {
 				want = []string{tt.want}
 			}
-			sameSentences(t, "what the check says of the runner group", mentioning(whats(report), "the runner group applications"), want)
-			containsAll(t, whats(report), "GitHub: sets the organization variable CI_LARGE_RUNNER to imf-8core", "GitHub: makes the larger runner imf-8core (8-core, at most 4 at once) in the group applications")
+			sameSentences(t, "what the check says of the runner group", mentioning(whats(report), "the runner group bedrock-applications"), want)
+			containsAll(t, whats(report), "GitHub: sets the organization variable CI_LARGE_RUNNER to imf-8core", "GitHub: makes the larger runner imf-8core (8-core, at most 4 at once) in the group bedrock-applications")
 
 			if applied, out := w.run(t, root.Apply, w.keys); len(applied.Findings) != 0 || applied.Applied != len(applied.Changes) {
 				t.Fatalf("the apply made %d of %d changes, with the findings %q:\n%s", applied.Applied, len(applied.Changes), applied.Findings, out)
