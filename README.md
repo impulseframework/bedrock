@@ -2106,6 +2106,24 @@ started it, Cloud Build records the operations identity, and the deployment reco
 carries the requester and the restore. An environment the placement records no project
 for is not wired: the job stops before touching anything and says what to record.
 
+Every input of the workflow is held whole before a line uses it, in each job's first step,
+since the Run workflow button and the API take what the commands would have refused. The
+inputs reach the list of substitutions a build starts with (separated by commas, or by `|`
+where a reason travels), a step's outputs and, for the environment, the name of a variable
+the step reads; a value that carried the list's separator or a line break would end itself
+there and add a substitution of its own, which the pipeline's steps would read as the
+trigger's. So each value is judged by a shell `case` over the whole string, never line by
+line: the environment against the application's own, a release against
+`v<major>.<minor>.<patch>`, a version against an integer, a backup and a database against
+the characters their names are written with, the action and the table against their words,
+a secret's variable against the ones the code declares. The reason is free text: one that
+carries a `|` or a line break is refused with a sentence that says so, by the commands and
+by the job, and it is never encoded or rewritten, because a rollback and a restore run an
+earlier release's pipeline, which records the reason as it reads it. The pipeline is the
+second gate: a build that carries two instructions, an instruction on a pull request's
+build, or both a tag and a pull request's number is refused by its first step (`deploy
+resolve`).
+
 ## bedrock rollback
 
 `rollback <env> --reason <why> [--to <release>]` returns an environment to an earlier

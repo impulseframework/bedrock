@@ -197,7 +197,25 @@ func TestRestoreAndPatch(t *testing.T) {
 			name:    "rollback refuses a reason carrying a | character",
 			remote:  "git@github.com:impulseframework/harbor.git",
 			args:    []string{"rollback", "prd", "--reason", "a | b", "--placement", placement},
-			wantErr: "the reason carries a | character, which the build's substitutions cannot",
+			wantErr: "the reason is one line with no | character: the build's substitutions are separated by |",
+		},
+		{
+			name:    "rollback refuses a reason of two lines",
+			remote:  "git@github.com:impulseframework/harbor.git",
+			args:    []string{"rollback", "prd", "--reason", "why\n_PR_NUMBER=5", "--placement", placement},
+			wantErr: "the reason is one line with no | character: the build's substitutions are separated by |",
+		},
+		{
+			name:    "restore refuses a reason carrying a | character",
+			remote:  "git@github.com:impulseframework/harbor.git",
+			args:    []string{"restore", "prd", "--before", "v0.1.4", "--reason", "why|_PR_NUMBER=5", "--placement", placement},
+			wantErr: "the reason is one line with no | character: the build's substitutions are separated by |",
+		},
+		{
+			name:    "restore refuses a reason of two lines",
+			remote:  "git@github.com:impulseframework/harbor.git",
+			args:    []string{"restore", "prd", "--before", "v0.1.4", "--reason", "why\rand more", "--placement", placement},
+			wantErr: "the reason is one line with no | character: the build's substitutions are separated by |",
 		},
 		{
 			name:   "restore --before prints the statement, asks for the environment's name and dispatches the release's cut, production included",

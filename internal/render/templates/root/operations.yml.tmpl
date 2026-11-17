@@ -130,6 +130,49 @@
 # Each job's name is static: GitHub prints a skipped job's name as written, its expressions
 # unrendered, in the run's summary, so a name carrying the inputs read as its template on the two
 # jobs the action skipped. The steps' lines carry the release and the environment.
+#
+# Every input is held whole before a line uses it. The inputs reach the list of substitutions a
+# build starts with (separated by commas, or by | where a reason travels), a step's outputs and,
+# for the environment, the name of a variable the step reads: a value that carried the list's
+# separator or a line break would end itself there and add a substitution of its own, which the
+# pipeline's steps would read as the trigger's (the pull request's number, the services, the
+# project). So each job's first step judges each value by a case over the whole string, never
+# line by line: the environment against this application's, a release against
+# v<major>.<minor>.<patch>, a version against an integer, a backup and a database against the
+# characters their names are written with, the action and the table against their words, a
+# secret's variable against the ones the code declares. The reason, free text, is refused when it
+# carries a | or a line break and is never rewritten: a rollback and a restore run an earlier
+# release's pipeline, which records the reason as it reads it.
+{{- define "environment"}}
+          # The environment, held whole to the ones this application has, before any line reads
+          # its values by name.
+          case "$ENVIRONMENT" in
+            {{.OperationsCase}}) ;;
+            *) echo "::error::the environment is none of this application's ({{.OperationsProse}}), spelled exactly as there: nothing ran"; exit 1 ;;
+          esac
+{{- end}}
+{{- define "release_tag"}}
+          # release_tag <value>: a release tag whole, v<major>.<minor>.<patch> and no other
+          # character, so neither a separator of the build's substitutions nor a line break.
+          release_tag() {
+            case "$1" in
+              *[!v0-9.]*|v*v*|*..*|*.*.*.*) return 1 ;;
+              v[0-9]*.[0-9]*.[0-9]*) return 0 ;;
+            esac
+            return 1
+          }
+{{- end}}
+{{- define "reason"}}
+          # The reason is free text, and it reaches a list of substitutions separated by |: a |
+          # or a line break in it would end the reason there, so a reason that carries either is
+          # refused, never rewritten (the record keeps the person's words as given).
+          lf=$(printf '\n.')
+          lf=${lf%.}
+          cr=$(printf '\r')
+          case "$REASON" in
+            *'|'*|*"$lf"*|*"$cr"*) echo "::error::the reason is one line with no | character: the build's substitutions are separated by |, so a | or a line break would end the reason there. Say it in one line, another way"; exit 1 ;;
+          esac
+{{- end}}
 {{- define "records"}}
           # records <bucket> <env> [<n>]: the environment's newest <n> (forty) deployment records
           # as the objects variable, newest first: the release records under the stack the
@@ -270,25 +313,33 @@ jobs:
       - name: The environment's project, identity, trigger and restore
         id: target
         run: |
+          {{- template "environment" .}}
+          {{- template "release_tag"}}
           project=$(eval "printf '%s' \"\${PROJECT_$ENVIRONMENT:-}\"")
           if [ -z "$project" ]; then
             echo "::error::$ENVIRONMENT is not wired for operations: record its project (projects.$ENVIRONMENT, the id and the number bedrock org render prints) in infrastructure/placement.json and render again"
             exit 1
           fi
-          case "$REASON" in
-            *'|'*) echo "::error::the reason carries a | character, which the build's substitutions cannot; say it another way"; exit 1 ;;
-          esac
-          case "$RELEASE" in
-            ""|v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::$RELEASE is not a release tag (v<major>.<minor>.<patch>)"; exit 1 ;;
-          esac
-          case "$BEFORE" in
-            ""|v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::before names a release tag (v<major>.<minor>.<patch>), not $BEFORE"; exit 1 ;;
-          esac
+          {{- template "reason"}}
+          if [ -n "$RELEASE" ] && ! release_tag "$RELEASE"; then
+            echo "::error::the release is a release tag, whole (v<major>.<minor>.<patch>, as v1.4.2), and what was given is not one"
+            exit 1
+          fi
+          if [ -n "$BEFORE" ] && ! release_tag "$BEFORE"; then
+            echo "::error::before names a release tag, whole (v<major>.<minor>.<patch>, as v1.4.2), and what was given is not one"
+            exit 1
+          fi
+          # A backup's resource name or @<moment>, whole: the characters either is written in,
+          # and no other (a space, a |, a line break).
           case "$BACKUP" in
+            *[!A-Za-z0-9_.:/@+-]*) echo "::error::backup is a backup's resource name (projects/<p>/instances/<i>/backups/<b>) or @<RFC 3339 moment> (@2026-10-05T04:30:00Z), whole: what was given carries a character neither is written with"; exit 1 ;;
             ""|projects/*/instances/*/backups/*|@*) ;;
             *) echo "::error::$BACKUP is neither a backup's resource name (projects/<p>/instances/<i>/backups/<b>) nor @<RFC 3339 moment>"; exit 1 ;;
+          esac
+          # The database a moment's backup is taken of, by its name as the list action prints
+          # it, whole.
+          case "$DATABASE" in
+            *[!A-Za-z0-9_/-]*) echo "::error::database is a database's name as the list action prints it (letters, digits, - and _), whole: what was given carries another character"; exit 1 ;;
           esac
           if [ -n "$BACKUP" ] && [ -n "$BEFORE" ]; then
             echo "::error::backup and before name the backup two ways: give one"
@@ -507,11 +558,12 @@ jobs:
       - name: The environment's project, identity and trigger
         id: target
         run: |
-          case "$RELEASE" in
-            "") echo "::error::run names the release to run again (v<major>.<minor>.<patch>)"; exit 1 ;;
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::$RELEASE is not a release tag (v<major>.<minor>.<patch>)"; exit 1 ;;
-          esac
+          {{- template "environment" .}}
+          {{- template "release_tag"}}
+          if ! release_tag "$RELEASE"; then
+            echo "::error::run names the release to run again, a release tag, whole (v<major>.<minor>.<patch>, as v1.4.2): what was given is not one"
+            exit 1
+          fi
           project=$(eval "printf '%s' \"\${PROJECT_$ENVIRONMENT:-}\"")
           if [ -z "$project" ]; then
             echo "::error::$ENVIRONMENT is not wired for operations: record its project (projects.$ENVIRONMENT, the id and the number bedrock org render prints) in infrastructure/placement.json and render again"
@@ -580,6 +632,10 @@ jobs:
             echo "::error::$ENVIRONMENT is not wired for operations: record its project (projects.$ENVIRONMENT, the id and the number bedrock org render prints) in infrastructure/placement.json and render again"
             exit 1
           fi
+          case "$CHOSEN" in
+            {{.OperationsCase}}) ;;
+            *) echo "::error::the environment is none of this application's ({{.OperationsProse}}), spelled exactly as there: nothing ran"; exit 1 ;;
+          esac
           if [ "$CHOSEN" != "$ENVIRONMENT" ]; then
             echo "::notice::The release trigger lives in $ENVIRONMENT; the environment input ($CHOSEN) is not read by this action."
           fi
@@ -634,6 +690,7 @@ jobs:
       - name: The environment's project, identity and trigger
         id: target
         run: |
+          {{- template "environment" .}}
           project=$(eval "printf '%s' \"\${PROJECT_$ENVIRONMENT:-}\"")
           if [ -z "$project" ]; then
             echo "::error::$ENVIRONMENT is not wired for operations: record its project (projects.$ENVIRONMENT, the id and the number bedrock org render prints) in infrastructure/placement.json and render"
@@ -703,6 +760,12 @@ jobs:
       - name: The environment typed back, and its project, identity and trigger
         id: target
         run: |
+          {{- template "environment" .}}
+          # The action reaches the build's substitutions: one of the two this job runs, whole.
+          case "$ACTION" in
+            teardown|destroy) ;;
+            *) echo "::error::this job runs teardown or destroy, spelled exactly, and the action given is neither: nothing ran"; exit 1 ;;
+          esac
           if [ "$CONFIRM" != "$ENVIRONMENT" ]; then
             echo "::error::$ACTION takes the environment's name typed into confirm ($ENVIRONMENT), in place of the prompt bedrock $ACTION asks at the terminal; nothing ran"
             exit 1
@@ -784,10 +847,10 @@ jobs:
       - name: The environment's project, identity, trigger and the secret's container
         id: target
         run: |
-          if [ -z "$VARIABLE" ]; then
-            echo "::error::rotate names the generated or versioned secret's variable (the code declares: ${GENERATED:-none})"
-            exit 1
-          fi
+          {{- template "environment" .}}
+          case "$VARIABLE" in
+            ""|*[!A-Z0-9_]*) echo "::error::rotate names the generated or versioned secret's variable, whole, as the code declares it (the code declares: ${GENERATED:-none})"; exit 1 ;;
+          esac
           suffix=
           for pair in $GENERATED; do
             case "$pair" in "$VARIABLE="*) suffix=${pair#*=} ;; esac
@@ -893,10 +956,13 @@ jobs:
       - name: The environment's project, identity, trigger and the secret's container
         id: target
         run: |
-          if [ -z "$VARIABLE" ]; then
-            echo "::error::retire names the versioned secret's variable (the code declares: ${VERSIONED:-none})"
-            exit 1
-          fi
+          {{- template "environment" .}}
+          # The variable and the version reach the build's substitutions, a list separated by
+          # commas: each is held whole, the variable to the letters a variable is written in
+          # and then to the ones the code declares, the version to a positive integer.
+          case "$VARIABLE" in
+            ""|*[!A-Z0-9_]*) echo "::error::retire names the versioned secret's variable, whole, as the code declares it (the code declares: ${VERSIONED:-none})"; exit 1 ;;
+          esac
           suffix=
           for pair in $VERSIONED; do
             case "$pair" in "$VARIABLE="*) suffix=${pair#*=} ;; esac
@@ -905,10 +971,9 @@ jobs:
             echo "::error::$VARIABLE is not a secret the code declares secret:\"versioned\" (it declares: ${VERSIONED:-none}): a version is retired of a secret whose every enabled version the service holds; any other secret runs on one version, and its earlier ones are nobody's"
             exit 1
           fi
-          if ! printf '%s' "$VERSION" | grep -Eq '^[1-9][0-9]*$'; then
-            echo "::error::retire names the version of $VARIABLE to retire, a positive integer (got \"$VERSION\"): the Secret Manager console lists the versions of $PREFIX-$ENVIRONMENT-gbl-$APP-$suffix, and the newest stays"
-            exit 1
-          fi
+          case "$VERSION" in
+            ""|0*|*[!0-9]*) echo "::error::retire names the version of $VARIABLE to retire, a positive integer, whole, as Secret Manager numbers them (3): what was given is empty, starts with 0 or carries something that is not a digit. The Secret Manager console lists the versions of $PREFIX-$ENVIRONMENT-gbl-$APP-$suffix, and the newest stays"; exit 1 ;;
+          esac
           project=$(eval "printf '%s' \"\${PROJECT_$ENVIRONMENT:-}\"")
           if [ -z "$project" ]; then
             echo "::error::$ENVIRONMENT is not wired for operations: record its project (projects.$ENVIRONMENT, the id and the number bedrock org render prints) in infrastructure/placement.json and render"
@@ -1017,20 +1082,32 @@ jobs:
       - name: The environment's project, identity, trigger and log bucket
         id: target
         run: |
+          {{- template "environment" .}}
+          {{- template "release_tag"}}
+          # The action, the table and the version reach the build's substitutions, a list
+          # separated by commas: each is held whole. This job runs on every action no other job
+          # names, so the action is held to the three it runs.
+          case "$ACTION" in
+            version|rerun|force) ;;
+            *) echo "::error::this job runs the migration operations (version, rerun and force), spelled exactly, and the action given is none of them: nothing ran"; exit 1 ;;
+          esac
+          case "$TABLE" in
+            ""|schema|data) ;;
+            *) echo "::error::the table is schema or data, spelled exactly, and what was given is neither"; exit 1 ;;
+          esac
           if [ "$ENVIRONMENT" = "$PRODUCTION" ]; then
             echo "::error::$ENVIRONMENT is production: no migration operation runs there, since production's migrations are the platform operator's (the README, When the migration fails); a release is run again in production with the run action (bedrock rerun)"
             exit 1
           fi
-          case "$RELEASE" in
-            "") echo "::error::$ACTION names the release the migrations are at (v<major>.<minor>.<patch>)"; exit 1 ;;
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::$RELEASE is not a release tag (v<major>.<minor>.<patch>)"; exit 1 ;;
-          esac
+          if ! release_tag "$RELEASE"; then
+            echo "::error::$ACTION names the release the migrations are at, a release tag, whole (v<major>.<minor>.<patch>, as v1.4.2): what was given is not one"
+            exit 1
+          fi
           if [ "$ACTION" = force ]; then
-            if ! printf '%s' "$VERSION" | grep -Eq '^(-1|0|[1-9][0-9]*)$'; then
-              echo "::error::force needs the version the database is at: an integer 0 or above, or -1 for no version (got \"$VERSION\")"
-              exit 1
-            fi
+            case "$VERSION" in
+              -1|0) ;;
+              ""|0*|*[!0-9]*) echo "::error::force needs the version the database is at, whole: an integer 0 or above, or -1 for no version (what was given is empty, has a leading 0 or carries something that is not a digit)"; exit 1 ;;
+            esac
           elif [ -n "$VERSION" ]; then
             echo "::error::a version goes with force alone: $ACTION takes none"
             exit 1
@@ -1125,6 +1202,8 @@ jobs:
       - name: The environment's project, identity, triggers and inputs
         id: target
         run: |
+          {{- template "environment" .}}
+          {{- template "release_tag"}}
           project=$(eval "printf '%s' \"\${PROJECT_$ENVIRONMENT:-}\"")
           if [ -z "$project" ]; then
             echo "::error::$ENVIRONMENT is not wired for operations: record its project (projects.$ENVIRONMENT, the id and the number bedrock org render prints) in infrastructure/placement.json and render again"
@@ -1134,13 +1213,11 @@ jobs:
             echo "::error::a rollback says why it was asked for: give the reason"
             exit 1
           fi
-          case "$REASON" in
-            *'|'*) echo "::error::the reason carries a | character, which the build's substitutions cannot; say it another way"; exit 1 ;;
-          esac
-          case "$RELEASE" in
-            ""|v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::$RELEASE is not a release tag (v<major>.<minor>.<patch>)"; exit 1 ;;
-          esac
+          {{- template "reason"}}
+          if [ -n "$RELEASE" ] && ! release_tag "$RELEASE"; then
+            echo "::error::the release is a release tag, whole (v<major>.<minor>.<patch>, as v1.4.2), and what was given is not one"
+            exit 1
+          fi
           for name in project provider identity trigger rollback; do
             upper=$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')
             printf '%s=%s\n' "$name" "$(eval "printf '%s' \"\${${upper}_$ENVIRONMENT}\"")" >> "$GITHUB_OUTPUT"
@@ -1260,6 +1337,7 @@ jobs:
       - name: The environment's project, identity and trigger
         id: target
         run: |
+          {{- template "environment" .}}
           project=$(eval "printf '%s' \"\${PROJECT_$ENVIRONMENT:-}\"")
           if [ -z "$project" ]; then
             echo "::error::$ENVIRONMENT is not wired for operations: record its project (projects.$ENVIRONMENT, the id and the number bedrock org render prints) in infrastructure/placement.json and render again"
@@ -1349,6 +1427,7 @@ jobs:
       - name: The environment's project, identity and trigger
         id: target
         run: |
+          {{- template "environment" .}}
           project=$(eval "printf '%s' \"\${PROJECT_$ENVIRONMENT:-}\"")
           if [ -z "$project" ]; then
             echo "::error::$ENVIRONMENT is not wired for operations: record its project (projects.$ENVIRONMENT, the id and the number bedrock org render prints) in infrastructure/placement.json and render again"

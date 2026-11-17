@@ -107,10 +107,14 @@ type view struct {
 	// trigger, which the workflow's release action runs on the default branch's head.
 	ReleaseOperation operationsEnv
 	OperationsProse  string
-	RestorableProse  string
-	AuthAction       string
-	GcloudAction     string
-	PrimaryRegion    string
+	// OperationsCase is the same environments as the alternatives of a shell case
+	// (tst|stg|prd): each job of the operations workflow holds its environment input to
+	// them, whole, before a line reads the environment's values by name.
+	OperationsCase  string
+	RestorableProse string
+	AuthAction      string
+	GcloudAction    string
+	PrimaryRegion   string
 	// Image is what the seeded Dockerfile derives from the code.
 	Image imageView
 	// SubstitutionNames are the pipeline's own substitutions, space separated: the keys
@@ -1606,6 +1610,7 @@ func (v *view) operations() {
 	}
 	v.ReleaseOperation = v.Operations[0]
 	v.OperationsProse = joinOr(v.P.Environments)
+	v.OperationsCase = strings.Join(v.P.Environments, "|")
 	v.RestorableProse = joinOr(v.P.Restorable())
 }
 
