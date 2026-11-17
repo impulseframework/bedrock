@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"testing"
 )
 
@@ -41,13 +40,19 @@ func TestKeyedOrgOutputsReadByKey(t *testing.T) {
 
 	reads := 0
 	for _, dir := range []string{"templates", filepath.Join("..", "org", "templates")} {
-		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".tf.tmpl") {
-				return err
-			}
-			content, err := os.ReadFile(path)
+		layers := os.DirFS(dir)
+		files, err := fs.Glob(layers, "*.tf.tmpl")
+		if err != nil {
+			t.Fatalf("fs.Glob(%s) error = %v", dir, err)
+		}
+		nested, err := fs.Glob(layers, "*/*.tf.tmpl")
+		if err != nil {
+			t.Fatalf("fs.Glob(%s) error = %v", dir, err)
+		}
+		for _, name := range append(files, nested...) {
+			content, err := fs.ReadFile(layers, name)
 			if err != nil {
-				return err
+				t.Fatalf("fs.ReadFile(%s) error = %v", name, err)
 			}
 			for _, m := range orgOutputRead.FindAllSubmatch(content, -1) {
 				if !keyed[string(m[1])] {
@@ -55,14 +60,9 @@ func TestKeyedOrgOutputsReadByKey(t *testing.T) {
 				}
 				reads++
 				if string(m[2]) != "[" {
-					t.Errorf("%s reads local.org.%s without a key: the output is a map by project key, read as local.org.%s[var.environment]", path, m[1], m[1])
+					t.Errorf("%s reads local.org.%s without a key: the output is a map by project key, read as local.org.%s[var.environment]", filepath.Join(dir, name), m[1], m[1])
 				}
 			}
-
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("filepath.WalkDir(%s) error = %v", dir, err)
 		}
 	}
 	if reads == 0 {
