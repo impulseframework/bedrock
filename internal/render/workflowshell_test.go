@@ -1,6 +1,7 @@
 package render
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -152,10 +153,8 @@ func (s *workflowStep) run(t *testing.T, r *stepRun) *stepResult {
 	}
 	printed, err := cmd.CombinedOutput()
 	result := &stepResult{failed: err != nil, printed: string(printed), dir: dir}
-	if err != nil {
-		if _, exited := err.(*exec.ExitError); !exited { //nolint:errorlint // CombinedOutput returns the *exec.ExitError itself
-			t.Fatalf("the step did not run: %v", err)
-		}
+	if exited := new(exec.ExitError); err != nil && !errors.As(err, &exited) {
+		t.Fatalf("the step did not run: %v", err)
 	}
 	if written, err := os.ReadFile(output); err == nil {
 		result.outputs = string(written)
