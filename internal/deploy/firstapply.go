@@ -39,6 +39,9 @@ func FirstApply(ctx context.Context, clients *Clients, w Workspace, req *BuildRe
 		return err
 	}
 	subs := build.Substitutions
+	if err := stackBuildOnly(subs); err != nil {
+		return err
+	}
 	app, env, identity, records := subs[appSub], subs[envSub], subs[applyIdentitySub], subs[recordsBucket]
 	for _, v := range []struct{ name, value string }{{appSub, app}, {envSub, env}, {applyIdentitySub, identity}, {recordsBucket, records}} {
 		if v.value == "" {

@@ -18,6 +18,8 @@ func TestStackTeardown(t *testing.T) {
 		applyBuild    = `{"id": "b-3", "serviceAccount": "projects/p/serviceAccounts/` + applyIdentity + `", ` + subs + `}`
 		noRequester   = `{"id": "b-4", "serviceAccount": "projects/p/serviceAccounts/` + applyIdentity + `", "substitutions": {"_APP": "harbor", "_ENV": "tst", "_APPLY_IDENTITY": "` + applyIdentity + `", "_STACK_ACTION": "teardown"}}`
 		bareBuild     = `{"id": "b-5", "substitutions": {"_APP": "harbor", "_ENV": "tst", "_REQUESTER": "jo"}}`
+		retiring      = `{"id": "b-6", "substitutions": {"_APP": "harbor", "_ENV": "tst", "_APPLY_IDENTITY": "` + applyIdentity + `", "_STACK_ACTION": "teardown", "_REQUESTER": "jo", "_RETIRE_SECRET": "APP_SECRET_KEY", "_RETIRE_VERSION": "1"}}`
+		pullRequest   = `{"id": "b-7", "substitutions": {"_APP": "harbor", "_ENV": "tst", "_APPLY_IDENTITY": "` + applyIdentity + `", "_STACK_ACTION": "destroy", "_REQUESTER": "jo", "_PR_NUMBER": "5"}}`
 		initLine      = "tofu init -input=false -no-color -backend-config=prefix=3-app/harbor/tst"
 		impersonated  = " -backend-config=impersonate_service_account=" + applyIdentity
 		teardownPlan  = `tofu plan -destroy -input=false -no-color -out=DATA/tst/teardown.tfplan -var environment=tst -var database_generation=1 -var generated_secret_versions={APP_COOKIE_KEY="3"} -var teardown=true -exclude=google_service_account.app -exclude=google_spanner_database.harbor[0] -exclude=google_storage_bucket.files[0] -exclude=google_firestore_database.firestore -exclude=google_secret_manager_secret.harbor["APP_COOKIE_KEY"] -exclude=random_id.stack -exclude=google_storage_bucket_object.stack[0] -exclude=google_cloud_tasks_queue.tasks[0] -exclude=google_storage_bucket.migrate_logs[0]`
@@ -99,6 +101,21 @@ func TestStackTeardown(t *testing.T) {
 			wantRan:      []string{},
 			wantNoRecord: true,
 			wantErr:      "_APPLY_IDENTITY is not set: the stack trigger carries it",
+		},
+		{
+			name:         "a run that carries a release build's instruction beside the action is refused before anything is read",
+			build:        retiring,
+			wantRan:      []string{},
+			wantNoRecord: true,
+			wantErr:      "_RETIRE_SECRET=APP_SECRET_KEY on the stack trigger's build: the trigger runs on the default branch with its action (_STACK_ACTION) and who asked, and takes no instruction, tag or pull request's number of a release's build",
+		},
+		{
+			name:         "a run that names a pull request is refused before anything is read",
+			build:        pullRequest,
+			destroy:      true,
+			wantRan:      []string{},
+			wantNoRecord: true,
+			wantErr:      "_PR_NUMBER=5 on the stack trigger's build",
 		},
 	}
 	for _, tt := range tests {

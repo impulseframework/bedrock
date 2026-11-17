@@ -36,6 +36,9 @@ func StackTeardown(ctx context.Context, clients *Clients, w Workspace, req *Buil
 		return err
 	}
 	subs := build.Substitutions
+	if err := stackBuildOnly(subs); err != nil {
+		return err
+	}
 	app, env, identity, requester := subs[appSub], subs[envSub], subs[applyIdentitySub], subs[requesterSub]
 	for _, v := range []struct{ name, value string }{{appSub, app}, {envSub, env}, {applyIdentitySub, identity}} {
 		if v.value == "" {
@@ -73,6 +76,24 @@ func StackTeardown(ctx context.Context, clients *Clients, w Workspace, req *Buil
 	fmt.Fprint(out, prepared.Summary())
 
 	return prepared.Run(ctx, out)
+}
+
+// releaseInstructions are the instructions a release's build may carry, one at a time
+// (resolve's readers), and the two substitutions that say what a build is of.
+var releaseInstructions = []string{restoreSub, rollbackSub, migrateActionSub, maintenanceSub, retireVariableSub, retireVersionSub, prNumberSub, tagSub}
+
+// stackBuildOnly refuses a stack trigger's build that carries what only a release's or a
+// pull request's build does: the trigger runs on the default branch with its action and
+// who asked, so an instruction, a tag or a pull request's number beside them was added to
+// the run.
+func stackBuildOnly(subs map[string]string) error {
+	for _, name := range releaseInstructions {
+		if subs[name] != "" {
+			return errors.Newf("%s=%s on the stack trigger's build: the trigger runs on the default branch with its action (%s) and who asked, and takes no instruction, tag or pull request's number of a release's build", name, subs[name], stackActionSub)
+		}
+	}
+
+	return nil
 }
 
 // buildApproval is the build's approval as the record keeps it, nil where the build

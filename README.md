@@ -896,7 +896,14 @@ thing one step hands the next. In order:
   the pull request's instruction (the words after its latest `/gcbrun` comment:
   `shared-db`, `reload-db`, `down`), the image and its tags, whether the migrations run
   and traffic shifts (a stale pull-request database, one whose last build applied a
-  migration no longer in the tree, is the stack job's decision, `deploy pr-stack`). A tag build may carry a restore
+  migration no longer in the tree, is the stack job's decision, `deploy pr-stack`). A
+  build is a tag's or a pull request's and never both, and it carries one instruction (a
+  restore, a rollback, a migration operation, the end of a maintenance, a retirement)
+  with what goes with it: a second instruction beside it, the stack trigger's action
+  (`_STACK_ACTION`), a reason with no restore or rollback, and a restore's database with
+  no restore are refused here, since the operations workflow never sends them together;
+  the stack trigger's own steps (`deploy stack first`, `teardown`, `destroy`) refuse a
+  release build's instruction the same way. A tag build may carry a restore
   instruction (`_RESTORE`: `empty`, or `production-backup` for the environment on
   production's instance, with `_REQUESTER` naming who asked): the environment's database
   is replaced before the release deploys. A pull-request build carries none, and

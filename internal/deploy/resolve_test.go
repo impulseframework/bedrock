@@ -550,6 +550,58 @@ func TestResolve(t *testing.T) {
 			wantErr: `_RETIRE_SECRET="APP_SECRET_KEY" with _RETIRE_VERSION="": a retirement names the versioned secret's variable and the version to retire, both`,
 		},
 		{
+			name:     "a retirement on a pull request's build is refused",
+			subs:     prBuild(map[string]string{retireVariableSub: "APP_SECRET_KEY", retireVersionSub: "1", requesterSub: "octocat"}),
+			comments: []string{"/gcbrun"},
+			wantErr:  "_REQUESTER=octocat on a pull-request build",
+		},
+		{
+			name:    "a retirement beside a rollback is refused",
+			subs:    tagBuild(map[string]string{retireVariableSub: "APP_SECRET_KEY", retireVersionSub: "1", requesterSub: "octocat", rollbackSub: "v1.2.4", reasonSub: "why"}),
+			wantErr: "_RETIRE_SECRET=APP_SECRET_KEY with a restore, a rollback, a migration operation or a maintenance instruction: the run that retires a version does nothing else",
+		},
+		{
+			name:    "a retirement beside a maintenance instruction is refused",
+			subs:    tagBuild(map[string]string{retireVariableSub: "APP_SECRET_KEY", retireVersionSub: "1", requesterSub: "octocat", maintenanceSub: maintenanceOff}),
+			wantErr: "_RETIRE_SECRET=APP_SECRET_KEY with a restore, a rollback, a migration operation or a maintenance instruction: the run that retires a version does nothing else",
+		},
+		{
+			name:    "a retirement that also names a pull request is refused: a build is one or the other",
+			subs:    tagBuild(map[string]string{retireVariableSub: "APP_SECRET_KEY", retireVersionSub: "1", requesterSub: "octocat", prNumberSub: "5"}),
+			wantErr: "TAG_NAME=v1.2.3 with _PR_NUMBER=5: a build is a tag's or a pull request's, never both. A trigger sets the one it is for, so the other was added to this run",
+		},
+		{
+			name:    "a release's build that names a pull request is refused, whatever else it carries",
+			subs:    tagBuild(map[string]string{prNumberSub: "7"}),
+			wantErr: "TAG_NAME=v1.2.3 with _PR_NUMBER=7: a build is a tag's or a pull request's, never both",
+		},
+		{
+			name:    "a retirement beside the stack trigger's action is refused",
+			subs:    tagBuild(map[string]string{retireVariableSub: "APP_SECRET_KEY", retireVersionSub: "1", requesterSub: "octocat", stackActionSub: "destroy"}),
+			wantErr: "_STACK_ACTION=destroy on a release's or a pull request's build: the action is the stack trigger's",
+		},
+		{
+			name:    "a retirement that carries a reason is refused: a reason goes with a restore or a rollback",
+			subs:    tagBuild(map[string]string{retireVariableSub: "APP_SECRET_KEY", retireVersionSub: "1", requesterSub: "octocat", reasonSub: "why"}),
+			wantErr: "_REASON on a build that carries no restore (_RESTORE) and no rollback (_ROLLBACK): a reason goes with one of the two",
+		},
+		{
+			name:    "a rerun that carries a reason is refused",
+			subs:    tagBuild(map[string]string{requesterSub: "octocat", reasonSub: "why"}),
+			wantErr: "_REASON on a build that carries no restore (_RESTORE) and no rollback (_ROLLBACK)",
+		},
+		{
+			name:    "a migration operation that carries a restore's database is refused",
+			subs:    tagBuild(map[string]string{requesterSub: "octocat", migrateActionSub: actionVersion, restoreDatabaseSub: "projects/p/instances/i/databases/d"}),
+			wantErr: "_RESTORE_DATABASE or _RESTORE_DATABASE_BACKUP on a build that carries no restore (_RESTORE)",
+		},
+		{
+			name:     "a pull request's build that carries the stack trigger's action is refused",
+			subs:     prBuild(map[string]string{stackActionSub: "teardown"}),
+			comments: []string{"/gcbrun"},
+			wantErr:  "_STACK_ACTION=teardown on a release's or a pull request's build",
+		},
+		{
 			name:     "a pull-request build is not rerun through the door",
 			subs:     prBuild(map[string]string{requesterSub: "octocat"}),
 			comments: []string{"/gcbrun"},
