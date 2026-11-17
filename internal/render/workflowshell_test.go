@@ -1,6 +1,7 @@
 package render
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -362,12 +363,18 @@ func TestOperationsInputsHeldWhole(t *testing.T) {
 // itself: every call's arguments in calls, the records the bucket holds in records/, the
 // records the build writes while it runs in written/ (moved into records/ when the trigger
 // is run), and the status the build ends with in status. The listing prints each record
-// with its own timestamp, as gcloud storage ls -l prints an object's time.
+// under the prefix asked for (<prefix>/r/<build>.json), with its own timestamp, as gcloud
+// storage ls -l prints an object's time; the version trigger names one records bucket,
+// and the same one for production.
 const gcloudStandIn = `#!/usr/bin/env bash
 here=$(cd "$(dirname "$0")" && pwd)
 printf '%s\n' "$*" >> "$here/calls"
 case "$1 $2 $3" in
-  "builds triggers describe") echo records ;;
+  "builds triggers describe")
+    case "$*" in
+      *_RECORDS_BUCKETS*) echo "prd=records,stg=records" ;;
+      *) echo records ;;
+    esac ;;
   "builds triggers run")
     cp "$here"/written/*.json "$here/records/" 2>/dev/null
     echo b-9 ;;
@@ -375,7 +382,7 @@ case "$1 $2 $3" in
   "storage ls "*)
     for record in "$here"/records/*.json; do
       [ -e "$record" ] || continue
-      printf '     512  %s  gs://records/beacon/tst/3c4d/releases/%s\n' "$(jq -r .timestamp "$record")" "${record##*/}"
+      printf '     512  %s  %sr/%s\n' "$(jq -r .timestamp "$record")" "${4%\*/\*.json}" "${record##*/}"
     done ;;
   "storage cat "*)
     shift 2
@@ -496,6 +503,14 @@ func TestRetireWaitsForItsOwnLiveRecord(t *testing.T) {
 			wantStarted: true,
 		},
 		{
+			name:        "a newer live record that says something else of itself is not quoted",
+			before:      map[string]string{"b-5": live},
+			written:     map[string]string{"b-9": retired, "b-10": `{"version": "v1.2.4\n::error::forged", "status": "live", "timestamp": "2026-10-05T05:02:00Z", "build": "b-10"}`},
+			status:      "SUCCESS",
+			wantRefusal: notNewest + "another build's record" + askAgain,
+			wantStarted: true,
+		},
+		{
 			name:    "a preview deployed after it took no traffic and does not count",
 			before:  map[string]string{"b-5": live},
 			written: map[string]string{"b-9": retired, "b-10": `{"version": "v1.2.4", "status": "preview", "timestamp": "2026-10-05T05:02:00Z", "build": "b-10"}`},
@@ -555,8 +570,8 @@ func TestRetireWaitsForItsOwnLiveRecord(t *testing.T) {
 				t.Errorf("the build's step touched the secret's versions:\n%s", calls(t, bin))
 			}
 			if tt.wantRefusal != "" {
-				if !got.failed || !strings.Contains(got.printed, "::error::"+tt.wantRefusal) {
-					t.Fatalf("the step failed = %t, want the refusal %q; it printed:\n%s", got.failed, tt.wantRefusal, got.printed)
+				if !got.failed || !strings.Contains(got.printed, "::error::"+tt.wantRefusal) || strings.Contains(got.printed, "forged") {
+					t.Fatalf("the step failed = %t, want the refusal %q and nothing a forged record says; it printed:\n%s", got.failed, tt.wantRefusal, got.printed)
 				}
 
 				return
@@ -587,5 +602,276 @@ func TestRetireWaitsForItsOwnLiveRecord(t *testing.T) {
 	})
 	if beyond.failed || !strings.Contains(beyond.printed, "Version 1 of imp-stg-gbl-beacon-secret-key is disabled in stg") || strings.Contains(beyond.printed, "Pull requests") {
 		t.Errorf("the disabling step in stg failed = %t and printed:\n%s", beyond.failed, beyond.printed)
+	}
+}
+
+// record is a deployment record as a build writes it, compact: the build's id, the
+// release, the hour of 2026-10-05 it took traffic at, and further members as JSON
+// ("database": {...}). The release is written as a JSON string whatever it holds, so a
+// test can give one of two lines.
+func record(t *testing.T, build, version, hour string, members ...string) string {
+	t.Helper()
+
+	release, err := json.Marshal(version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := `{"version": ` + string(release) + `, "status": "live", "timestamp": "2026-10-05T` + hour + `:00:00Z", "build": "` + build + `"`
+	for _, member := range members {
+		doc += ", " + member
+	}
+
+	return doc + "}"
+}
+
+// TestOperationsRecordsHeldWhole runs the steps of the rendered operations workflow that
+// read a value from an environment's deployment records and pass it to a build, against a
+// stand-in for gcloud holding the records: the live release (rotate, retire, maintenance,
+// a restore to a backup, and production's for a restore from its backup), a rollback's
+// two releases, a cut's backup, and production's database and the backup it came from.
+// A record can be written by something other than a release's build, so each value is
+// taken only whole and of its kind, as a typed input is: a record whose value is of its
+// kind starts the build or is passed on; one of two lines, and one that carries the
+// separator of the build's substitutions, stop the job before anything is started or
+// written, with a sentence that names the record's object and never prints what it
+// holds. (The retire job's step over records as they should be is
+// TestRetireWaitsForItsOwnLiveRecord's.)
+func TestOperationsRecordsHeldWhole(t *testing.T) {
+	t.Parallel()
+
+	harbor, beacon := operationsWorkflow(t, "harbor", "placement.json"), wiredWorkflow(t, "beacon", "placement-beacon.json")
+	const (
+		restoreStep     = "The release the restore runs, and the backup"
+		rollbackStep    = "What the rollback returns to"
+		rotateStep      = "Run the live release again on it"
+		retireStep      = "Rewrite what names the version and run the live release again without it"
+		maintenanceStep = "Run the version trigger with the maintenance instruction"
+		twoLines        = "v1.2.3\nforged=v9.9.9"
+		separated       = "v1.2.3|_FORGED=5"
+		cut             = "projects/p/instances/i/backups/harbor-db-cut-1"
+		database        = "projects/p/instances/i/databases/harbor-db-g2"
+		source          = "projects/p/instances/i/backups/harbor-db-pit-1"
+		notTag          = " holds something that is not a release tag (v<major>.<minor>.<patch>) where a record says it. A release's build writes its own there, so the record was written or changed by something else; what it holds is not printed here, and nothing was started with it. Read that object, and remove it or put it right, before asking again."
+		notBackup       = " holds something that is not a backup's resource name (projects/<p>/instances/<i>/backups/<b>) where a record says it."
+		notDatabase     = " holds something that is not a database's resource name (projects/<p>/instances/<i>/databases/<d>) where a record says it."
+		harborTst       = "gs://records/harbor/tst/3c4d/releases/r/"
+		harborPrd       = "gs://records/harbor/prd/3c4d/releases/r/"
+		beaconTst       = "gs://records/beacon/tst/3c4d/releases/r/"
+	)
+	type values = map[string]string
+	harborTarget := values{"target.project": "imp-tst-gbl-core-b241", "target.trigger": "imp-tst-uc1-harbor-version"}
+	beaconTarget := values{"target.project": "imp-tst-gbl-core-b241", "target.trigger": "imp-tst-uc1-beacon-version", "target.container": "imp-tst-gbl-beacon-secret-key", "version.version": "4"}
+	generation := values{"target.project": "imp-tst-gbl-core-b241", "target.trigger": "imp-tst-uc1-harbor-version", "target.restore": "empty", "target.kind": "generation"}
+	production := values{"target.project": "imp-stg-gbl-core-0fa7", "target.trigger": "imp-stg-uc1-harbor-version", "target.restore": "production-backup", "target.kind": "own"}
+	backup := func(name string) string {
+		quoted, _ := json.Marshal(name)
+
+		return `"releaseBackup": {"name": ` + string(quoted) + `, "versionTime": "2026-10-05T03:59:00Z", "expireTime": "2026-10-19T03:59:00Z"}`
+	}
+	held := func(name, from string) []string {
+		db, _ := json.Marshal(name)
+		src, _ := json.Marshal(from)
+
+		return []string{`"database": {"name": ` + string(db) + `, "generation": 2}`, `"restore": {"kind": "generation", "requester": "octocat", "backup": ` + string(src) + `, "database": ` + string(db) + `}`}
+	}
+	tests := []struct {
+		name     string
+		workflow string
+		job      string
+		step     string
+		inputs   values
+		outputs  values
+		// records are the records the bucket holds, by the build that wrote each.
+		records values
+		// wantStarted is the call that starts the build, for a step that starts one;
+		// wantOutputs what the step writes to GITHUB_OUTPUT; wantRefusal the object and
+		// the sentence the step stops the job with.
+		wantStarted string
+		wantOutputs string
+		wantRefusal string
+	}{
+		// The live release, which a build is started for by its tag.
+		{
+			name: "maintenance: the live release", workflow: harbor, job: "maintenance", step: maintenanceStep, inputs: values{"environment": "tst"}, outputs: harborTarget,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04")},
+			wantStarted: "builds triggers run imp-tst-uc1-harbor-version --tag v1.2.3 --region us-central1 --project imp-tst-gbl-core-b241 --substitutions ^|^_MAINTENANCE=off|_REQUESTER=octocat --format=value(metadata.build.id)\n",
+		},
+		{
+			name: "maintenance: a live release of two lines", workflow: harbor, job: "maintenance", step: maintenanceStep, inputs: values{"environment": "tst"}, outputs: harborTarget,
+			records:     values{"b-4": record(t, "b-4", "v1.2.2", "03"), "b-5": record(t, "b-5", twoLines, "04")},
+			wantRefusal: harborTst + "b-5.json" + notTag,
+		},
+		{
+			name: "maintenance: a live release that carries a substitution", workflow: harbor, job: "maintenance", step: maintenanceStep, inputs: values{"environment": "tst"}, outputs: harborTarget,
+			records:     values{"b-4": record(t, "b-4", "v1.2.2", "03"), "b-5": record(t, "b-5", separated, "04")},
+			wantRefusal: harborTst + "b-5.json" + notTag,
+		},
+		{
+			name: "rotate: the live release", workflow: beacon, job: "rotate", step: rotateStep, inputs: values{"environment": "tst", "variable": "APP_COOKIE_KEY"}, outputs: beaconTarget,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04")},
+			wantStarted: "builds triggers run imp-tst-uc1-beacon-version --tag v1.2.3 --region us-central1 --project imp-tst-gbl-core-b241 --substitutions _REQUESTER=octocat --format=value(metadata.build.id)\n",
+		},
+		{
+			name: "rotate: a live release of two lines", workflow: beacon, job: "rotate", step: rotateStep, inputs: values{"environment": "tst", "variable": "APP_COOKIE_KEY"}, outputs: beaconTarget,
+			records:     values{"b-5": record(t, "b-5", twoLines, "04")},
+			wantRefusal: beaconTst + "b-5.json" + notTag,
+		},
+		{
+			name: "rotate: a live release that carries a substitution", workflow: beacon, job: "rotate", step: rotateStep, inputs: values{"environment": "tst", "variable": "APP_COOKIE_KEY"}, outputs: beaconTarget,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3,_FORGED=5", "04")},
+			wantRefusal: beaconTst + "b-5.json" + notTag,
+		},
+		{
+			name: "retire: a live release of two lines", workflow: beacon, job: "retire", step: retireStep, inputs: values{"environment": "tst", "variable": "APP_SECRET_KEY", "version": "1"}, outputs: beaconTarget,
+			records:     values{"b-5": record(t, "b-5", twoLines, "04")},
+			wantRefusal: beaconTst + "b-5.json" + notTag,
+		},
+		{
+			name: "retire: a live release that carries a substitution", workflow: beacon, job: "retire", step: retireStep, inputs: values{"environment": "tst", "variable": "APP_SECRET_KEY", "version": "1"}, outputs: beaconTarget,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3,_FORGED=5", "04")},
+			wantRefusal: beaconTst + "b-5.json" + notTag,
+		},
+
+		// A rollback's two releases: the one left reaches the build's substitutions, the one
+		// returned to its tag.
+		{
+			name: "rollback: the release left and the one returned to", workflow: harbor, job: "rollback", step: rollbackStep, inputs: values{"environment": "tst", "reason": "the import page fails"}, outputs: harborTarget,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04"), "b-6": record(t, "b-6", "v1.2.4", "05")},
+			wantOutputs: "from=v1.2.4\nto=v1.2.3\n",
+		},
+		{
+			name: "rollback: a release left of two lines", workflow: harbor, job: "rollback", step: rollbackStep, inputs: values{"environment": "tst", "reason": "why"}, outputs: harborTarget,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04"), "b-6": record(t, "b-6", "v1.2.4\nforged=v9.9.9", "05")},
+			wantRefusal: harborTst + "b-6.json" + notTag,
+		},
+		{
+			name: "rollback: a release left that carries a substitution", workflow: harbor, job: "rollback", step: rollbackStep, inputs: values{"environment": "tst", "reason": "why"}, outputs: harborTarget,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04"), "b-6": record(t, "b-6", "v1.2.4|_FORGED=5", "05")},
+			wantRefusal: harborTst + "b-6.json" + notTag,
+		},
+		{
+			name: "rollback: a release to return to of two lines", workflow: harbor, job: "rollback", step: rollbackStep, inputs: values{"environment": "tst", "reason": "why"}, outputs: harborTarget,
+			records:     values{"b-5": record(t, "b-5", twoLines, "04"), "b-6": record(t, "b-6", "v1.2.4", "05")},
+			wantRefusal: harborTst + "b-5.json" + notTag,
+		},
+		{
+			name: "rollback: a release to return to that carries a substitution", workflow: harbor, job: "rollback", step: rollbackStep, inputs: values{"environment": "tst", "reason": "why"}, outputs: harborTarget,
+			records:     values{"b-5": record(t, "b-5", separated, "04"), "b-6": record(t, "b-6", "v1.2.4", "05")},
+			wantRefusal: harborTst + "b-5.json" + notTag,
+		},
+
+		// A restore to a backup: the environment's live release, and a release's cut.
+		{
+			name: "restore to a backup: the live release", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "tst", "backup": cut}, outputs: generation,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04")},
+			wantOutputs: "release=v1.2.3\ninstruction=" + cut + "\ndatabase=\nsource_backup=\n",
+		},
+		{
+			name: "restore to a backup: a live release of two lines", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "tst", "backup": cut}, outputs: generation,
+			records:     values{"b-5": record(t, "b-5", twoLines, "04")},
+			wantRefusal: harborTst + "b-5.json" + notTag,
+		},
+		{
+			name: "restore to a backup: a live release that carries a substitution", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "tst", "backup": cut}, outputs: generation,
+			records:     values{"b-5": record(t, "b-5", separated, "04")},
+			wantRefusal: harborTst + "b-5.json" + notTag,
+		},
+		{
+			name: "restore to a release's cut: the backup its record names", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "tst", "before": "v1.2.3"}, outputs: generation,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04", backup(cut))},
+			wantOutputs: "release=v1.2.3\ninstruction=" + cut + "\ndatabase=\nsource_backup=\n",
+		},
+		{
+			name: "restore to a release's cut: a backup's name of two lines", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "tst", "before": "v1.2.3"}, outputs: generation,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04", backup(cut+"\nforged=v9.9.9"))},
+			wantRefusal: harborTst + "b-5.json" + notBackup,
+		},
+		{
+			name: "restore to a release's cut: a backup's name that carries a substitution", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "tst", "before": "v1.2.3"}, outputs: generation,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04", backup(cut+"|_FORGED=5"))},
+			wantRefusal: harborTst + "b-5.json" + notBackup,
+		},
+		{
+			name: "restore to a release's cut: something that is no backup's name", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "tst", "before": "v1.2.3"}, outputs: generation,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04", backup("@2026-10-05T04:30:00Z"))},
+			wantRefusal: harborTst + "b-5.json" + notBackup,
+		},
+
+		// A restore from production's backup: production's live release, its database and the
+		// backup that database was restored from.
+		{
+			name: "restore from production's backup: production's release, database and backup", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "stg"}, outputs: production,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04", held(database, source)...)},
+			wantOutputs: "release=v1.2.3\ninstruction=production-backup\ndatabase=" + database + "\nsource_backup=" + source + "\n",
+		},
+		{
+			name: "restore from production's backup: a record that names no database", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "stg"}, outputs: production,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04")},
+			wantOutputs: "release=v1.2.3\ninstruction=production-backup\ndatabase=\nsource_backup=\n",
+		},
+		{
+			name: "restore from production's backup: a production release of two lines", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "stg"}, outputs: production,
+			records:     values{"b-5": record(t, "b-5", twoLines, "04", held(database, source)...)},
+			wantRefusal: harborPrd + "b-5.json" + notTag,
+		},
+		{
+			name: "restore from production's backup: a production release that carries a substitution", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "stg"}, outputs: production,
+			records:     values{"b-5": record(t, "b-5", separated, "04", held(database, source)...)},
+			wantRefusal: harborPrd + "b-5.json" + notTag,
+		},
+		{
+			name: "restore from production's backup: a database of two lines", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "stg"}, outputs: production,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04", held(database+"\nforged=v9.9.9", source)...)},
+			wantRefusal: harborPrd + "b-5.json" + notDatabase,
+		},
+		{
+			name: "restore from production's backup: a database that carries a substitution", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "stg"}, outputs: production,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04", held(database+"|_FORGED=5", source)...)},
+			wantRefusal: harborPrd + "b-5.json" + notDatabase,
+		},
+		{
+			name: "restore from production's backup: a source backup of two lines", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "stg"}, outputs: production,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04", held(database, source+"\nforged=v9.9.9")...)},
+			wantRefusal: harborPrd + "b-5.json" + notBackup,
+		},
+		{
+			name: "restore from production's backup: a source backup that carries a substitution", workflow: harbor, job: "restore", step: restoreStep, inputs: values{"environment": "stg"}, outputs: production,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04", held(database, source+"|_FORGED=5")...)},
+			wantRefusal: harborPrd + "b-5.json" + notBackup,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			bin := standIn(t, tt.records, nil, "SUCCESS")
+			got := stepOf(t, jobOf(t, tt.workflow, tt.job), tt.step).run(t, &stepRun{inputs: tt.inputs, outputs: tt.outputs, bin: bin})
+			called := calls(t, bin)
+			if tt.wantRefusal != "" {
+				if !got.failed || !strings.Contains(got.printed, "::error::"+tt.wantRefusal) {
+					t.Fatalf("the step failed = %t, want the refusal %q; it printed:\n%s", got.failed, tt.wantRefusal, got.printed)
+				}
+				if strings.Contains(strings.ToLower(got.printed), "forged") {
+					t.Errorf("the refusal prints what the record holds:\n%s", got.printed)
+				}
+				if got.outputs != "" {
+					t.Errorf("a refused step wrote outputs:\n%s", got.outputs)
+				}
+				if strings.Contains(called, "builds triggers run") {
+					t.Errorf("a refused step started a build:\n%s", called)
+				}
+
+				return
+			}
+			if got.failed {
+				t.Fatalf("the step failed over records it takes; it printed:\n%s", got.printed)
+			}
+			if tt.wantStarted != "" && !strings.Contains(called, tt.wantStarted) {
+				t.Errorf("gcloud was called with\n%s\nwant the build started with\n%s", called, tt.wantStarted)
+			}
+			if got.outputs != tt.wantOutputs {
+				t.Errorf("the step wrote\n%s\nwant\n%s", got.outputs, tt.wantOutputs)
+			}
+		})
 	}
 }

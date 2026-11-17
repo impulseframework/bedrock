@@ -2149,7 +2149,16 @@ the characters their names are written with, the action and the table against th
 a secret's variable against the ones the code declares. The reason is free text: one that
 carries a `|` or a line break is refused with a sentence that says so, by the commands and
 by the job, and it is never encoded or rewritten, because a rollback and a restore run an
-earlier release's pipeline, which records the reason as it reads it. The pipeline is the
+earlier release's pipeline, which records the reason as it reads it. What a job reads from
+the environment's deployment records and passes to a build is held the same way, in the
+step that reads it: the live release (a rerun for a rotation, a retirement or the end of a
+maintenance, and a restore), a rollback's two releases, a cut's backup, and production's
+database with the backup it was restored from. A record is written by a release's build,
+and by anything else that may write to the records bucket, so one that holds something
+that is not a release tag, a backup's name or a database's name where a record says it
+stops the job before a build is started, with a sentence that names the record's object
+and never prints what it holds. The requester a build is told (`_REQUESTER`) is the login
+GitHub gives the run, which nobody types and which holds no separator. The pipeline is the
 second gate: a build that carries two instructions, an instruction on a pull request's
 build, or both a tag and a pull request's number is refused by its first step (`deploy
 resolve`).

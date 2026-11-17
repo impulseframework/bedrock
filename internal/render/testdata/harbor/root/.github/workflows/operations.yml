@@ -147,7 +147,13 @@
 # characters their names are written with, the action and the table against their words, a
 # secret's variable against the ones the code declares. The reason, free text, is refused when it
 # carries a | or a line break and is never rewritten: a rollback and a restore run an earlier
-# release's pipeline, which records the reason as it reads it.
+# release's pipeline, which records the reason as it reads it. What a job reads from the
+# environment's deployment records and passes to a build is held the same way, in the step that
+# reads it: the live release, a rollback's two releases, a cut's backup, production's database
+# and the backup it came from. A record is written by a release's build, and by anything else
+# that may write to the records bucket; one that holds something that is not of its kind stops
+# the job with the name of the record's object, never the value. The requester is the login
+# GitHub gives the run (github.actor), which nobody types and which holds no separator.
 name: operations
 
 on:
@@ -384,6 +390,49 @@ jobs:
             objects=$(gcloud storage ls -l "gs://$1/$APP/$2/$id/releases/*/*.json" 2>/dev/null | grep '^ *[0-9]' | sort -k2,2r | head -"${3:-40}" | awk '{print $3}')
             [ -n "$objects" ] || return 2
           }
+          # refuse_record <what the value is> <where a record says it, a jq filter> <the value>:
+          # stops the job on a value read from a deployment record that is not of its kind. A
+          # record is written by a release's build, and by anything else that may write to the
+          # records bucket, so what one holds is held whole like a typed input before a build is
+          # started with it. The value is never printed or passed on: the line names the object
+          # that holds it, found by reading the records just listed one at a time (the value as
+          # the shell read it, without the line breaks at its end).
+          refuse_record() {
+            where="one of the deployment records just read"
+            for object in $objects; do
+              if gcloud storage cat "$object" 2>/dev/null | jq -e --arg value "$3" "[$2 | select(. != null) | tostring | sub(\"\\n+\$\"; \"\")] | any(. == \$value)" > /dev/null 2>&1; then
+                where=$object
+                break
+              fi
+            done
+            echo "::error::$where holds something that is not $1 where a record says it. A release's build writes its own there, so the record was written or changed by something else; what it holds is not printed here, and nothing was started with it. Read that object, and remove it or put it right, before asking again."
+            exit 1
+          }
+          # release_tag <value>: a release tag whole, v<major>.<minor>.<patch> and no other
+          # character, so neither a separator of the build's substitutions nor a line break.
+          release_tag() {
+            case "$1" in
+              *[!v0-9.]*|v*v*|*..*|*.*.*.*) return 1 ;;
+              v[0-9]*.[0-9]*.[0-9]*) return 0 ;;
+            esac
+            return 1
+          }
+          # backup_name <value> and database_name <value>: a backup's and a database's resource
+          # name whole, the characters one is written with and no other.
+          backup_name() {
+            case "$1" in
+              *[!A-Za-z0-9_.:/-]*) return 1 ;;
+              projects/*/instances/*/backups/*) return 0 ;;
+            esac
+            return 1
+          }
+          database_name() {
+            case "$1" in
+              *[!A-Za-z0-9_.:/-]*) return 1 ;;
+              projects/*/instances/*/databases/*) return 0 ;;
+            esac
+            return 1
+          }
           if [ "$KIND" = generation ]; then
             bucket=$(gcloud builds triggers describe "$TRIGGER" --region "$REGION" --project "$PROJECT" --format='value(substitutions._RECORDS_BUCKET)')
             if [ -z "$bucket" ]; then
@@ -400,6 +449,7 @@ jobs:
               echo "::error::no release is live in $ENVIRONMENT by its deployment records: name the release to run"
               exit 1
             fi
+            release_tag "$live" || refuse_record "a release tag (v<major>.<minor>.<patch>)" 'select(.status == "live") | .version' "$live"
             if [ -z "$RELEASE" ]; then
               echo "No release named: $ENVIRONMENT stays on $live, its live release by its deployment records."
               RELEASE=$live
@@ -417,6 +467,7 @@ jobs:
                 echo "::error::no record of $BEFORE in $ENVIRONMENT names a pre-release backup (the release never ran there, ran on a bedrock before release backups, or the environment keeps none): name a backup or @<moment>; the list action shows what there is"
                 exit 1
               fi
+              backup_name "$backup" || refuse_record "a backup's resource name (projects/<p>/instances/<i>/backups/<b>)" '.releaseBackup.name' "$backup"
               echo "$BEFORE's cut: ${backup##*/} (data as of $moment), the database as it was before $BEFORE's migrations."
             fi
             case "$backup" in @*) moment=${backup#@}; echo "A backup as of $moment is made${DATABASE:+ of $DATABASE} and restored." ;; esac
@@ -472,6 +523,11 @@ jobs:
             echo "::error::no release is live in $PRODUCTION by its deployment records (gs://$bucket/$APP/$PRODUCTION/$id/releases/): name the release to run"
             exit 1
           fi
+          # What production's record says, held whole before a line uses it: the release, the
+          # database and the backup that database was restored from.
+          release_tag "$live" || refuse_record "a release tag (v<major>.<minor>.<patch>)" 'select(.status == "live") | .version' "$live"
+          [ -z "$database" ] || database_name "$database" || refuse_record "a database's resource name (projects/<p>/instances/<i>/databases/<d>)" '.database.name' "$database"
+          [ -z "$source" ] || backup_name "$source" || refuse_record "a backup's resource name (projects/<p>/instances/<i>/backups/<b>)" '.restore.backup, .rollback.backup' "$source"
           if [ -z "$RELEASE" ]; then
             echo "No release named: $ENVIRONMENT returns to $live, production's live release by its deployment records, on production's backup."
             RELEASE=$live
@@ -506,6 +562,9 @@ jobs:
           DATABASE: ${{ steps.release.outputs.database }}
           SOURCE_BACKUP: ${{ steps.release.outputs.source_backup }}
         run: |
+          # _REQUESTER is github.actor, the login GitHub gives whoever started the run: nobody
+          # types it, and a GitHub login holds no separator of this list and no line break, so it
+          # is passed as it is.
           build=$(gcloud builds triggers run "$TRIGGER" --tag "$RELEASE" --region "$REGION" --project "$PROJECT" \
             --substitutions "^|^_RESTORE=$INSTRUCTION|_REQUESTER=$REQUESTER|_REASON=$REASON|_RESTORE_DATABASE=$DATABASE|_RESTORE_DATABASE_BACKUP=$SOURCE_BACKUP" --format='value(metadata.build.id)')
           echo "Build $build in $ENVIRONMENT restores it to $RELEASE ($INSTRUCTION), asked for by $REQUESTER."
@@ -602,6 +661,9 @@ jobs:
           PROJECT: ${{ steps.target.outputs.project }}
           TRIGGER: ${{ steps.target.outputs.trigger }}
         run: |
+          # _REQUESTER is github.actor, the login GitHub gives whoever started the run: nobody
+          # types it, and a GitHub login holds no separator of this list and no line break, so it
+          # is passed as it is.
           build=$(gcloud builds triggers run "$TRIGGER" --tag "$RELEASE" --region "$REGION" --project "$PROJECT" \
             --substitutions "_REQUESTER=$REQUESTER" --format='value(metadata.build.id)')
           echo "Build $build in $ENVIRONMENT runs $RELEASE again, asked for by $REQUESTER."
@@ -826,6 +888,9 @@ jobs:
           PROJECT: ${{ steps.target.outputs.project }}
           TRIGGER: ${{ steps.target.outputs.trigger }}
         run: |
+          # _REQUESTER is github.actor, the login GitHub gives whoever started the run: nobody
+          # types it, and a GitHub login holds no separator of this list and no line break, so it
+          # is passed as it is.
           build=$(gcloud builds triggers run "$TRIGGER" --branch "$BRANCH" --region "$REGION" --project "$PROJECT" \
             --substitutions "_STACK_ACTION=$ACTION,_REQUESTER=$REQUESTER" --format='value(metadata.build.id)')
           echo "Build $build in $ENVIRONMENT: $ACTION of $APP's stack from $BRANCH as the apply identity, asked for by $REQUESTER."
@@ -946,6 +1011,33 @@ jobs:
             objects=$(gcloud storage ls -l "gs://$1/$APP/$2/$id/releases/*/*.json" 2>/dev/null | grep '^ *[0-9]' | sort -k2,2r | head -"${3:-40}" | awk '{print $3}')
             [ -n "$objects" ] || return 2
           }
+          # refuse_record <what the value is> <where a record says it, a jq filter> <the value>:
+          # stops the job on a value read from a deployment record that is not of its kind. A
+          # record is written by a release's build, and by anything else that may write to the
+          # records bucket, so what one holds is held whole like a typed input before a build is
+          # started with it. The value is never printed or passed on: the line names the object
+          # that holds it, found by reading the records just listed one at a time (the value as
+          # the shell read it, without the line breaks at its end).
+          refuse_record() {
+            where="one of the deployment records just read"
+            for object in $objects; do
+              if gcloud storage cat "$object" 2>/dev/null | jq -e --arg value "$3" "[$2 | select(. != null) | tostring | sub(\"\\n+\$\"; \"\")] | any(. == \$value)" > /dev/null 2>&1; then
+                where=$object
+                break
+              fi
+            done
+            echo "::error::$where holds something that is not $1 where a record says it. A release's build writes its own there, so the record was written or changed by something else; what it holds is not printed here, and nothing was started with it. Read that object, and remove it or put it right, before asking again."
+            exit 1
+          }
+          # release_tag <value>: a release tag whole, v<major>.<minor>.<patch> and no other
+          # character, so neither a separator of the build's substitutions nor a line break.
+          release_tag() {
+            case "$1" in
+              *[!v0-9.]*|v*v*|*..*|*.*.*.*) return 1 ;;
+              v[0-9]*.[0-9]*.[0-9]*) return 0 ;;
+            esac
+            return 1
+          }
           bucket=$(gcloud builds triggers describe "$TRIGGER" --region "$REGION" --project "$PROJECT" --format='value(substitutions._RECORDS_BUCKET)')
           if [ -z "$bucket" ]; then
             echo "::error::the version trigger $TRIGGER names no records bucket (_RECORDS_BUCKET): the stack has not been applied with this bedrock yet; version $VERSION waits for the next release's build"
@@ -960,6 +1052,10 @@ jobs:
             echo "No release is live in $ENVIRONMENT by its deployment records: version $VERSION waits for the next release's build, whose plan takes it up."
             exit 0
           fi
+          release_tag "$live" || refuse_record "a release tag (v<major>.<minor>.<patch>)" 'select(.status == "live") | .version' "$live"
+          # _REQUESTER is github.actor, the login GitHub gives whoever started the run: nobody
+          # types it, and a GitHub login holds no separator of this list and no line break, so it
+          # is passed as it is.
           build=$(gcloud builds triggers run "$TRIGGER" --tag "$live" --region "$REGION" --project "$PROJECT" \
             --substitutions "_REQUESTER=$REQUESTER" --format='value(metadata.build.id)')
           echo "Build $build in $ENVIRONMENT runs $live again on version $VERSION of $VARIABLE, asked for by $REQUESTER."
@@ -1069,6 +1165,33 @@ jobs:
             objects=$(gcloud storage ls -l "gs://$1/$APP/$2/$id/releases/*/*.json" 2>/dev/null | grep '^ *[0-9]' | sort -k2,2r | head -"${3:-40}" | awk '{print $3}')
             [ -n "$objects" ] || return 2
           }
+          # refuse_record <what the value is> <where a record says it, a jq filter> <the value>:
+          # stops the job on a value read from a deployment record that is not of its kind. A
+          # record is written by a release's build, and by anything else that may write to the
+          # records bucket, so what one holds is held whole like a typed input before a build is
+          # started with it. The value is never printed or passed on: the line names the object
+          # that holds it, found by reading the records just listed one at a time (the value as
+          # the shell read it, without the line breaks at its end).
+          refuse_record() {
+            where="one of the deployment records just read"
+            for object in $objects; do
+              if gcloud storage cat "$object" 2>/dev/null | jq -e --arg value "$3" "[$2 | select(. != null) | tostring | sub(\"\\n+\$\"; \"\")] | any(. == \$value)" > /dev/null 2>&1; then
+                where=$object
+                break
+              fi
+            done
+            echo "::error::$where holds something that is not $1 where a record says it. A release's build writes its own there, so the record was written or changed by something else; what it holds is not printed here, and nothing was started with it. Read that object, and remove it or put it right, before asking again."
+            exit 1
+          }
+          # release_tag <value>: a release tag whole, v<major>.<minor>.<patch> and no other
+          # character, so neither a separator of the build's substitutions nor a line break.
+          release_tag() {
+            case "$1" in
+              *[!v0-9.]*|v*v*|*..*|*.*.*.*) return 1 ;;
+              v[0-9]*.[0-9]*.[0-9]*) return 0 ;;
+            esac
+            return 1
+          }
           bucket=$(gcloud builds triggers describe "$TRIGGER" --region "$REGION" --project "$PROJECT" --format='value(substitutions._RECORDS_BUCKET)')
           if [ -z "$bucket" ]; then
             echo "::error::the version trigger $TRIGGER names no records bucket (_RECORDS_BUCKET): the stack has not been applied with this bedrock yet; apply it, release, and ask again. Version $VERSION of $VARIABLE stays enabled"
@@ -1083,6 +1206,10 @@ jobs:
             echo "::error::No release is live in $ENVIRONMENT by its deployment records: a version is retired by the live release, whose migrate command rewrites the values that name it. Release first, then ask again. Version $VERSION of $VARIABLE stays enabled"
             exit 1
           fi
+          release_tag "$live" || refuse_record "a release tag (v<major>.<minor>.<patch>)" 'select(.status == "live") | .version' "$live"
+          # _REQUESTER is github.actor, the login GitHub gives whoever started the run: nobody
+          # types it, and a GitHub login holds no separator of this list and no line break, so it
+          # is passed as it is.
           build=$(gcloud builds triggers run "$TRIGGER" --tag "$live" --region "$REGION" --project "$PROJECT" \
             --substitutions "_REQUESTER=$REQUESTER,_RETIRE_SECRET=$VARIABLE,_RETIRE_VERSION=$VERSION" --format='value(metadata.build.id)')
           echo "Build $build in $ENVIRONMENT runs $live again to retire version $VERSION of $VARIABLE, asked for by $REQUESTER."
@@ -1114,6 +1241,9 @@ jobs:
           # live records of the same moment are not told apart, and nothing is disabled either.
           newest=$(jq -r '(map(.timestamp) | max) as $t | [.[] | select(.timestamp == $t) | "\(.version), build \(.build)"] | unique | join(" and ")' live.json || true)
           if [ "$newest" != "$live, build $build" ]; then
+            # What the other record says of itself is printed only where it reads as a release
+            # and a build's id.
+            case "$newest" in ""|*[!A-Za-z0-9.,\ -]*) newest="another build's record" ;; esac
             echo "::error::Build $build retired version $VERSION of $VARIABLE in the revision it deployed, but its record is not the newest live one in $ENVIRONMENT: $newest took traffic at or after it, and that revision may have been handed the version. Nothing was disabled, and the version stays enabled. Once that release is live and no other is on its way, ask again (bedrock secret retire $ENVIRONMENT $VARIABLE $VERSION): the run deploys it without the version, then disables it."
             exit 1
           fi
@@ -1238,6 +1368,9 @@ jobs:
           TRIGGER: ${{ steps.target.outputs.trigger }}
           LOGS: ${{ steps.target.outputs.logs }}
         run: |
+          # _REQUESTER is github.actor, the login GitHub gives whoever started the run: nobody
+          # types it, and a GitHub login holds no separator of this list and no line break, so it
+          # is passed as it is.
           substitutions="_MIGRATE_ACTION=$ACTION,_REQUESTER=$REQUESTER"
           if [ "$ACTION" = force ]; then
             substitutions="$substitutions,_MIGRATE_TABLE=$TABLE,_MIGRATE_VERSION=$VERSION"
@@ -1376,6 +1509,33 @@ jobs:
             objects=$(gcloud storage ls -l "gs://$1/$APP/$2/$id/releases/*/*.json" 2>/dev/null | grep '^ *[0-9]' | sort -k2,2r | head -"${3:-40}" | awk '{print $3}')
             [ -n "$objects" ] || return 2
           }
+          # refuse_record <what the value is> <where a record says it, a jq filter> <the value>:
+          # stops the job on a value read from a deployment record that is not of its kind. A
+          # record is written by a release's build, and by anything else that may write to the
+          # records bucket, so what one holds is held whole like a typed input before a build is
+          # started with it. The value is never printed or passed on: the line names the object
+          # that holds it, found by reading the records just listed one at a time (the value as
+          # the shell read it, without the line breaks at its end).
+          refuse_record() {
+            where="one of the deployment records just read"
+            for object in $objects; do
+              if gcloud storage cat "$object" 2>/dev/null | jq -e --arg value "$3" "[$2 | select(. != null) | tostring | sub(\"\\n+\$\"; \"\")] | any(. == \$value)" > /dev/null 2>&1; then
+                where=$object
+                break
+              fi
+            done
+            echo "::error::$where holds something that is not $1 where a record says it. A release's build writes its own there, so the record was written or changed by something else; what it holds is not printed here, and nothing was started with it. Read that object, and remove it or put it right, before asking again."
+            exit 1
+          }
+          # release_tag <value>: a release tag whole, v<major>.<minor>.<patch> and no other
+          # character, so neither a separator of the build's substitutions nor a line break.
+          release_tag() {
+            case "$1" in
+              *[!v0-9.]*|v*v*|*..*|*.*.*.*) return 1 ;;
+              v[0-9]*.[0-9]*.[0-9]*) return 0 ;;
+            esac
+            return 1
+          }
           bucket=$(gcloud builds triggers describe "$TRIGGER" --region "$REGION" --project "$PROJECT" --format='value(substitutions._RECORDS_BUCKET)')
           if [ -z "$bucket" ]; then
             echo "::error::the version trigger $TRIGGER names no records bucket (_RECORDS_BUCKET): the stack has not been applied with this bedrock yet"
@@ -1391,6 +1551,7 @@ jobs:
             echo "::error::no release is live in $ENVIRONMENT by its deployment records: nothing to return from"
             exit 1
           fi
+          release_tag "$from" || refuse_record "a release tag (v<major>.<minor>.<patch>)" 'select(.status == "live") | .version' "$from"
           to=$RELEASE
           if [ -z "$to" ]; then
             to=$(jq -r --arg from "$from" '[.[] | select(.version != $from)] | .[0].version // empty' records.json)
@@ -1398,6 +1559,7 @@ jobs:
               echo "::error::$from is the only release the records say was live in $ENVIRONMENT: there is no earlier release to return to"
               exit 1
             fi
+            release_tag "$to" || refuse_record "a release tag (v<major>.<minor>.<patch>)" 'select(.status == "live") | .version' "$to"
           fi
           if [ "$to" = "$from" ]; then
             echo "::error::$to is the live release in $ENVIRONMENT: a rollback returns to an earlier one (bedrock rerun runs the live release again)"
@@ -1428,6 +1590,9 @@ jobs:
           FROM: ${{ steps.plan.outputs.from }}
           TO: ${{ steps.plan.outputs.to }}
         run: |
+          # _REQUESTER is github.actor, the login GitHub gives whoever started the run: nobody
+          # types it, and a GitHub login holds no separator of this list and no line break, so it
+          # is passed as it is.
           build=$(gcloud builds triggers run "$ROLLBACK" --tag "$TO" --region "$REGION" --project "$PROJECT" \
             --substitutions "^|^_ROLLBACK=$FROM|_REASON=$REASON|_REQUESTER=$REQUESTER" --format='value(metadata.build.id)')
           echo "Build $build in $ENVIRONMENT returns it to $TO from $FROM, asked for by $REQUESTER."
@@ -1523,6 +1688,24 @@ jobs:
             [ -n "$id" ] || return 1
             objects=$(gcloud storage ls -l "gs://$1/$APP/$2/$id/releases/*/*.json" 2>/dev/null | grep '^ *[0-9]' | sort -k2,2r | head -"${3:-40}" | awk '{print $3}')
             [ -n "$objects" ] || return 2
+          }
+          # refuse_record <what the value is> <where a record says it, a jq filter> <the value>:
+          # stops the job on a value read from a deployment record that is not of its kind. A
+          # record is written by a release's build, and by anything else that may write to the
+          # records bucket, so what one holds is held whole like a typed input before a build is
+          # started with it. The value is never printed or passed on: the line names the object
+          # that holds it, found by reading the records just listed one at a time (the value as
+          # the shell read it, without the line breaks at its end).
+          refuse_record() {
+            where="one of the deployment records just read"
+            for object in $objects; do
+              if gcloud storage cat "$object" 2>/dev/null | jq -e --arg value "$3" "[$2 | select(. != null) | tostring | sub(\"\\n+\$\"; \"\")] | any(. == \$value)" > /dev/null 2>&1; then
+                where=$object
+                break
+              fi
+            done
+            echo "::error::$where holds something that is not $1 where a record says it. A release's build writes its own there, so the record was written or changed by something else; what it holds is not printed here, and nothing was started with it. Read that object, and remove it or put it right, before asking again."
+            exit 1
           }
           bucket=$(gcloud builds triggers describe "$TRIGGER" --region "$REGION" --project "$PROJECT" --format='value(substitutions._RECORDS_BUCKET)')
           if [ -z "$bucket" ]; then
@@ -1626,6 +1809,33 @@ jobs:
             objects=$(gcloud storage ls -l "gs://$1/$APP/$2/$id/releases/*/*.json" 2>/dev/null | grep '^ *[0-9]' | sort -k2,2r | head -"${3:-40}" | awk '{print $3}')
             [ -n "$objects" ] || return 2
           }
+          # refuse_record <what the value is> <where a record says it, a jq filter> <the value>:
+          # stops the job on a value read from a deployment record that is not of its kind. A
+          # record is written by a release's build, and by anything else that may write to the
+          # records bucket, so what one holds is held whole like a typed input before a build is
+          # started with it. The value is never printed or passed on: the line names the object
+          # that holds it, found by reading the records just listed one at a time (the value as
+          # the shell read it, without the line breaks at its end).
+          refuse_record() {
+            where="one of the deployment records just read"
+            for object in $objects; do
+              if gcloud storage cat "$object" 2>/dev/null | jq -e --arg value "$3" "[$2 | select(. != null) | tostring | sub(\"\\n+\$\"; \"\")] | any(. == \$value)" > /dev/null 2>&1; then
+                where=$object
+                break
+              fi
+            done
+            echo "::error::$where holds something that is not $1 where a record says it. A release's build writes its own there, so the record was written or changed by something else; what it holds is not printed here, and nothing was started with it. Read that object, and remove it or put it right, before asking again."
+            exit 1
+          }
+          # release_tag <value>: a release tag whole, v<major>.<minor>.<patch> and no other
+          # character, so neither a separator of the build's substitutions nor a line break.
+          release_tag() {
+            case "$1" in
+              *[!v0-9.]*|v*v*|*..*|*.*.*.*) return 1 ;;
+              v[0-9]*.[0-9]*.[0-9]*) return 0 ;;
+            esac
+            return 1
+          }
           bucket=$(gcloud builds triggers describe "$TRIGGER" --region "$REGION" --project "$PROJECT" --format='value(substitutions._RECORDS_BUCKET)')
           if [ -z "$bucket" ]; then
             echo "::error::the version trigger $TRIGGER names no records bucket (_RECORDS_BUCKET): the stack has not been applied with this bedrock yet"
@@ -1640,6 +1850,10 @@ jobs:
             echo "::error::no release is live in $ENVIRONMENT by its deployment records (gs://$bucket/$APP/$ENVIRONMENT/$id/releases/): nothing to take out of maintenance"
             exit 1
           fi
+          release_tag "$live" || refuse_record "a release tag (v<major>.<minor>.<patch>)" 'select(.status == "live") | .version' "$live"
+          # _REQUESTER is github.actor, the login GitHub gives whoever started the run: nobody
+          # types it, and a GitHub login holds no separator of this list and no line break, so it
+          # is passed as it is.
           build=$(gcloud builds triggers run "$TRIGGER" --tag "$live" --region "$REGION" --project "$PROJECT" \
             --substitutions "^|^_MAINTENANCE=off|_REQUESTER=$REQUESTER" --format='value(metadata.build.id)')
           echo "Build $build in $ENVIRONMENT takes $APP out of maintenance on $live, asked for by $REQUESTER."
