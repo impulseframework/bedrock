@@ -164,8 +164,8 @@ func (s *workflowStep) run(t *testing.T, r *stepRun) *stepResult {
 	return result
 }
 
-// wiredWorkflow renders the fixture with tst wired for operations (a project the
-// placement records) and answers its operations workflow.
+// wiredWorkflow renders the fixture with tst and stg wired for operations (a project the
+// placement records for each) and answers its operations workflow.
 func wiredWorkflow(t *testing.T, fixture, placement string) string {
 	t.Helper()
 
@@ -177,6 +177,7 @@ func wiredWorkflow(t *testing.T, fixture, placement string) string {
 		p.Projects = map[string]derive.Project{}
 	}
 	p.Projects["tst"] = derive.Project{ID: "imp-tst-gbl-core-b241", Number: "123456789012"}
+	p.Projects["stg"] = derive.Project{ID: "imp-stg-gbl-core-0fa7", Number: "234567890123"}
 	files, err := Render(deriveWith(t, fixture, p))
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
@@ -349,5 +350,238 @@ func TestOperationsInputsHeldWhole(t *testing.T) {
 				t.Errorf("the step wrote %d lines for %d outputs:\n%s", lines, want, got.outputs)
 			}
 		})
+	}
+}
+
+// gcloudStandIn is the script the tests put on the PATH as gcloud, for the steps that read
+// an environment's deployment records and start a build. It keeps what it is told beside
+// itself: every call's arguments in calls, the records the bucket holds in records/, the
+// records the build writes while it runs in written/ (moved into records/ when the trigger
+// is run), and the status the build ends with in status. The listing prints each record
+// with its own timestamp, as gcloud storage ls -l prints an object's time.
+const gcloudStandIn = `#!/usr/bin/env bash
+here=$(cd "$(dirname "$0")" && pwd)
+printf '%s\n' "$*" >> "$here/calls"
+case "$1 $2 $3" in
+  "builds triggers describe") echo records ;;
+  "builds triggers run")
+    cp "$here"/written/*.json "$here/records/" 2>/dev/null
+    echo b-9 ;;
+  "builds describe "*) cat "$here/status" ;;
+  "storage ls "*)
+    for record in "$here"/records/*.json; do
+      [ -e "$record" ] || continue
+      printf '     512  %s  gs://records/beacon/tst/3c4d/releases/%s\n' "$(jq -r .timestamp "$record")" "${record##*/}"
+    done ;;
+  "storage cat "*)
+    shift 2
+    for object in "$@"; do
+      case "$object" in
+        */stack.json) echo '{"id": "3c4d"}' ;;
+        *) cat "$here/records/${object##*/}" ;;
+      esac
+    done ;;
+esac
+`
+
+// standIn makes a directory holding the stand-in for gcloud, the records the bucket holds
+// before the build and the ones the build writes (each by its build's id), and the
+// build's last status, and answers the directory.
+func standIn(t *testing.T, before, written map[string]string, status string) string {
+	t.Helper()
+
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Fatalf("no jq to run the workflow's step with: %v (the step reads the deployment records with it)", err)
+	}
+	bin := t.TempDir()
+	files := map[string]string{"gcloud": gcloudStandIn, "status": status + "\n", "calls": ""}
+	for build, record := range before {
+		files[filepath.Join("records", build+".json")] = record + "\n"
+	}
+	for build, record := range written {
+		files[filepath.Join("written", build+".json")] = record + "\n"
+	}
+	for _, dir := range []string{"records", "written"} {
+		if err := os.MkdirAll(filepath.Join(bin, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(content), 0o700); err != nil { //nolint:gosec // the stand-in is run
+			t.Fatal(err)
+		}
+	}
+
+	return bin
+}
+
+// calls are the stand-in's calls so far, one a line.
+func calls(t *testing.T, bin string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(bin, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return string(data)
+}
+
+// TestRetireWaitsForItsOwnLiveRecord runs the retire job's build step of the rendered
+// workflow against a stand-in for gcloud: the step starts the live release's build with
+// the instruction, each value in its own substitution, and ends well only when that build
+// succeeded, its live record says the version was retired, and that record is the
+// environment's newest live one. A release approved alongside, which planned while the
+// version was enabled and took traffic after the retirement's build, or in the same
+// second, stops the job before the step that disables the version, with what to do; so
+// does a build that says nothing of the retirement, one that retired something else, and
+// one that failed. The step after it disables that version of that container and nothing
+// else, and says in the environment pull requests deploy to what they need.
+func TestRetireWaitsForItsOwnLiveRecord(t *testing.T) {
+	t.Parallel()
+
+	const (
+		buildStep   = "Rewrite what names the version and run the live release again without it"
+		disableStep = "Disable the version"
+		live        = `{"version": "v1.2.3", "status": "live", "timestamp": "2026-10-05T04:00:00Z", "build": "b-5", "versionedSecrets": {"APP_SECRET_KEY": ["1", "2"]}}`
+		retired     = `{"version": "v1.2.3", "status": "live", "timestamp": "2026-10-05T05:00:00Z", "build": "b-9", "versionedSecrets": {"APP_SECRET_KEY": ["2"]}, "retiredSecret": {"variable": "APP_SECRET_KEY", "version": "1", "requester": "octocat"}}`
+		started     = "builds triggers run imp-tst-uc1-beacon-version --tag v1.2.3 --region us-central1 --project imp-tst-gbl-core-b241 --substitutions _REQUESTER=octocat,_RETIRE_SECRET=APP_SECRET_KEY,_RETIRE_VERSION=1 --format=value(metadata.build.id)\n"
+		notNewest   = "Build b-9 retired version 1 of APP_SECRET_KEY in the revision it deployed, but its record is not the newest live one in tst: "
+		askAgain    = " took traffic at or after it, and that revision may have been handed the version. Nothing was disabled, and the version stays enabled. Once that release is live and no other is on its way, ask again (bedrock secret retire tst APP_SECRET_KEY 1)"
+	)
+	workflow := wiredWorkflow(t, "beacon", "placement-beacon.json")
+	tests := []struct {
+		name    string
+		before  map[string]string
+		written map[string]string
+		status  string
+		// wantPrinted is what the step prints; wantRefusal the sentence it stops the job
+		// with; wantStarted whether it started the build.
+		wantPrinted string
+		wantRefusal string
+		wantStarted bool
+	}{
+		{
+			name:        "the retirement's build is the newest live record",
+			before:      map[string]string{"b-5": live},
+			written:     map[string]string{"b-9": retired},
+			status:      "SUCCESS",
+			wantPrinted: "Build b-9 succeeded, its record says so and is the newest live one in tst: no stored value names version 1 of APP_SECRET_KEY, and tst runs v1.2.3 without it.",
+			wantStarted: true,
+		},
+		{
+			name:    "a release that took traffic before the retirement's build",
+			before:  map[string]string{"b-5": live},
+			written: map[string]string{"b-9": retired, "b-8": `{"version": "v1.2.3", "status": "live", "timestamp": "2026-10-05T04:58:00Z", "build": "b-8", "versionedSecrets": {"APP_SECRET_KEY": ["1", "2"]}}`},
+			status:  "SUCCESS", wantPrinted: "is the newest live one in tst", wantStarted: true,
+		},
+		{
+			name:        "a release approved alongside took traffic after the retirement's build",
+			before:      map[string]string{"b-5": live},
+			written:     map[string]string{"b-9": retired, "b-10": `{"version": "v1.2.4", "status": "live", "timestamp": "2026-10-05T05:02:00Z", "build": "b-10", "versionedSecrets": {"APP_SECRET_KEY": ["1", "2"]}}`},
+			status:      "SUCCESS",
+			wantRefusal: notNewest + "v1.2.4, build b-10" + askAgain,
+			wantStarted: true,
+		},
+		{
+			name:        "a release took traffic in the same second: the two are not told apart",
+			before:      map[string]string{"b-5": live},
+			written:     map[string]string{"b-9": retired, "b-10": `{"version": "v1.2.4", "status": "live", "timestamp": "2026-10-05T05:00:00Z", "build": "b-10"}`},
+			status:      "SUCCESS",
+			wantRefusal: notNewest + "v1.2.3, build b-9 and v1.2.4, build b-10" + askAgain,
+			wantStarted: true,
+		},
+		{
+			name:    "a preview deployed after it took no traffic and does not count",
+			before:  map[string]string{"b-5": live},
+			written: map[string]string{"b-9": retired, "b-10": `{"version": "v1.2.4", "status": "preview", "timestamp": "2026-10-05T05:02:00Z", "build": "b-10"}`},
+			status:  "SUCCESS", wantPrinted: "is the newest live one in tst", wantStarted: true,
+		},
+		{
+			name:        "a build that succeeded and says nothing of a retirement",
+			before:      map[string]string{"b-5": live},
+			written:     map[string]string{"b-9": `{"version": "v1.2.3", "status": "live", "timestamp": "2026-10-05T05:00:00Z", "build": "b-9"}`},
+			status:      "SUCCESS",
+			wantRefusal: "Build b-9 succeeded, but its deployment record does not say that version 1 of APP_SECRET_KEY was retired",
+			wantStarted: true,
+		},
+		{
+			name:        "a build whose record retired another version",
+			before:      map[string]string{"b-5": live},
+			written:     map[string]string{"b-9": strings.Replace(retired, `"version": "1"`, `"version": "2"`, 1)},
+			status:      "SUCCESS",
+			wantRefusal: "Build b-9 succeeded, but its deployment record does not say that version 1 of APP_SECRET_KEY was retired",
+			wantStarted: true,
+		},
+		{
+			name:        "a build that wrote no record",
+			before:      map[string]string{"b-5": live},
+			status:      "SUCCESS",
+			wantRefusal: "Build b-9 succeeded, but its deployment record does not say that version 1 of APP_SECRET_KEY was retired",
+			wantStarted: true,
+		},
+		{
+			name:        "a build that failed",
+			before:      map[string]string{"b-5": live},
+			status:      "FAILURE",
+			wantRefusal: "Build b-9 ended FAILURE; its log says why (a refusal names what to do). Version 1 of APP_SECRET_KEY stays enabled, nothing was disabled",
+			wantStarted: true,
+		},
+		{
+			name:        "no release live: nothing is started",
+			status:      "SUCCESS",
+			wantRefusal: "No release is live in tst by its deployment records",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			bin := standIn(t, tt.before, tt.written, tt.status)
+			run := &stepRun{
+				inputs:  map[string]string{"environment": "tst", "variable": "APP_SECRET_KEY", "version": "1"},
+				outputs: map[string]string{"target.project": "imp-tst-gbl-core-b241", "target.trigger": "imp-tst-uc1-beacon-version", "target.container": "imp-tst-gbl-beacon-secret-key"},
+				bin:     bin,
+			}
+			got := stepOf(t, jobOf(t, workflow, "retire"), buildStep).run(t, run)
+			if started := strings.Contains(calls(t, bin), started); started != tt.wantStarted {
+				t.Errorf("the step started the build with the instruction = %t, want %t; gcloud was called:\n%s", started, tt.wantStarted, calls(t, bin))
+			}
+			if strings.Contains(calls(t, bin), "secrets versions") {
+				t.Errorf("the build's step touched the secret's versions:\n%s", calls(t, bin))
+			}
+			if tt.wantRefusal != "" {
+				if !got.failed || !strings.Contains(got.printed, "::error::"+tt.wantRefusal) {
+					t.Fatalf("the step failed = %t, want the refusal %q; it printed:\n%s", got.failed, tt.wantRefusal, got.printed)
+				}
+
+				return
+			}
+			if got.failed || !strings.Contains(got.printed, tt.wantPrinted) {
+				t.Fatalf("the step failed = %t, want it to print %q; it printed:\n%s", got.failed, tt.wantPrinted, got.printed)
+			}
+			disabled := stepOf(t, jobOf(t, workflow, "retire"), disableStep).run(t, run)
+			if disabled.failed {
+				t.Fatalf("the disabling step failed; it printed:\n%s", disabled.printed)
+			}
+			if want := "secrets versions disable 1 --secret imp-tst-gbl-beacon-secret-key --project imp-tst-gbl-core-b241 --quiet\n"; !strings.HasSuffix(calls(t, bin), want) {
+				t.Errorf("the disabling step called gcloud with\n%s\nwant its last call\n%s", calls(t, bin), want)
+			}
+			containsAll(t, disabled.printed,
+				"Version 1 of imp-tst-gbl-beacon-secret-key is disabled in tst, asked for by octocat",
+				"Pull requests: a pull request's services built before this retirement were handed version 1 and still name it, and it is disabled now. Build each open pull request again (a /gcbrun comment): its build mounts the versions that are enabled.",
+			)
+		})
+	}
+
+	// Beyond the environment pull requests deploy to, the disabling step says nothing of them.
+	bin := standIn(t, nil, nil, "SUCCESS")
+	beyond := stepOf(t, jobOf(t, workflow, "retire"), disableStep).run(t, &stepRun{
+		inputs:  map[string]string{"environment": "stg", "variable": "APP_SECRET_KEY", "version": "1"},
+		outputs: map[string]string{"target.project": "imp-stg-gbl-core-0fa7", "target.container": "imp-stg-gbl-beacon-secret-key"},
+		bin:     bin,
+	})
+	if beyond.failed || !strings.Contains(beyond.printed, "Version 1 of imp-stg-gbl-beacon-secret-key is disabled in stg") || strings.Contains(beyond.printed, "Pull requests") {
+		t.Errorf("the disabling step in stg failed = %t and printed:\n%s", beyond.failed, beyond.printed)
 	}
 }

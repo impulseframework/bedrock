@@ -63,6 +63,27 @@ func liveHolding(versions ...string) map[string]string {
 	return map[string]string{"gs://records/quill/stg/3c4d/releases/v1.2.3/b-5.json": string(data)}
 }
 
+// inTst is a stg fixture of these tests (a build's substitutions, the secret versions that
+// exist, the records) moved to tst, the environment pull requests deploy to: every stg in
+// a key or a value reads tst, and a build's names the region its services run in.
+func inTst(fixture map[string]string) map[string]string {
+	moved := make(map[string]string, len(fixture)+1)
+	for key, value := range fixture {
+		moved[strings.ReplaceAll(key, "/stg/", "/tst/")] = strings.ReplaceAll(value, `"env":"stg"`, `"env":"tst"`)
+	}
+	for key, value := range fixture {
+		if strings.Contains(key, "imp-stg-gbl-") {
+			delete(moved, key)
+			moved[strings.ReplaceAll(key, "imp-stg-gbl-", "imp-tst-gbl-")] = value
+		}
+	}
+	if _, ok := fixture[envSub]; ok {
+		moved[envSub], moved[servicesSub] = tstEnvironment, "us-central1=quill-app"
+	}
+
+	return moved
+}
+
 func TestRetirementOf(t *testing.T) {
 	t.Parallel()
 
@@ -165,8 +186,11 @@ func TestPlanVersionedSecrets(t *testing.T) {
 		states     map[string]string
 		containers map[string]map[string]string
 		objects    map[string]string
-		wantOut    []string
-		wantTofu   []string
+		// services are the Cloud Run services of the project, a pull request's carrying
+		// its number as a label.
+		services map[string]map[string]any
+		wantOut  []string
+		wantTofu []string
 		// wantFacts are facts the step left (an empty value: not left); wantSecrets what the
 		// step did to Secret Manager.
 		wantFacts   map[string]string
@@ -206,6 +230,42 @@ func TestPlanVersionedSecrets(t *testing.T) {
 			wantTofu:    []string{initLine, stateLine, planLine + ` -var versioned_secret_versions={APP_SECRET_KEY=["2"]}`, showLine},
 			wantFacts:   map[string]string{versionedFact: "APP_SECRET_KEY=2", retireVersionsFact: retireVersionsJSON},
 			wantSecrets: []string{},
+		},
+		{
+			name:    "a retirement in the environment pull requests deploy to names the ones that have an environment, and what each needs",
+			subs:    inTst(retireSubs("APP_SECRET_KEY", "1")),
+			states:  inTst(both()),
+			objects: inTst(liveHolding("1", "2")),
+			services: map[string]map[string]any{
+				"projects/p-stg/locations/us-central1/services/quill-app":  {"name": "quill-app", "labels": map[string]any{applicationLabel: "quill"}},
+				"projects/p-stg/locations/us-central1/services/quill-pr12": {"name": "quill-pr12", "labels": map[string]any{applicationLabel: "quill", pullRequestLabel: "12"}},
+				"projects/p-stg/locations/us-central1/services/quill-pr7":  {"name": "quill-pr7", "labels": map[string]any{applicationLabel: "quill", pullRequestLabel: "7"}},
+				"projects/p-stg/locations/us-central1/services/other-pr3":  {"name": "other-pr3", "labels": map[string]any{applicationLabel: "other", pullRequestLabel: "3"}},
+			},
+			wantOut: []string{
+				"The plan hands the revision version 2 of imp-tst-gbl-quill-secret-key (APP_SECRET_KEY_2) and not version 1",
+				"Pull requests with an environment in tst: 7 and 12. Their services were handed the versions enabled when they were built, version 1 of APP_SECRET_KEY among them for one built before this run, and keep naming it. Each is built again with a /gcbrun comment once the version is disabled, and its build mounts the versions that are enabled; one whose own database holds values written under version 1 takes /gcbrun reload-db, since this run rewrites tst's database and no pull request's.",
+			},
+			wantFacts:   map[string]string{versionedFact: "APP_SECRET_KEY=2"},
+			wantSecrets: []string{},
+		},
+		{
+			name:    "a retirement there with no pull request's environment says so",
+			subs:    inTst(retireSubs("APP_SECRET_KEY", "1")),
+			states:  inTst(both()),
+			objects: inTst(liveHolding("1", "2")),
+			wantOut: []string{"Pull requests: none has an environment in tst now, so no pull request's services name version 1 of APP_SECRET_KEY."},
+		},
+		{
+			name:    "a retirement there goes on when the pull requests cannot be listed, and says what each needs",
+			subs:    withSub(inTst(retireSubs("APP_SECRET_KEY", "1")), servicesSub, "nowhere"),
+			states:  inTst(both()),
+			objects: inTst(liveHolding("1", "2")),
+			wantOut: []string{
+				"Pull requests: the pull requests with an environment in tst could not be listed (",
+				"), and the retirement goes on. A pull request's services built before it were handed version 1 of APP_SECRET_KEY and keep naming it. Each is built again with a /gcbrun comment once the version is disabled",
+			},
+			wantFacts: map[string]string{versionedFact: "APP_SECRET_KEY=2"},
 		},
 		{
 			name:     "a version that is not enabled is refused before the plan",
@@ -291,8 +351,8 @@ func TestPlanVersionedSecrets(t *testing.T) {
 			run := &fakeRunner{outputs: map[string]string{"tofu show": stackPlanJSON, "tofu show -json": emptyStateJSON}}
 			secrets := &fakeSecrets{states: tt.states, containers: tt.containers}
 			store := &memoryStore{objects: withStacks(tt.objects)}
-			store.objects[stackKey("records", "quill", "stg")] = stackJSON("3c4d")
-			clients := &Clients{Exec: run, SecretsAs: secrets.openAs, SpannerAs: (&fakeSpanner{}).open, Storage: store.open, Sleep: noSleep, Now: func() time.Time { return time.Date(2026, 10, 5, 4, 30, 0, 0, time.UTC) }}
+			store.objects[stackKey("records", "quill", tt.subs[envSub])] = stackJSON("3c4d")
+			clients := &Clients{Exec: run, SecretsAs: secrets.openAs, SpannerAs: (&fakeSpanner{}).open, Storage: store.open, Run: newFakeRun(tt.services).open, Sleep: noSleep, Now: func() time.Time { return time.Date(2026, 10, 5, 4, 30, 0, 0, time.UTC) }}
 			var out strings.Builder
 			err := PlanEnvironmentStack(t.Context(), clients, w, &out)
 			if tt.wantErr != "" {
@@ -303,8 +363,11 @@ func TestPlanVersionedSecrets(t *testing.T) {
 				t.Fatalf("PlanEnvironmentStack() error = %v; output:\n%s", err, out.String())
 			}
 			containsAll(t, out.String(), tt.wantOut...)
+			if tt.subs[envSub] != tstEnvironment && strings.Contains(out.String(), "Pull requests") {
+				t.Errorf("a run outside the environment pull requests deploy to speaks of them:\n%s", out.String())
+			}
 			lines := strings.ReplaceAll(strings.Join(run.lines(), "\n"), string(w), "WS")
-			if diff := cmp.Diff(strings.Join(tt.wantTofu, "\n"), lines); diff != "" {
+			if diff := cmp.Diff(strings.Join(tt.wantTofu, "\n"), lines); tt.wantTofu != nil && diff != "" {
 				t.Errorf("tofu (-want +got):\n%s", diff)
 			}
 			env, err := w.Environment()

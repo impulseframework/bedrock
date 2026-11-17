@@ -163,8 +163,34 @@ func planRetirement(ctx context.Context, clients *Clients, m *derive.Model, subs
 	})
 	pins.Versioned[r.Variable] = kept
 	fmt.Fprintf(out, "Retirement: %s. The plan hands the revision %s of %s (%s) and not version %s; the migrate command still receives it, to open what it rewrites.\n", r, versionsPhrase(kept), id, versionVariables(r.Variable, kept), r.Version)
+	r.pullRequests(ctx, clients, subs, out)
 
 	return map[string]string{retireVersionsFact: string(encoded)}, nil
+}
+
+// pullRequests says what the retirement leaves the pull requests with, in the environment
+// they deploy to and nowhere else. A pull request's stack shares that environment's
+// secrets and mounts the versions that were enabled when it was planned, so services
+// built before the retirement keep naming the version once it is disabled, and a pull
+// request's own database is not the one this run rewrites. Nothing is done for them
+// here: the line names the pull requests that have an environment now (their services
+// stand, by the label the sweep reads), or says that they could not be listed, and what
+// each needs.
+func (r *Retirement) pullRequests(ctx context.Context, clients *Clients, subs map[string]string, out io.Writer) {
+	env := subs[envSub]
+	if env != tstEnvironment {
+		return
+	}
+	const needs = "Each is built again with a /gcbrun comment once the version is disabled, and its build mounts the versions that are enabled; one whose own database holds values written under version %s takes /gcbrun reload-db, since this run rewrites %s's database and no pull request's.\n"
+	numbers, err := pullRequestEnvironments(ctx, clients, subs)
+	switch {
+	case err != nil:
+		fmt.Fprintf(out, "Pull requests: the pull requests with an environment in %s could not be listed (%v), and the retirement goes on. A pull request's services built before it were handed version %s of %s and keep naming it. "+needs, env, errors.Cause(err), r.Version, r.Variable, r.Version, env)
+	case len(numbers) == 0:
+		fmt.Fprintf(out, "Pull requests: none has an environment in %s now, so no pull request's services name version %s of %s.\n", env, r.Version, r.Variable)
+	default:
+		fmt.Fprintf(out, "Pull requests with an environment in %s: %s. Their services were handed the versions enabled when they were built, version %s of %s among them for one built before this run, and keep naming it. "+needs, env, joinAnd(numbers), r.Version, r.Variable, r.Version, env)
+	}
 }
 
 // heldBehind refuses the retirement unless the release live in the environment holds the

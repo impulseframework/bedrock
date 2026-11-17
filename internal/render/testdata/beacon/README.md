@@ -386,20 +386,32 @@ migrations, the release's migrate command runs once more with `-retire-secret
 <VARIABLE>_<version>` (`-retire-secret APP_SECRET_KEY_1`), with every enabled
 version in its environment, the retiring one included (the deploy identity,
 which runs the command, reads every versioned secret's container for this:
-`migrate_accessor` in `secret-manager.tf`): the application
-rewrites every stored value that names the version under the current one and
-confirms none is left by exiting 0; any other exit fails the build before a
-revision deploys, with the version still enabled. The revision without the
-version then takes traffic, and the deployment record says what was retired
-(`retiredSecret`). Only when the build has succeeded and its record says so
-does the workflow's job disable the version in Secret Manager, as the
-environment's operations identity, which
-holds 1-org's `secretVersionDisabler` on the versioned containers alone
-(`secret-manager.tf`; a 1-org applied by a bedrock that has the role comes
-first). A version is disabled and never destroyed by any of this: a backup
-taken before the retirement holds values under it, and `gcloud secrets
+`migrate_accessor` in `secret-manager.tf`): the application rewrites every
+stored value that names the version under the current one and confirms none is
+left by exiting 0; any other exit fails the build before a revision deploys,
+with the version still enabled. The revision without the version then takes
+traffic, and the deployment record says what was retired (`retiredSecret`).
+Only when the build has succeeded and its record says so does the workflow's
+job disable the version in Secret Manager, as the environment's operations
+identity, which holds 1-org's `secretVersionDisabler` on the versioned
+containers alone (`secret-manager.tf`; a 1-org applied by a bedrock that has
+the role comes first), and only while that record is the environment's newest
+live one: a release that took traffic after the retirement's build was handed
+the version, so the job disables nothing and says to ask again once that
+release is live. A version is disabled and never destroyed by any of this: a
+backup taken before the retirement holds values under it, and `gcloud secrets
 versions enable` brings it back. Destroying one is a step by hand, once those
 backups have aged out.
+
+Pull requests deploy to tst and share its secrets: a pull
+request's stack mounts the versions that were enabled when it was planned, so
+its services built before a retirement in tst keep naming the
+retired version, and its own database is not the one the retirement rewrote.
+After such a retirement, build each open pull request again (a `/gcbrun`
+comment: its build mounts the versions that are enabled), with `/gcbrun
+reload-db` where its own database holds values written under the retired
+version. The retirement build's log names the pull requests that have an
+environment.
 
 ### Build secrets
 

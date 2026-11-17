@@ -98,9 +98,14 @@
 # revision without the version then takes traffic. Only after that build has succeeded, and its
 # deployment record says the version was retired, does the job disable the version in Secret
 # Manager, as the environment's operations identity (the stack grants it the disabling of a
-# version on the versioned containers alone). The version is disabled, never
-# destroyed: a backup taken before holds values under it, and gcloud secrets versions enable brings
-# it back. A build that fails leaves the version enabled and the revision before it serving.
+# version on the versioned containers alone), and only while that record is the environment's
+# newest live one: a release that took traffic after the build was handed the version, so nothing
+# is disabled and the retirement is asked for again once that release is live. The version is
+# disabled, never destroyed: a backup taken before holds values under it, and gcloud secrets
+# versions enable brings it back. A build that fails leaves the version enabled and the revision
+# before it serving. In tst, where pull requests deploy, a pull request's services built before the
+# retirement still name the version: each open pull request is built again (/gcbrun), and the
+# job says so.
 #
 # teardown and destroy (tst): the pipeline's path to take the environment down, for
 # a person who is not an organization owner. The environment's name is typed into the confirm input,
@@ -1015,12 +1020,23 @@ jobs:
           # that succeeded without saying so (a release on a bedrock before retirements, which
           # does not read the instruction) retired nothing, and nothing is disabled.
           records "$bucket" "$ENVIRONMENT" || true
-          retired=$(gcloud storage cat $objects | jq -r -s --arg build "$build" '[.[] | select(.build == $build and .status == "live" and .retiredSecret != null)] | last | if . == null then "" else "\(.retiredSecret.variable)/\(.retiredSecret.version)" end' || true)
+          gcloud storage cat $objects | jq -s '[.[] | select(.status == "live")]' > live.json || true
+          retired=$(jq -r --arg build "$build" '[.[] | select(.build == $build and .retiredSecret != null)] | last | if . == null then "" else "\(.retiredSecret.variable)/\(.retiredSecret.version)" end' live.json || true)
           if [ "$retired" != "$VARIABLE/$VERSION" ]; then
             echo "::error::Build $build succeeded, but its deployment record does not say that version $VERSION of $VARIABLE was retired: the release it ran, $live, is built on a bedrock that does not read the instruction, or wrote no record. Nothing was disabled, and the version stays enabled. Release on this bedrock, then ask again."
             exit 1
           fi
-          echo "Build $build succeeded, and its record says so: no stored value names version $VERSION of $VARIABLE, and $ENVIRONMENT runs $live without it."
+          # And the environment's word: this build's record is its newest live one. A release
+          # approved alongside plans while the version is still enabled, is handed it, and may
+          # take traffic after this build; its record is then the newest, the revision serving
+          # names the version, and disabling it would stop that revision's next instance. Two
+          # live records of the same moment are not told apart, and nothing is disabled either.
+          newest=$(jq -r '(map(.timestamp) | max) as $t | [.[] | select(.timestamp == $t) | "\(.version), build \(.build)"] | unique | join(" and ")' live.json || true)
+          if [ "$newest" != "$live, build $build" ]; then
+            echo "::error::Build $build retired version $VERSION of $VARIABLE in the revision it deployed, but its record is not the newest live one in $ENVIRONMENT: $newest took traffic at or after it, and that revision may have been handed the version. Nothing was disabled, and the version stays enabled. Once that release is live and no other is on its way, ask again (bedrock secret retire $ENVIRONMENT $VARIABLE $VERSION): the run deploys it without the version, then disables it."
+            exit 1
+          fi
+          echo "Build $build succeeded, its record says so and is the newest live one in $ENVIRONMENT: no stored value names version $VERSION of $VARIABLE, and $ENVIRONMENT runs $live without it."
       # The version, disabled now that no value names it and no serving revision holds it; the
       # identity may disable a version of this container and nothing else of it. Disabled and
       # never destroyed: a backup taken before holds values under it.
@@ -1030,7 +1046,15 @@ jobs:
           CONTAINER: ${{ steps.target.outputs.container }}
         run: |
           gcloud secrets versions disable "$VERSION" --secret "$CONTAINER" --project "$PROJECT" --quiet
-          echo "Version $VERSION of $CONTAINER is disabled in $ENVIRONMENT, asked for by $REQUESTER: no stored value names it and the service no longer holds it. It is not destroyed: a backup taken before this holds values under it, and gcloud secrets versions enable $VERSION --secret $CONTAINER --project $PROJECT brings it back; destroying it is a step by hand once those backups have aged out."
+          {
+            echo "Version $VERSION of $CONTAINER is disabled in $ENVIRONMENT, asked for by $REQUESTER: no stored value names it and the service no longer holds it. It is not destroyed: a backup taken before this holds values under it, and gcloud secrets versions enable $VERSION --secret $CONTAINER --project $PROJECT brings it back; destroying it is a step by hand once those backups have aged out."
+            # Pull requests deploy to this environment alone and share its secrets: a pull
+            # request's stack mounts the versions that were enabled when it was planned.
+            if [ "$ENVIRONMENT" = "tst" ]; then
+              echo
+              echo "Pull requests: a pull request's services built before this retirement were handed version $VERSION and still name it, and it is disabled now. Build each open pull request again (a /gcbrun comment): its build mounts the versions that are enabled. Where a pull request's own database holds values written under version $VERSION, /gcbrun reload-db replaces that database: the retirement rewrote $ENVIRONMENT's database, not a pull request's. The build's log names the pull requests that have an environment."
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
   migration:
     name: the migrations' operation

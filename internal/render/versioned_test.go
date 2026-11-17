@@ -575,8 +575,9 @@ func jobOf(t *testing.T, workflow, job string) string {
 // on the action alone and no other job runs with it; it takes the versioned secrets the
 // code declares, by container; it runs the live release's build with the instruction and
 // who asked, and disables the version only in a step after that build's step, which fails
-// unless the build succeeded and its deployment record says the version was retired; it
-// never destroys a version. The rotate action takes a
+// unless the build succeeded, its deployment record says the version was retired and
+// that record is the environment's newest live one (TestRetireWaitsForItsOwnLiveRecord
+// runs the step); it never destroys a version. The rotate action takes a
 // versioned secret as it takes a generated one, and says of a build that failed that the
 // version stays enabled and the next release takes it up.
 func TestRetireWorkflow(t *testing.T) {
@@ -625,8 +626,10 @@ func TestRetireWorkflow(t *testing.T) {
 			buildStep := retire[build:disableStep]
 			containsAll(t, buildStep,
 				"SUCCESS) break ;;", "              FAILURE|", "|TIMEOUT|INTERNAL_ERROR|EXPIRED) echo \"::error::", "exit 1 ;;",
-				`select(.build == $build and .status == "live" and .retiredSecret != null)`,
+				`[.[] | select(.status == "live")]`,
+				`select(.build == $build and .retiredSecret != null)`,
 				`if [ "$retired" != "$VARIABLE/$VERSION" ]; then`,
+				`if [ "$newest" != "$live, build $build" ]; then`,
 				"its deployment record does not say that version $VERSION of $VARIABLE was retired",
 			)
 			if confirm, refuse := strings.Index(buildStep, `if [ "$retired" != "$VARIABLE/$VERSION" ]; then`), strings.LastIndex(buildStep, "exit 1"); confirm < 0 || refuse < confirm {

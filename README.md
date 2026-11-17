@@ -1569,12 +1569,25 @@ after the application's confirmation and the traffic's move; a release on a bedr
 does not read the instruction writes none, and nothing is disabled), the workflow's job
 disables the version in Secret Manager as the environment's operations identity, which the
 stack grants `1-org`'s `secretVersionDisabler` role on the versioned containers alone (so
-`1-org` is applied by a bedrock that has the role before a stack that grants it). A
-version is disabled and never destroyed by the command: a backup taken before the
-retirement holds values under it, and `gcloud secrets versions enable` brings it back;
-destroying one is a step by hand once those backups have aged out. The service drops the
-version before it is disabled, never after: a revision that names a disabled version
-cannot start an instance.
+`1-org` is applied by a bedrock that has the role before a stack that grants it). The job
+disables only while that record is the environment's newest live one: a release approved
+alongside the retirement plans while the version is still enabled, is handed it, and may
+take traffic after the retirement's build, so the job then disables nothing and says to
+ask again once that release is live. A version is disabled and never destroyed by the
+command: a backup taken before the retirement holds values under it, and `gcloud secrets
+versions enable` brings it back; destroying one is a step by hand once those backups have
+aged out. The service drops the version before it is disabled, never after: a revision
+that names a disabled version cannot start an instance.
+
+Pull requests deploy to the first environment and share its secrets: a pull request's
+stack mounts the versions that were enabled when it was planned, so its services built
+before a retirement there keep naming the retired version, and its own database is not the
+one the retirement rewrote. The command does nothing for them. After a retirement in the
+first environment, each open pull request is built again with a `/gcbrun` comment, whose
+build mounts the versions that are enabled, and one whose own database holds values
+written under the retired version takes `/gcbrun reload-db`. The retirement build's log
+names the pull requests that have an environment, and the workflow's job says what they
+need in its summary.
 
 A secret's container is protected from a destroy in every environment (`deletion_protection`
 in `secret-manager.tf`), as the file stores' buckets and the Firestore database are: a
