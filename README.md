@@ -1548,36 +1548,45 @@ enabled in Secret Manager and that the next release takes it up.
 `secret retire <env> <VARIABLE> <version>` takes a version out of use, through the
 operations workflow's `retire` action, in three moves whose order protects the running
 service. The live release's build runs again with the instruction, and its plan step
-refuses, with nothing changed and a sentence saying what to do, a version that is not
-enabled, the newest enabled version (every value is written under it: rotate first), and
-any version while the live release does not hold the newest enabled one (the rewrite
-writes under the newest, which that release could not open, and it may still write under
-the one retiring: `bedrock rerun` first). First, after the build's migrations, the
-release's migrate command is run once more as `migrate -retire-secret
-<VARIABLE>_<version>` (`-retire-secret APP_SECRET_KEY_1`), on the build worker as the
-deploy identity, from the checkout's root, with the variables a migration runs with and
-one variable per enabled version of the secret, the retiring one included (the stack
-grants the deploy identity accessor on every versioned secret's container for this): the
-application rewrites every stored value that still names the version under the current one
-and confirms none is left by exiting 0. Any other exit fails the build there, with the
-version enabled, no revision deployed and nothing disabled; a release whose migrate
-command does not know the flag fails the same way. Second, the build deploys a revision
-that was handed every enabled version but that one, and moves the traffic to it, so the
-service no longer holds the version. Third, and only once the build has succeeded and its
-deployment record says the version was retired (`retiredSecret`, which the build writes
-after the application's confirmation and the traffic's move; a release on a bedrock that
-does not read the instruction writes none, and nothing is disabled), the workflow's job
-disables the version in Secret Manager as the environment's operations identity, which the
-stack grants `1-org`'s `secretVersionDisabler` role on the versioned containers alone (so
-`1-org` is applied by a bedrock that has the role before a stack that grants it). The job
-disables only while that record is the environment's newest live one: a release approved
-alongside the retirement plans while the version is still enabled, is handed it, and may
-take traffic after the retirement's build, so the job then disables nothing and says to
-ask again once that release is live. A version is disabled and never destroyed by the
-command: a backup taken before the retirement holds values under it, and `gcloud secrets
-versions enable` brings it back; destroying one is a step by hand once those backups have
-aged out. The service drops the version before it is disabled, never after: a revision
-that names a disabled version cannot start an instance.
+refuses, with nothing changed and a sentence saying what to do, a secret declared at a
+level the migrate command does not construct, a version that is not enabled, the newest
+enabled version (every value is written under it: rotate first), and any version while the
+live release does not hold the newest enabled one (the rewrite writes under the newest,
+which that release could not open, and it may still write under the one retiring: `bedrock
+rerun` first). First, after the build's migrations, the release's migrate command is run
+once more as `migrate -retire-secret <VARIABLE>_<version>` (`-retire-secret
+APP_SECRET_KEY_1`), on the build worker as the deploy identity, from the checkout's root,
+with the variables a migration runs with and one variable per enabled version of the
+secret, the retiring one included: the application rewrites every stored value that still
+names the version under the current one and confirms none is left by exiting 0. Any other
+exit fails the build there, with the version enabled, no revision deployed and nothing
+disabled; a release whose migrate command does not know the flag fails the same way.
+Second, the build deploys a revision that was handed every enabled version but that one,
+and moves the traffic to it, so the service no longer holds the version. Third, and only
+once the build has succeeded and its deployment record says the version was retired
+(`retiredSecret`, which the build writes after the application's confirmation and the
+traffic's move; a release on a bedrock that does not read the instruction writes none, and
+nothing is disabled), the workflow's job disables the version in Secret Manager as the
+environment's operations identity, which the stack grants `1-org`'s
+`secretVersionDisabler` role on the versioned containers alone (so `1-org` is applied by a
+bedrock that has the role before a stack that grants it). The job disables only while that
+record is the environment's newest live one: a release approved alongside the retirement
+plans while the version is still enabled, is handed it, and may take traffic after the
+retirement's build, so the job then disables nothing and says to ask again once that
+release is live. A version is disabled and never destroyed by the command: a backup taken
+before the retirement holds values under it, and `gcloud secrets versions enable` brings
+it back; destroying one is a step by hand once those backups have aged out. The service
+drops the version before it is disabled, never after: a revision that names a disabled
+version cannot start an instance.
+
+A version is retired only of a versioned secret declared at a level the migrate command
+constructs (the core and data levels). The framework's rewrite opens the data level and
+rewrites the values there, so a versioned secret declared at another level (one the site
+alone constructs) holds nothing the command could rewrite or confirm: the stack hands the
+migrate command, and grants the deploy identity that runs it, the versioned secrets at its
+levels alone (`migrate_accessor` in `secret-manager.tf`), and `secret retire` and the
+build's plan step refuse a retirement of any other, saying why. Such a secret's versions
+stay enabled.
 
 Pull requests deploy to the first environment and share its secrets: a pull request's
 stack mounts the versions that were enabled when it was planned, so its services built

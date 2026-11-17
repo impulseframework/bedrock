@@ -534,18 +534,20 @@ stays enabled in Secret Manager, and the next release takes it up.
 
 `bedrock secret retire <env> <VARIABLE> <version>` takes a version out of use,
 through the operations workflow's `retire` action. The live release's build
-runs again with the instruction. Its plan step refuses a version that is not
-enabled, the newest enabled version, and any version while the live release
-does not hold the newest (it could not open the rewrite: run it again first),
-and hands the revision every enabled version but that one. After its
-migrations, the release's migrate command runs once more with `-retire-secret
-<VARIABLE>_<version>` (`-retire-secret APP_SECRET_KEY_1`), with every enabled
-version in its environment, the retiring one included (the deploy identity,
-which runs the command, reads every versioned secret's container for this:
-`migrate_accessor` in `secret-manager.tf`): the application rewrites every
-stored value that names the version under the current one and confirms none is
-left by exiting 0; any other exit fails the build before a revision deploys,
-with the version still enabled. The revision without the version then takes
+runs again with the instruction. Its plan step refuses a secret declared at a
+level the migrate command does not construct (the command, which does the
+rewrite, never receives it, and the deploy identity reads the versioned
+secrets at the command's levels alone: `migrate_accessor` in
+`secret-manager.tf`), a version that is not enabled, the newest enabled
+version, and any version while the live release does not hold the newest (it
+could not open the rewrite: run it again first), and hands the revision every
+enabled version but that one. After its migrations, the release's migrate
+command runs once more with `-retire-secret <VARIABLE>_<version>`
+(`-retire-secret APP_SECRET_KEY_1`), with every enabled version in its
+environment, the retiring one included: the application rewrites every stored
+value that names the version under the current one and confirms none is left
+by exiting 0; any other exit fails the build before a revision deploys, with
+the version still enabled. The revision without the version then takes
 traffic, and the deployment record says what was retired (`retiredSecret`).
 Only when the build has succeeded and its record says so does the workflow's
 job disable the version in Secret Manager, as the environment's operations

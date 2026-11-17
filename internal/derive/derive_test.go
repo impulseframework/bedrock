@@ -1270,6 +1270,38 @@ func TestSecretFor(t *testing.T) {
 // TestVersionVariablesFree: a variable the code declares under the name a versioned
 // secret hands one of its versions over by is refused, naming both; a name that ends in
 // a number beside a secret that is not versioned is no one's but its own.
+// TestRetirementOutOfReach: a version of a versioned secret is retired only where the
+// migrate command, which rewrites what names it, constructs the level the secret is
+// declared at; anywhere else the model says why not.
+func TestRetirementOutOfReach(t *testing.T) {
+	t.Parallel()
+
+	migrate := &Process{Name: migrateProcess, Levels: []string{LevelCore, LevelData}}
+	tests := []struct {
+		name    string
+		migrate *Process
+		level   string
+		want    string
+	}{
+		{name: "the data level, which the migrate command constructs", migrate: migrate, level: LevelData},
+		{name: "the core level, which it constructs too", migrate: migrate, level: LevelCore},
+		{name: "the site level, which it does not", migrate: migrate, level: LevelSite, want: "APP_SECRET_KEY is declared at the site level, which the migrate command does not construct (it constructs core, data): a retirement has that command rewrite the stored values that name the version, and it neither receives this secret nor reaches anything written under it, so it has nothing to rewrite or to confirm. The versions of a secret declared there stay enabled; one whose versions are to be retired is declared at a level the migrate command constructs"},
+		{name: "an application with no migrate command", level: LevelData, want: "APP_SECRET_KEY is declared at the data level, which the migrate command does not construct (the application has no migrate command)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := &Model{Migrate: tt.migrate}
+			s := &Secret{Variable: &Variable{Name: "APP_SECRET_KEY", Level: tt.level}, Versioned: true}
+			got := m.RetirementOutOfReach(s)
+			if (tt.want == "") != (got == "") || !strings.Contains(got, tt.want) {
+				t.Errorf("RetirementOutOfReach() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestVersionVariablesFree(t *testing.T) {
 	t.Parallel()
 

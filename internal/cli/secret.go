@@ -161,27 +161,37 @@ the variable and the version. The workflow's job, in the GitHub Environment name
 environment, exchanges its GitHub token for the environment's operations identity and runs the
 environment's version trigger for the live release with the instruction. That build:
 
-  - refuses, at its plan step and with nothing changed, a version that is not enabled, the newest
-    enabled version (every value is written under it: rotate first), and any version while the
-    live release does not hold the newest (it could not open the rewrite: bedrock rerun first);
+  - refuses, at its plan step and with nothing changed, a secret declared at a level the migrate
+    command does not construct (the command, which does the rewrite, never receives it), a version
+    that is not enabled, the newest enabled version (every value is written under it: rotate
+    first), and any version while the live release does not hold the newest (it could not open
+    the rewrite: bedrock rerun first);
   - hands the revision every enabled version but the one retiring;
   - after its migrations, runs the release's migrate command once more with
     -retire-secret <VARIABLE>_<version>, which rewrites every stored value that names the version
     under the current one and confirms none is left, or fails the build;
   - deploys the revision without the version and moves the traffic to it.
 
-Only after the build has succeeded does the job disable the version in Secret Manager (the stack
-grants the operations identity the disabling of a version on the versioned containers alone). The
-version is disabled and never destroyed: a backup taken before holds values under it, and gcloud
-secrets versions enable brings it back. Destroying it is a step by hand, once those backups have
-aged out. A build that fails leaves the version enabled and the revision before it serving.
-Production is reached like any environment: the trigger's approval gate applies as to any release.
+Only after the build has succeeded, its deployment record says the version was retired, and that
+record is the environment's newest live one does the job disable the version in Secret Manager
+(the stack grants the operations identity the disabling of a version on the versioned containers
+alone). A release that took traffic after the retirement's build was handed the version: the job
+then disables nothing and says to ask again once that release is live. The version is disabled
+and never destroyed: a backup taken before holds values under it, and gcloud secrets versions
+enable brings it back. Destroying it is a step by hand, once those backups have aged out. A build
+that fails leaves the version enabled and the revision before it serving. Production is reached
+like any environment: the trigger's approval gate applies as to any release.
 
-The variable is one the code declares secret:"versioned"; the version a positive integer, as the
-Secret Manager console lists it. The command itself changes nothing: it checks the variable against
-the code, the version's shape and that the placement records the environment's project, then
-dispatches the workflow as the person signed in to gh (or GITHUB_TOKEN) and prints where to watch
-it.`,
+In the first environment, where pull requests deploy, a pull request's services built before the
+retirement still name the version: each open pull request is built again with a /gcbrun comment
+(with /gcbrun reload-db where its own database holds values written under the version), and the
+build's log names the pull requests that have an environment.
+
+The variable is one the code declares secret:"versioned", at a level the migrate command
+constructs; the version a positive integer, as the Secret Manager console lists it. The command
+itself changes nothing: it checks the variable against the code, the version's shape and that the
+placement records the environment's project, then dispatches the workflow as the person signed in
+to gh (or GITHUB_TOKEN) and prints where to watch it.`,
 		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			env, variable, version := args[0], args[1], args[2]
@@ -217,6 +227,16 @@ it.`,
 // repositorySecrets are the secrets the repository's code declares, read the way render
 // reads them.
 func repositorySecrets(rc *repositoryContext) ([]derive.Secret, error) {
+	m, err := repositoryModel(rc)
+	if err != nil {
+		return nil, err
+	}
+
+	return m.Secrets, nil
+}
+
+// repositoryModel is the repository's application, derived the way render derives it.
+func repositoryModel(rc *repositoryContext) (*derive.Model, error) {
 	a, err := app.Discover(rc.root)
 	if err != nil {
 		return nil, errors.Wrap(err, "reading the application")
@@ -226,7 +246,7 @@ func repositorySecrets(rc *repositoryContext) ([]derive.Secret, error) {
 		return nil, errors.Wrap(err, "deriving the application")
 	}
 
-	return m.Secrets, nil
+	return m, nil
 }
 
 // generatedSecret answers the variable's secret when the repository's code declares it
@@ -256,16 +276,23 @@ func generatedSecret(rc *repositoryContext, variable string) (*derive.Secret, er
 }
 
 // versionedSecret checks that the variable is one the repository's code declares
-// secret:"versioned", the one kind a version is retired of, and refuses any other with
-// what the code declares.
+// secret:"versioned", the one kind a version is retired of, at a level the migrate
+// command constructs, where a retirement's rewrite reaches; it refuses any other with
+// what the code declares, and one out of the command's reach with why (the build's plan
+// step refuses the same).
 func versionedSecret(rc *repositoryContext, variable string) error {
-	secrets, err := repositorySecrets(rc)
+	m, err := repositoryModel(rc)
 	if err != nil {
 		return err
 	}
 	var versioned []string
-	for _, s := range secrets {
+	for i := range m.Secrets {
+		s := &m.Secrets[i]
 		if s.Variable.Name == variable && s.Versioned {
+			if reason := m.RetirementOutOfReach(s); reason != "" {
+				return errors.Newf("%s. Nothing was asked for", reason)
+			}
+
 			return nil
 		}
 		if s.Versioned {

@@ -17,6 +17,8 @@ import (
 // stg, and the JSON the plan step leaves the migrate step for a retirement over versions
 // 1 and 2.
 const (
+	sitePath           = "pkg/config/site.go"
+	siteContainer      = "projects/p-stg/secrets/imp-stg-gbl-quill-site-key"
 	versionedContainer = "projects/p-stg/secrets/imp-stg-gbl-quill-secret-key"
 	retireVersionsJSON = `{"APP_SECRET_KEY_1":"` + versionedContainer + `/versions/1","APP_SECRET_KEY_2":"` + versionedContainer + `/versions/2"}`
 )
@@ -37,6 +39,24 @@ func versionedConfig(t *testing.T) string {
 	}
 
 	return strings.Replace(string(data), cookie, cookie+"\tSecretKey string `env:\"APP_SECRET_KEY\" secret:\"versioned\"`\n", 1)
+}
+
+// siteVersionedConfig is harbor's site-level configuration with a secret declared
+// secret:"versioned" on the line after its portal bundle's directory: a versioned secret
+// at a level the migrate command does not construct.
+func siteVersionedConfig(t *testing.T) string {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join("..", "derive", "testdata", "harbor", sitePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const portal = "`env:\"APP_PORTAL_DIST,default=portal/dist/portal\"`\n"
+	if !strings.Contains(string(data), portal) {
+		t.Fatalf("harbor's %s lacks %s", sitePath, portal)
+	}
+
+	return strings.Replace(string(data), portal, portal+"\tSiteKey string `env:\"APP_SITE_KEY\" secret:\"versioned\"`\n", 1)
 }
 
 // retireSubs is stg's tag build with the records bucket and a retirement of the version
@@ -61,6 +81,15 @@ func liveHolding(versions ...string) map[string]string {
 	data, _ := json.Marshal(record)
 
 	return map[string]string{"gs://records/quill/stg/3c4d/releases/v1.2.3/b-5.json": string(data)}
+}
+
+// withVersions is the secret versions with the container's versions given, each enabled.
+func withVersions(states map[string]string, container string, versions ...string) map[string]string {
+	for _, version := range versions {
+		states[container+"/versions/"+version] = enabledState
+	}
+
+	return states
 }
 
 // inTst is a stg fixture of these tests (a build's substitutions, the secret versions that
@@ -189,6 +218,9 @@ func TestPlanVersionedSecrets(t *testing.T) {
 		// services are the Cloud Run services of the project, a pull request's carrying
 		// its number as a label.
 		services map[string]map[string]any
+		// site declares a second versioned secret, APP_SITE_KEY, at the site level, which
+		// the migrate command does not construct.
+		site     bool
 		wantOut  []string
 		wantTofu []string
 		// wantFacts are facts the step left (an empty value: not left); wantSecrets what the
@@ -266,6 +298,28 @@ func TestPlanVersionedSecrets(t *testing.T) {
 				"), and the retirement goes on. A pull request's services built before it were handed version 1 of APP_SECRET_KEY and keep naming it. Each is built again with a /gcbrun comment once the version is disabled",
 			},
 			wantFacts: map[string]string{versionedFact: "APP_SECRET_KEY=2"},
+		},
+		{
+			name:     "a versioned secret declared at a level the migrate command does not construct is refused: the command could rewrite nothing",
+			subs:     retireSubs("APP_SITE_KEY", "1"),
+			site:     true,
+			states:   withVersions(both(), siteContainer, "1", "2"),
+			objects:  liveHolding("1", "2"),
+			wantTofu: []string{initLine},
+			wantErr:  "Build REJECTED: APP_SITE_KEY is declared at the site level, which the migrate command does not construct (it constructs core, data): a retirement has that command rewrite the stored values that name the version, and it neither receives this secret nor reaches anything written under it, so it has nothing to rewrite or to confirm. The versions of a secret declared there stay enabled; one whose versions are to be retired is declared at a level the migrate command constructs. Nothing was changed",
+		},
+		{
+			name:    "the secret beside it, at a level the command constructs, is retired as before, and the site-level one keeps every version",
+			subs:    retireSubs("APP_SECRET_KEY", "1"),
+			site:    true,
+			states:  withVersions(both(), siteContainer, "1", "2"),
+			objects: liveHolding("1", "2"),
+			wantOut: []string{"The plan hands the revision version 2 of imp-stg-gbl-quill-secret-key (APP_SECRET_KEY_2) and not version 1"},
+			wantFacts: map[string]string{
+				versionedFact:      "APP_SECRET_KEY=2,APP_SITE_KEY=1 2",
+				retireVersionsFact: retireVersionsJSON,
+			},
+			wantSecrets: []string{},
 		},
 		{
 			name:     "a version that is not enabled is refused before the plan",
@@ -346,6 +400,9 @@ func TestPlanVersionedSecrets(t *testing.T) {
 			files := map[string]string{
 				EnvironmentFile: "export SKIP_DEPLOY=\"\"\n", BuildFile: buildFor(t, tt.subs),
 				placementPath: testPlacement(""), tfvarsPath: pinnedTfvars(allPinned, allPinned, allPinned), configPath: versionedConfig(t),
+			}
+			if tt.site {
+				files[sitePath] = siteVersionedConfig(t)
 			}
 			w := applicationWorkspace(t, files)
 			run := &fakeRunner{outputs: map[string]string{"tofu show": stackPlanJSON, "tofu show -json": emptyStateJSON}}
@@ -464,7 +521,7 @@ func TestMigrateRetirement(t *testing.T) {
 			wantFacts: map[string]string{retiredVariableFact: "APP_SECRET_KEY", retiredVersionFact: "1"},
 		},
 		{
-			name:    "a versioned secret the migrate command does not otherwise read still reaches the rewrite",
+			name:    "the rewrite takes the versions from the plan step, whatever the trigger says of the stack's last apply",
 			env:     migrateEnvironment + retiring,
 			build:   build(nil),
 			secrets: &fakeSecrets{payloads: payloads},

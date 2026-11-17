@@ -3,6 +3,7 @@ package render
 import (
 	"encoding/json"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,6 +16,8 @@ import (
 	"github.com/zclconf/go-cty/cty/convert"
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
+
+	"github.com/impulseframework/bedrock/internal/derive"
 )
 
 // stackFunctions are the functions the rendered secret locals call, as tofu has them:
@@ -28,7 +31,6 @@ func stackFunctions() map[string]function.Function {
 		"join":       stdlib.JoinFunc,
 		"jsonencode": stdlib.JSONEncodeFunc,
 		"setproduct": stdlib.SetProductFunc,
-		"setunion":   stdlib.SetUnionFunc,
 		"toset": function.New(&function.Spec{
 			Params: []function.Parameter{{Name: "v", Type: cty.DynamicPseudoType}},
 			Type:   function.StaticReturnType(cty.Set(cty.String)),
@@ -64,19 +66,27 @@ func stackFunctions() map[string]function.Function {
 }
 
 // secretLocals evaluates the rendered secret locals of a golden stack for the tst
-// environment, in the order they depend on one another, over the variables a plan is
-// given: the placement's secret_versions for the environment, the generated secrets'
-// versions and the versioned secrets' lists. secrets replaces the golden's own secrets
-// local when it is not nil. What it answers is the stack's local object with every one of
-// them evaluated.
+// environment (secretLocalsIn).
 func secretLocals(t *testing.T, golden string, declared, generated map[string]string, versioned map[string][]string, secrets *cty.Value) map[string]cty.Value {
 	t.Helper()
 
+	return secretLocalsIn(t, filepath.Join("testdata", golden), golden, declared, generated, versioned, secrets)
+}
+
+// secretLocalsIn evaluates the secret locals of the application's rendered stack in the
+// directory for the tst environment, in the order they depend on one another, over the
+// variables a plan is given: the placement's secret_versions for the environment, the
+// generated secrets' versions and the versioned secrets' lists. secrets replaces the
+// stack's own secrets local when it is not nil. What it answers is the stack's local
+// object with every one of them evaluated.
+func secretLocalsIn(t *testing.T, dir, app string, declared, generated map[string]string, versioned map[string][]string, secrets *cty.Value) map[string]cty.Value {
+	t.Helper()
+
 	const environment = "tst"
-	locals := localsOf(t, parseBody(t, filepath.Join("testdata", golden, "locals.tf")))
+	locals := localsOf(t, parseBody(t, filepath.Join(dir, "locals.tf")))
 	local := map[string]cty.Value{
 		"name":       cty.StringVal("imp-" + environment),
-		"app":        cty.StringVal(golden),
+		"app":        cty.StringVal(app),
 		"project_id": cty.StringVal("p-" + environment),
 		"is_pr":      cty.False,
 	}
@@ -93,7 +103,7 @@ func secretLocals(t *testing.T, golden string, declared, generated map[string]st
 			if strings.HasPrefix(name, "jobs_") {
 				continue
 			}
-			t.Fatalf("%s: locals.tf declares no %s", golden, name)
+			t.Fatalf("%s: locals.tf declares no %s", dir, name)
 		}
 		if name == "secrets" && secrets != nil {
 			local[name] = *secrets
@@ -103,7 +113,7 @@ func secretLocals(t *testing.T, golden string, declared, generated map[string]st
 		ctx := &hcl.EvalContext{Variables: map[string]cty.Value{"local": cty.ObjectVal(local), "var": cty.ObjectVal(vars)}, Functions: stackFunctions()}
 		value, diags := attr.Expr.Value(ctx)
 		if diags.HasErrors() {
-			t.Fatalf("%s: %s: %s", golden, name, diags.Error())
+			t.Fatalf("%s: %s: %s", dir, name, diags.Error())
 		}
 		local[name] = value
 	}
@@ -436,35 +446,74 @@ func TestVersionedSecretGrants(t *testing.T) {
 	}
 }
 
-// TestMigrateAccessor evaluates which containers the rendered stack lets the deploy
-// identity read (secret-manager.tf, migrate_accessor): the migrate command's own secrets,
-// and every versioned secret's container whether or not the command constructs its level,
-// because a retirement hands the command every enabled version of the secret it rewrites;
-// never a generated secret the command does not read; nothing on a pull-request stack.
+// renderedStack renders the model's stack into a directory of its own and answers it.
+func renderedStack(t *testing.T, m *derive.Model) string {
+	t.Helper()
+
+	files, err := Render(m)
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	dir := t.TempDir()
+	for _, f := range files {
+		if f.Root {
+			continue
+		}
+		path := filepath.Join(dir, filepath.FromSlash(f.Path))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, f.Content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	return dir
+}
+
+// TestMigrateAccessor renders an application and evaluates which containers its stack
+// lets the deploy identity read (secret-manager.tf, migrate_accessor): the migrate
+// command's own secrets and, of the versioned ones, those declared at a level the command
+// constructs, which are the ones a retirement can act on. A versioned secret declared at
+// another level is handed to the service and never to the deploy identity; neither is a
+// generated secret the command does not read; a pull-request stack grants nothing.
 func TestMigrateAccessor(t *testing.T) {
 	t.Parallel()
 
-	harborSecrets := harborVersionedSecrets()
 	tests := []struct {
-		name        string
-		golden      string
-		secrets     *cty.Value
+		name string
+		// level moves beacon's versioned secret, which its code declares at the data
+		// level, to another level.
+		level       string
 		pullRequest bool
+		wantLevel   string
 		want        []string
 	}{
-		{name: "the command's secrets, the versioned one among them", golden: "beacon", want: []string{"APP_KEEPERS_ADMINISTRATOR_PASSWORD", "APP_MAIL_APP_PASSWORD", "APP_SECRET_KEY"}},
-		{name: "versioned secrets the command does not read", golden: "harbor", secrets: &harborSecrets, want: []string{"APP_MAIL_APP_PASSWORD", "APP_SECRET_KEY", "APP_SITE_KEY"}},
-		{name: "no versioned secret", golden: "harbor", want: []string{"APP_MAIL_APP_PASSWORD"}},
-		{name: "a pull-request stack", golden: "harbor", secrets: &harborSecrets, pullRequest: true, want: []string{}},
+		{name: "a versioned secret at the data level, which the migrate command constructs", wantLevel: derive.LevelData, want: []string{"APP_KEEPERS_ADMINISTRATOR_PASSWORD", "APP_MAIL_APP_PASSWORD", "APP_SECRET_KEY"}},
+		{name: "a versioned secret at the site level, which the migrate command does not construct", level: derive.LevelSite, wantLevel: derive.LevelSite, want: []string{"APP_KEEPERS_ADMINISTRATOR_PASSWORD", "APP_MAIL_APP_PASSWORD"}},
+		{name: "a pull-request stack", pullRequest: true, wantLevel: derive.LevelData, want: []string{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			local := secretLocals(t, tt.golden, nil, nil, nil, tt.secrets)
+			m := deriveFixture(t, "beacon", "placement-beacon.json")
+			for i := range m.Secrets {
+				if m.Secrets[i].Versioned && tt.level != "" {
+					m.Secrets[i].Variable.Level = tt.level
+				}
+			}
+			dir := renderedStack(t, m)
+			local := secretLocalsIn(t, dir, "beacon", nil, nil, map[string][]string{"APP_SECRET_KEY": {"1", "2"}}, nil)
+			if level := local["versioned_secrets"].AsValueMap()["APP_SECRET_KEY"].AsValueMap()["level"].AsString(); level != tt.wantLevel {
+				t.Fatalf("the stack declares the versioned secret at the %s level, want %s", level, tt.wantLevel)
+			}
+			if mounts := local["secret_mounts"].AsValueMap(); len(mounts) == 0 || mounts["APP_SECRET_KEY_2"].IsNull() {
+				t.Errorf("the service is not handed the versioned secret's versions: %v", slices.Sorted(maps.Keys(mounts)))
+			}
 			local["is_pr"] = cty.BoolVal(tt.pullRequest)
 			ctx := &hcl.EvalContext{Variables: map[string]cty.Value{"local": cty.ObjectVal(local)}, Functions: stackFunctions()}
-			grant := resourceBody(t, parseBody(t, filepath.Join("testdata", tt.golden, "secret-manager.tf")), "google_secret_manager_secret_iam_member.migrate_accessor")
+			grant := resourceBody(t, parseBody(t, filepath.Join(dir, "secret-manager.tf")), "google_secret_manager_secret_iam_member.migrate_accessor")
 			got := []string{}
 			for it := evalAttribute(t, ctx, grant, "for_each").ElementIterator(); it.Next(); {
 				_, v := it.Element()

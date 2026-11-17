@@ -1150,6 +1150,24 @@ func (m *Model) Level(name string) (Level, bool) {
 	return Level{}, false
 }
 
+// RetirementOutOfReach says why no version of the versioned secret can be retired, empty
+// when one can. A retirement has the migrate command rewrite every stored value that
+// names the version, at the levels that command constructs: the stack hands it the
+// versioned secrets declared at those levels and grants the deploy identity, which runs
+// it, their containers alone. A versioned secret declared at another level never reaches
+// the command, which holds nothing written under it to rewrite or to confirm.
+func (m *Model) RetirementOutOfReach(s *Secret) string {
+	constructs := "the application has no migrate command"
+	if m.Migrate != nil {
+		if m.Migrate.Reads(s.Variable.Level) {
+			return ""
+		}
+		constructs = "it constructs " + strings.Join(m.Migrate.Levels, ", ")
+	}
+
+	return s.Variable.Name + " is declared at the " + s.Variable.Level + " level, which the migrate command does not construct (" + constructs + "): a retirement has that command rewrite the stored values that name the version, and it neither receives this secret nor reaches anything written under it, so it has nothing to rewrite or to confirm. The versions of a secret declared there stay enabled; one whose versions are to be retired is declared at a level the migrate command constructs"
+}
+
 // versionVariablesFree refuses a variable the code declares under a name a versioned
 // secret's versions are handed over by: APP_SECRET_KEY_2 beside a versioned
 // APP_SECRET_KEY would be set twice on the revision, once by each.

@@ -69,6 +69,24 @@ func versionedConfig(t *testing.T, generated bool) string {
 	return strings.Replace(string(data), cookie, tagged+"\tSecretKey string `env:\"APP_SECRET_KEY\" secret:\"versioned\"`\n", 1)
 }
 
+// siteVersionedConfig is harbor's site-level configuration with a secret declared
+// secret:"versioned" on the line after its portal bundle's directory: a versioned secret
+// at a level the migrate command does not construct.
+func siteVersionedConfig(t *testing.T) string {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(fixtureApp, "pkg", "config", "site.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const portal = "`env:\"APP_PORTAL_DIST,default=portal/dist/portal\"`\n"
+	if !strings.Contains(string(data), portal) {
+		t.Fatalf("harbor's site.go lacks %s", portal)
+	}
+
+	return strings.Replace(string(data), portal, portal+"\tSiteKey string `env:\"APP_SITE_KEY\" secret:\"versioned\"`\n", 1)
+}
+
 // labGitHub is the stand-in GitHub with harbor at v0.1.4 (c4) on master, plus what the
 // test adds.
 func labGitHub(t *testing.T) (*githubtest.Server, *githubtest.Repo) {
@@ -370,6 +388,13 @@ func TestRestoreAndPatch(t *testing.T) {
 			files:   map[string]string{"pkg/config/data.go": versionedConfig(t, true)},
 			args:    []string{"secret", "retire", "tst", "APP_COOKIE_KEY", "1", "--placement", placement},
 			wantErr: `APP_COOKIE_KEY is not a secret the code declares secret:"versioned" (it declares APP_SECRET_KEY): a version is retired of a secret whose every enabled version the service holds; a secret of any other kind runs on one version, and its earlier versions are held by nothing`,
+		},
+		{
+			name:    "secret retire refuses a versioned secret declared at a level the migrate command does not construct, where it could rewrite nothing",
+			remote:  "git@github.com:impulseframework/harbor.git",
+			files:   map[string]string{"pkg/config/data.go": versionedConfig(t, false), "pkg/config/site.go": siteVersionedConfig(t)},
+			args:    []string{"secret", "retire", "tst", "APP_SITE_KEY", "1", "--placement", placement},
+			wantErr: "APP_SITE_KEY is declared at the site level, which the migrate command does not construct (it constructs core, data): a retirement has that command rewrite the stored values that name the version, and it neither receives this secret nor reaches anything written under it, so it has nothing to rewrite or to confirm. The versions of a secret declared there stay enabled; one whose versions are to be retired is declared at a level the migrate command constructs. Nothing was asked for",
 		},
 		{
 			name:    "secret retire refuses a secret where the code declares none versioned",

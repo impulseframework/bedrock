@@ -101,7 +101,8 @@ func (r *Retirement) target() string {
 
 // planRetirement is the plan step's part of a retirement, nothing for a build that
 // carries none. It refuses, before anything changes, a variable the release does not
-// declare versioned, a version that is not enabled, the newest enabled version (every
+// declare versioned, one declared at a level the migrate command does not construct (the
+// command, which does the rewrite, never receives it), a version that is not enabled, the newest enabled version (every
 // value is written under it), and any version while the live release does not hold the
 // newest enabled one (the rewrite writes under it, so the revision serving now could not
 // open what was rewritten, and a release that does not hold it may still write under the
@@ -134,6 +135,9 @@ func planRetirement(ctx context.Context, clients *Clients, m *derive.Model, subs
 		}
 
 		return nil, errors.Newf("%s%s is not a secret this release declares secret:%q (%s): a version is retired of a secret whose every enabled version the service holds, and nothing was changed", rejected, r.Variable, secret.Versioned, declares)
+	}
+	if reason := m.RetirementOutOfReach(declared); reason != "" {
+		return nil, errors.Newf("%s%s. Nothing was changed", rejected, reason)
 	}
 	id := secretContainerID(m, subs[appSub], env, declared)
 	var enabled []string
@@ -224,8 +228,8 @@ func (r *Retirement) heldBehind(ctx context.Context, clients *Clients, subs map[
 // migrate command run once more with the flag and the variable the retiring version is
 // handed over under, and with every enabled version of the secret in its environment
 // (the plan step's fact, each read as the deploy identity, which the stack grants
-// accessor on every versioned secret's container for this; the values are never
-// printed). The application rewrites every stored value that names the version and
+// accessor on the versioned secrets at the levels the command constructs, the ones the
+// plan step lets a retirement name; the values are never printed). The application rewrites every stored value that names the version and
 // confirms none is left by exiting 0, and the step leaves the retirement for the record.
 // Any other exit fails the build here, before a revision deploys, with nothing disabled.
 func (m *migrateRun) retire(ctx context.Context, clients *Clients, w Workspace, env map[string]string, r *Retirement) error {
