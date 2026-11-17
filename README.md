@@ -471,8 +471,9 @@ a secret becomes a Secret Manager container mounted at a pinned version; a direc
 provider through the generic OpenID Connect method, `impulse add method <auth> oidc
 <registration>`: an Okta, a Keycloak, or Google used as a plain OpenID Connect provider,
 whose issuer URL becomes a stack variable once for the organization,
-`<auth>_<registration>_issuer`) becomes the registration variables, the redirect output
-and the hand steps in the README;
+`<auth>_<registration>_issuer`, an `https` URL: the plan refuses an `http` issuer, since a
+rendered stack is a cloud environment) becomes the registration variables, the redirect
+output and the hand steps in the README;
 an auth's first-administrator variable (`APP_<AUTH>_ADMINISTRATOR`, the sign-in name the
 migrate command seeds the administrator role membership under while the auth has no users)
 becomes a stack variable per environment, carried by every data-level process, and a hand

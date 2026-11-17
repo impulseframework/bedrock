@@ -1321,8 +1321,9 @@ Per environment, after the first apply:
    web application client signing in by authorization code, with a client
    secret, and the sign-in redirect URI = output `{{.Var "REDIRECT_URL"}}`. Put
    its client ID in `terraform.tfvars` (`{{.Var "CLIENT_ID"}}`) and the provider's
-   issuer URL in `{{.Var "ISSUER"}}` (once for the organization; Google's is
-   `https://accounts.google.com`), and add the client secret as version 1 of
+   issuer URL in `{{.Var "ISSUER"}}` (once for the organization; an `https` URL,
+   as Google's `https://accounts.google.com`: the plan refuses an `http` one), and
+   add the client secret as version 1 of
    `{{$.Prefix}}-<env>-gbl-{{$.App}}-{{.Secret.Name}}`. The issuer is the URL the provider's
    configuration is read under (`<issuer>/.well-known/openid-configuration`) and
    every sign-in's token carries, so another issuer is another provider, whose

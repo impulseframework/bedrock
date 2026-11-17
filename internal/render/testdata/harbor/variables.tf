@@ -456,14 +456,16 @@ variable "members_okta_issuer" {
     organization: another issuer is another provider, whose people no link made
     so far knows. The session library refuses a missing or malformed one when the
     registration is made, at construction, so every data-level process carries it
-    and the first release in an environment waits on it (README, "Hand steps").
+    and the first release in an environment waits on it (README, "Hand steps"). It
+    is an https URL: the stack is a cloud environment, where the provider's keys
+    and the sign-in's tokens are never fetched or sent in the clear.
   EOT
   type        = string
   default     = ""
 
   validation {
-    condition     = var.members_okta_issuer == "" || can(regex("^https?://[^/?#]+(/[^?#]*)?$", var.members_okta_issuer))
-    error_message = "members_okta_issuer is the provider's issuer URL: absolute, http or https, with no query or fragment, or empty before the registration."
+    condition     = var.members_okta_issuer == "" || can(regex("^https://[^/?#]+(/[^?#]*)?$", var.members_okta_issuer))
+    error_message = "members_okta_issuer is the provider's issuer URL: absolute and https (https://accounts.google.com), with no query or fragment, or empty before the registration. An http issuer is refused: this stack is a cloud environment, and the provider's keys and the sign-in's tokens do not travel in the clear."
   }
 }
 

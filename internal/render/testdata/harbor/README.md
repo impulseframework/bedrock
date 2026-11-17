@@ -1189,8 +1189,9 @@ Per environment, after the first apply:
    web application client signing in by authorization code, with a client
    secret, and the sign-in redirect URI = output `members_okta_redirect_url`. Put
    its client ID in `terraform.tfvars` (`members_okta_client_id`) and the provider's
-   issuer URL in `members_okta_issuer` (once for the organization; Google's is
-   `https://accounts.google.com`), and add the client secret as version 1 of
+   issuer URL in `members_okta_issuer` (once for the organization; an `https` URL,
+   as Google's `https://accounts.google.com`: the plan refuses an `http` one), and
+   add the client secret as version 1 of
    `imp-<env>-gbl-harbor-members-okta-client-secret`. The issuer is the URL the provider's
    configuration is read under (`<issuer>/.well-known/openid-configuration`) and
    every sign-in's token carries, so another issuer is another provider, whose

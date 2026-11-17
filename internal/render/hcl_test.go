@@ -552,10 +552,11 @@ func evalAttribute(t *testing.T, ctx *hcl.EvalContext, body *hclsyntax.Body, nam
 
 // TestProviderIssuerValidation evaluates the validation the stack declares on an identity
 // provider's issuer (harbor's okta registration, variables.tf), as tofu evaluates it at
-// the plan: it admits the empty value of a placement not yet filled and an absolute http
-// or https URL with no query or fragment, the shape the session library's registration
-// takes (oidc.SignIn refuses any other at construction), and refuses the rest at the
-// plan, before a release could carry it.
+// the plan: it admits the empty value of a placement not yet filled and an absolute
+// https URL with no query or fragment, and refuses the rest at the plan, before a release
+// could carry it. The session library's registration takes an http issuer too (a
+// provider on a developer's own machine); a rendered stack is a cloud environment and
+// does not: an http issuer, a loopback one included, is refused.
 func TestProviderIssuerValidation(t *testing.T) {
 	t.Parallel()
 
@@ -577,7 +578,10 @@ func TestProviderIssuerValidation(t *testing.T) {
 		{issuer: "https://accounts.google.com", want: true},
 		{issuer: "https://dev-123456.okta.com/oauth2/default", want: true},
 		{issuer: "https://sso.example.com/realms/partners/", want: true},
-		{issuer: "http://127.0.0.1:8080", want: true},
+		{issuer: "https://127.0.0.1:8443", want: true},
+		{issuer: "http://127.0.0.1:8080"},
+		{issuer: "http://idp.example.com/oauth2/default"},
+		{issuer: "HTTP://idp.example.com"},
 		{issuer: "accounts.google.com"},
 		{issuer: "ftp://idp.example.com"},
 		{issuer: "https://"},
