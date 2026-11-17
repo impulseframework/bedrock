@@ -7,19 +7,19 @@ require (
 	cloud.google.com/go/iam v1.15.1
 	cloud.google.com/go/orgpolicy v1.22.1
 	cloud.google.com/go/resourcemanager v1.18.1
-	cloud.google.com/go/secretmanager v1.23.1
+	cloud.google.com/go/secretmanager v1.24.0
 	cloud.google.com/go/storage v1.70.0
 	github.com/go-playground/errors/v5 v5.4.0
 	github.com/google/go-cmp v0.7.0
 	github.com/hashicorp/hcl/v2 v2.25.0
 	github.com/impulseframework/impulse v0.1.0
 	github.com/spf13/cobra v1.10.2
-	github.com/zclconf/go-cty v1.19.0
+	github.com/zclconf/go-cty v1.20.0
 	golang.org/x/crypto v0.58.0
-	golang.org/x/mod v0.42.0
+	golang.org/x/mod v0.43.0
 	golang.org/x/net v0.62.0
-	golang.org/x/oauth2 v0.37.0
-	golang.org/x/term v0.47.0
+	golang.org/x/oauth2 v0.38.0
+	golang.org/x/term v0.48.0
 	google.golang.org/api v0.311.0
 	google.golang.org/genproto v0.0.0-20261012220534-4341edf3f941
 	google.golang.org/grpc v1.85.0
@@ -70,7 +70,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.47.0 // indirect
 	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	golang.org/x/tools v0.52.0 // indirect
