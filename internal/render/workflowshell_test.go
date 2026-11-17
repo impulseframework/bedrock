@@ -60,10 +60,10 @@ func stepOf(t *testing.T, job, name string) *workflowStep {
 	lines := strings.Split(job, "\n")
 	found := false
 	for i := 0; i < len(lines); i++ {
-		switch {
-		case lines[i] == jobKeyIndent+"env:":
+		switch lines[i] {
+		case jobKeyIndent + "env:":
 			i = step.variables(lines, i+1, jobEnvIndent)
-		case lines[i] == stepIndent+"name: "+name:
+		case stepIndent + "name: " + name:
 			found = true
 			for i++; i < len(lines) && !strings.HasPrefix(lines[i], stepIndent) && (lines[i] == "" || strings.HasPrefix(lines[i], stepKeyIndent)); i++ {
 				switch lines[i] {
