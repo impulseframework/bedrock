@@ -316,6 +316,93 @@ func TestOrgSecretRepositoriesNotFound(t *testing.T) {
 	}
 }
 
+// TestOrgSecretsRefused: an organization that refuses its Actions secrets, as GitHub
+// refuses an app that does not hold the organization's Secrets permission, answers 403 to
+// the read of a secret whether it stands or not, to the listing and the setting of its
+// repositories, to its removal and to the read of the public key a put seals with. Each
+// error is NotAccessible and not NotFound, the secret stays as it was, and another
+// organization is answered as before.
+func TestOrgSecretsRefused(t *testing.T) {
+	t.Parallel()
+
+	srv := githubtest.New(t)
+	srv.OrgSecrets["acme"] = map[string]*githubtest.OrgSecret{
+		"DEPLOY_KEY": {Value: []byte("the deploy key"), Visibility: github.VisibilitySelected, RepositoryIDs: []int64{1001}},
+	}
+	srv.OrgSecretsRefused["acme"] = true
+	c, ctx := srv.Client(), t.Context()
+	refused := func(what string, err error) {
+		t.Helper()
+
+		if !github.NotAccessible(err) || github.NotFound(err) {
+			t.Errorf("%s: error = %v, want GitHub's refusal of a token without the permission", what, err)
+		}
+	}
+	_, err := c.OrgSecret(ctx, "acme", "DEPLOY_KEY")
+	refused("the read of a secret that stands", err)
+	if want := "GitHub GET /orgs/acme/actions/secrets/DEPLOY_KEY answered 403: Resource not accessible by integration"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("the read of a secret that stands: error = %v, want it to carry %q", err, want)
+	}
+	_, err = c.OrgSecret(ctx, "acme", "NOWHERE")
+	refused("the read of a secret that does not stand", err)
+	_, err = c.OrgSecretRepositories(ctx, "acme", "DEPLOY_KEY")
+	refused("the listing of a secret's repositories", err)
+	refused("the setting of a secret's repositories", c.SetOrgSecretRepositories(ctx, "acme", "DEPLOY_KEY", nil))
+	refused("the removal of a secret", c.DeleteOrgSecret(ctx, "acme", "DEPLOY_KEY"))
+	refused("the put of a secret, at the read of the public key", c.PutOrgSecret(ctx, "acme", "DEPLOY_KEY", []byte("another value"), nil))
+	srv.Update(func() {
+		if got := srv.OrgSecrets["acme"]["DEPLOY_KEY"]; got == nil || string(got.Value) != "the deploy key" || len(got.RepositoryIDs) != 1 {
+			t.Errorf("the secret after the refusals = %+v, want it as it was", got)
+		}
+	})
+	if _, err := c.OrgSecret(ctx, "another", "NOWHERE"); !github.NotFound(err) || github.NotAccessible(err) {
+		t.Errorf("the read of another organization's absent secret: error = %v, want not found", err)
+	}
+}
+
+// TestNotAccessible: GitHub's refusal of a token that lacks a permission is a 403 that
+// says the resource is not accessible, to an app's token or a person's. A 403 for another
+// reason, a rate limit above all, is not that refusal, and neither is another status or
+// no error.
+func TestNotAccessible(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		status  int
+		message string
+		want    bool
+	}{
+		{name: "an app without the permission", status: http.StatusForbidden, message: "Resource not accessible by integration", want: true},
+		{name: "a person's token without the permission", status: http.StatusForbidden, message: "Resource not accessible by personal access token", want: true},
+		{name: "a rate limit", status: http.StatusForbidden, message: "API rate limit exceeded for installation ID 1."},
+		{name: "a secondary rate limit", status: http.StatusForbidden, message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."},
+		{name: "not found", status: http.StatusNotFound, message: "Not Found"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				_ = json.NewEncoder(w).Encode(map[string]string{"message": tt.message})
+			}))
+			t.Cleanup(server.Close)
+			_, err := github.New(server.URL, "test-token").OrgSecret(t.Context(), "acme", "DEPLOY_KEY")
+			if err == nil {
+				t.Fatal("OrgSecret() error = nil, want GitHub's refusal")
+			}
+			if got := github.NotAccessible(err); got != tt.want {
+				t.Errorf("NotAccessible(%v) = %t, want %t", err, got, tt.want)
+			}
+		})
+	}
+	if github.NotAccessible(nil) {
+		t.Error("NotAccessible(nil) = true")
+	}
+}
+
 // TestSetOrgSecretRepositories: the selection is replaced whole, by an empty array when
 // there is none, and the value stays.
 func TestSetOrgSecretRepositories(t *testing.T) {

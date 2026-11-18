@@ -24,6 +24,8 @@ import (
 // its APIs, the state bucket, the Bot Account's token and the apps' keys in their secrets
 // (as many versions as the placement pins), and on GitHub's stand-in the three apps with
 // those keys, installed on the organization, the Cloud Build app, and the repository.
+// The stand-in refuses the organization's secrets unless the infrastructure app is
+// declared the permission on them, as GitHub refuses the app the bootstrap made.
 // Nothing the apply makes is there, and the calls recorded start empty.
 func Standing(t *testing.T, p *org.Placement, srv *githubtest.Server) *Fake {
 	t.Helper()
@@ -40,6 +42,9 @@ func Standing(t *testing.T, p *org.Placement, srv *githubtest.Server) *Fake {
 	f.Landed = root.ExportTables(p.BillingAccount)
 	srv.AddRepo(p.GithubOrganization, p.SourceRepo, &githubtest.Repo{})
 	srv.PublicApps["google-cloud-build"] = github.App{ID: 10529, Slug: "google-cloud-build", Name: "Google Cloud Build"}
+	if _, declared := p.AppManifest(org.InfrastructureApp).Permissions[org.PermissionOrgSecrets]; !declared {
+		srv.OrgSecretsRefused[p.GithubOrganization] = true
+	}
 	for _, m := range p.AppManifests() {
 		container := p.SecretContainer(m.Role.Key())
 		name := "projects/" + project + "/secrets/" + container

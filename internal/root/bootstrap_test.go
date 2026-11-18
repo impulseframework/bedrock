@@ -87,7 +87,9 @@ func registerApp(t *testing.T, srv *githubtest.Server, m org.AppManifest, id int
 }
 
 // bootstrapWorld is the lab before the bootstrap: nothing on Google Cloud, the GitHub
-// organization with the Bot Account as an owner and the Cloud Build app installed.
+// organization with the Bot Account as an owner and the Cloud Build app installed. The
+// draft lists no library, so the infrastructure app the bootstrap makes holds nothing on
+// the organization's secrets, and GitHub's stand-in refuses them.
 func bootstrapWorld(t *testing.T) (*roottest.Fake, *githubtest.Server, *root.Clients) {
 	t.Helper()
 
@@ -97,6 +99,7 @@ func bootstrapWorld(t *testing.T) (*roottest.Fake, *githubtest.Server, *root.Cli
 	srv := githubtest.New(t)
 	srv.Login = "imp-bot"
 	srv.Memberships["imp-example"] = "admin"
+	srv.OrgSecretsRefused["imp-example"] = true
 	srv.PublicApps["google-cloud-build"] = github.App{ID: 10529, Slug: "google-cloud-build", Name: "Google Cloud Build"}
 	srv.OrgInstallations["imp-example"] = []github.OrgInstallation{{ID: 55, AppID: 10529, AppSlug: "google-cloud-build", RepositorySelection: github.AllRepositories}}
 	clients := &root.Clients{

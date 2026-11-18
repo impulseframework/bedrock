@@ -74,8 +74,9 @@ func noWait(context.Context, time.Duration) error {
 // bootstrapWorld is the lab before the bootstrap: nothing on Google Cloud, GitHub's
 // stand-in with the Bot Account an owner of imp-example and the Cloud Build app installed,
 // one organization and one billing account in the credentials' sight, and the three apps
-// the organization brings, their keys in files. It answers the deps, the stand-ins and the
-// flags that bring the apps.
+// the organization brings, their keys in files. No library is listed, so the
+// infrastructure app holds nothing on the organization's secrets, and GitHub's stand-in
+// refuses them. It answers the deps, the stand-ins and the flags that bring the apps.
 func bootstrapWorld(t *testing.T) (deps, *roottest.Fake, *githubtest.Server, []string) {
 	t.Helper()
 
@@ -84,6 +85,7 @@ func bootstrapWorld(t *testing.T) (deps, *roottest.Fake, *githubtest.Server, []s
 	srv := githubtest.New(t)
 	srv.Login = "imp-bot"
 	srv.Memberships["imp-example"] = "admin"
+	srv.OrgSecretsRefused["imp-example"] = true
 	srv.PublicApps["google-cloud-build"] = github.App{ID: 10529, Slug: "google-cloud-build", Name: "Google Cloud Build"}
 	srv.OrgInstallations["imp-example"] = []github.OrgInstallation{{ID: 55, AppID: 10529, AppSlug: "google-cloud-build", RepositorySelection: github.AllRepositories}}
 	disc := &fakeDiscovery{

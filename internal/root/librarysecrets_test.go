@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/go-playground/errors/v5"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/impulseframework/bedrock/internal/github"
@@ -252,8 +253,9 @@ func TestEngineReleaseSecretReadByEveryRepository(t *testing.T) {
 
 // withLibrary lists a library in the placement of the root organization with a cloud,
 // and brings GitHub's stand-in along: the three apps hold what a root organization that
-// keeps libraries declares, GitHub Actions' own app is there to report the library's
-// checks, and the release app answers by its slug with its client ID.
+// keeps libraries declares, so the organization's secrets are refused no more, GitHub
+// Actions' own app is there to report the library's checks, and the release app answers
+// by its slug with its client ID.
 func withLibrary(t *testing.T, w *world) {
 	t.Helper()
 
@@ -264,6 +266,7 @@ func withLibrary(t *testing.T, w *world) {
 	for _, m := range w.p.AppManifests() {
 		w.srv.Apps[w.p.AppID(m.Role)].Record.Permissions = m.Permissions
 	}
+	delete(w.srv.OrgSecretsRefused, w.p.GithubOrganization)
 	w.srv.PublicApps["github-actions"] = github.App{ID: actionsAppID, Slug: "github-actions", Name: "GitHub Actions"}
 	release := w.srv.Apps[w.p.GithubReleaseAppID].Record
 	release.ClientID = clientID(org.ReleaseApp)
@@ -472,5 +475,152 @@ func TestEngineReleaseSecretReadersWithoutTheApp(t *testing.T) {
 		if got := w.orgSecret(t, name).RepositoryIDs; len(got) != 0 {
 			t.Errorf("after the apply %s is read by %v, want by no repository", name, got)
 		}
+	}
+}
+
+// TestEngineReleaseSecretsRefused: GitHub refuses an app that holds no permission on the
+// organization's secrets every read of them, whether a secret stands or not. In a root
+// organization with a cloud that lists no library that is the infrastructure app as it
+// is declared: the run asks for the key's secret once, is refused, and goes on with
+// nothing to change in the libraries' part and nothing to report. An app there that
+// holds the permission all the same is answered, and with no secret standing the run is
+// as clean. Where the declaration gives the app the permission, with a library listed
+// and in a root organization without a cloud, the refusal is the run's error, in a
+// sentence that names the permission and where it is granted.
+func TestEngineReleaseSecretsRefused(t *testing.T) {
+	t.Parallel()
+
+	const keyRead, clientRead = "/actions/secrets/RELEASE_PLEASE_APP_PEM", "/actions/secrets/RELEASE_PLEASE_APP_CLIENT_ID"
+	goesOn := []struct {
+		name string
+		// held says whether the app holds the permission its declaration does not name.
+		held bool
+		// wantReads are the requests about the organization's secrets one run makes.
+		wantReads []string
+	}{
+		{name: "a cloud and no library", wantReads: []string{keyRead}},
+		{name: "a cloud, no library and an app that holds the permission all the same", held: true, wantReads: []string{keyRead, clientRead}},
+	}
+	for _, tt := range goesOn {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newWorld(t)
+			owner := w.p.GithubOrganization
+			if !w.srv.OrgSecretsRefused[owner] {
+				t.Fatal("GitHub's stand-in answers the organization's secrets in a root organization that lists no library; the infrastructure app holds nothing on them there")
+			}
+			if tt.held {
+				delete(w.srv.OrgSecretsRefused, owner)
+			}
+			report, out := w.run(t, root.Apply, true)
+			if len(report.Findings) != 0 || report.Applied != len(report.Changes) {
+				t.Errorf("the bootstrap's apply made %d of %d changes, with the findings %q:\n%s", report.Applied, len(report.Changes), report.Findings, out)
+			}
+			sameSentences(t, "the changes of the libraries section", mentioning(whats(report), "libraries: "), nil)
+			if clean, out := w.run(t, root.Check, false); !clean.Clean() {
+				t.Errorf("the check after the apply is not clean:\n%s\nchanges: %q\nfindings: %q", out, whats(clean), clean.Findings)
+			}
+			// Each of the two runs read what one run reads, and wrote nothing.
+			var want []string
+			for range 2 {
+				for _, read := range tt.wantReads {
+					want = append(want, "GET /orgs/"+owner+read)
+				}
+			}
+			sameSentences(t, "the requests about the organization's secrets", mentioning(w.srv.Calls, "/actions/secrets/"), want)
+			if len(w.srv.OrgSecrets[owner]) != 0 {
+				t.Errorf("the organization holds %d secret(s), want none", len(w.srv.OrgSecrets[owner]))
+			}
+		})
+	}
+
+	stops := func(t *testing.T, err error, owner, printed string) {
+		t.Helper()
+
+		want := "this token cannot read the " + owner + " organization's secrets (GitHub GET /orgs/" + owner + "/actions/secrets/RELEASE_PLEASE_APP_PEM answered 403: Resource not accessible by integration): the infrastructure app reads them with the Secrets (organization) permission (write); add it on the app's settings page (Permissions & events), then accept the new permission on the organization's installation of the app (the organization's settings, GitHub Apps)"
+		if err == nil || errors.Cause(err).Error() != want {
+			t.Errorf("Run() error = %v, want the sentence %q\n%s", err, want, printed)
+		}
+	}
+	t.Run("a cloud and a first library, the permission not yet granted", func(t *testing.T) {
+		t.Parallel()
+
+		w := newWorld(t)
+		withLibrary(t, w)
+		owner := w.p.GithubOrganization
+		delete(w.srv.Apps[w.p.GithubInfrastructureAppID].Record.Permissions, org.PermissionOrgSecrets)
+		w.srv.OrgSecretsRefused[owner] = true
+		var out bytes.Buffer
+		_, err := root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Dir: w.dir, Mode: root.Check, Commit: "abc1234", GitHubToken: "test-token"}, &out)
+		stops(t, err, owner, out.String())
+	})
+	t.Run("no cloud and no library", func(t *testing.T) {
+		t.Parallel()
+
+		w := bootstrapped(t, libraryPlacement(t))
+		w.p.Libraries = nil
+		w.p.GithubReleaseAppID, w.p.GithubReleaseAppSlug = "", ""
+		if err := w.p.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+		owner := w.p.GithubOrganization
+		w.srv.OrgSecretsRefused[owner] = true
+		var out bytes.Buffer
+		_, err := root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Mode: root.Check, Commit: "abc1234", GitHubToken: "test-token"}, &out)
+		stops(t, err, owner, out.String())
+	})
+}
+
+// TestEngineReleaseSecretReadersAfterTheLastLibrary: a root organization with a cloud
+// whose last library left the placement keeps narrowing who reads the release app's
+// secrets for as long as its infrastructure app holds the permission it was made with:
+// the former library is a finding, and the apply takes it off both secrets, which stand
+// with the values sealed. Once a person takes the permission off the app, as the finding
+// about the app says, GitHub refuses the read and the check is clean.
+func TestEngineReleaseSecretReadersAfterTheLastLibrary(t *testing.T) {
+	t.Parallel()
+
+	const key, client = "RELEASE_PLEASE_APP_PEM", "RELEASE_PLEASE_APP_CLIENT_ID"
+	w := newWorld(t)
+	withLibrary(t, w)
+	owner := w.p.GithubOrganization
+	if report, out := w.run(t, root.Apply, true); len(report.Findings) != 0 || report.Applied != len(report.Changes) {
+		t.Fatalf("the bootstrap's apply made %d of %d changes, with the findings %q:\n%s", report.Applied, len(report.Changes), report.Findings, out)
+	}
+	sealedAt := w.srv.OrgSecrets[owner][key].UpdatedAt
+	w.p.Libraries = nil
+	if err := w.p.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	finding := owner + "/shared-types reads the release app's key (the organization secret " + key + ") and placement.json lists no such library: a library taken off the list is archived by a person, never deleted here, and the apply takes the key from it"
+	changes := []string{
+		"libraries: removes the " + owner + ` organization's ruleset "version tags": placement.json lists no library`,
+		"libraries: brings the repositories that read the organization secret " + key + " to the libraries: takes shared-types off",
+		"libraries: brings the repositories that read the organization secret " + client + " to the libraries: takes shared-types off",
+	}
+	report, _ := w.run(t, root.Check, false)
+	sameSentences(t, "the finding of the check about the key's readers", mentioning(report.Findings, key), []string{finding})
+	sameSentences(t, "the changes of the check in the libraries section", mentioning(whats(report), "libraries: "), changes)
+	containsAll(t, report.Findings, "the infrastructure app holds the Secrets (organization) permission (write), which it does not need: take it off on the app's settings page")
+
+	report, out := w.run(t, root.Apply, false)
+	sameSentences(t, "the changes of the apply in the libraries section", mentioning(whats(report), "libraries: "), changes)
+	for _, name := range []string{key, client} {
+		if got := w.srv.OrgSecrets[owner][name]; got == nil || len(got.RepositoryIDs) != 0 {
+			t.Errorf("after the apply %s is read by %+v, want the secret standing and read by no repository:\n%s", name, got, out)
+		}
+	}
+	if got := w.srv.OrgSecrets[owner][key]; got != nil && !got.UpdatedAt.Equal(sealedAt) {
+		t.Error("the apply sealed the release app's key again; it sets the list of its readers alone")
+	}
+
+	// A person takes off the app what its declaration no longer names.
+	for _, m := range w.p.AppManifests() {
+		w.srv.Apps[w.p.AppID(m.Role)].Record.Permissions = m.Permissions
+	}
+	w.srv.OrgSecretsRefused[owner] = true
+	if clean, out := w.run(t, root.Check, false); !clean.Clean() {
+		t.Errorf("the check once the app holds nothing on the organization's secrets is not clean:\n%s\nchanges: %q\nfindings: %q", out, whats(clean), clean.Findings)
 	}
 }
