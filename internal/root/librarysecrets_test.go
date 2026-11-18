@@ -576,12 +576,22 @@ func TestEngineReleaseSecretsRefused(t *testing.T) {
 // whose last library left the placement keeps narrowing who reads the release app's
 // secrets for as long as its infrastructure app holds the permission it was made with:
 // the former library is a finding, and the apply takes it off both secrets, which stand
-// with the values sealed. Once a person takes the permission off the app, as the finding
-// about the app says, GitHub refuses the read and the check is clean.
+// with the values sealed. While that is left to do, no finding tells a person to take
+// that permission off the app, though the two other permissions the library added are
+// named at once: taken off first, the former library would go on reading the key. That
+// holds at either level the app holds the permission. The finding stands on the run
+// after the readers are narrowed, in its place among the others, and is held again while
+// a key every repository reads waits to be sealed again. Once a person takes the
+// permission off the app, GitHub refuses the read and the check is clean.
 func TestEngineReleaseSecretReadersAfterTheLastLibrary(t *testing.T) {
 	t.Parallel()
 
-	const key, client = "RELEASE_PLEASE_APP_PEM", "RELEASE_PLEASE_APP_CLIENT_ID"
+	const (
+		key, client = "RELEASE_PLEASE_APP_PEM", "RELEASE_PLEASE_APP_CLIENT_ID"
+		spareOrg    = "the infrastructure app holds the Secrets (organization) permission (write), which it does not need: take it off on the app's settings page"
+		spareChecks = "the infrastructure app holds the Checks permission (read), which it does not need: take it off on the app's settings page"
+		spareFlows  = "the release app holds the Workflows permission (write), which it does not need: take it off on the app's settings page"
+	)
 	w := newWorld(t)
 	withLibrary(t, w)
 	owner := w.p.GithubOrganization
@@ -593,18 +603,25 @@ func TestEngineReleaseSecretReadersAfterTheLastLibrary(t *testing.T) {
 	if err := w.p.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	finding := owner + "/shared-types reads the release app's key (the organization secret " + key + ") and placement.json lists no such library: a library taken off the list is archived by a person, never deleted here, and the apply takes the key from it"
+	reads := owner + "/shared-types reads the release app's key (the organization secret " + key + ") and placement.json lists no such library: a library taken off the list is archived by a person, never deleted here, and the apply takes the key from it"
 	changes := []string{
 		"libraries: removes the " + owner + ` organization's ruleset "version tags": placement.json lists no library`,
 		"libraries: brings the repositories that read the organization secret " + key + " to the libraries: takes shared-types off",
 		"libraries: brings the repositories that read the organization secret " + client + " to the libraries: takes shared-types off",
 	}
-	report, _ := w.run(t, root.Check, false)
-	sameSentences(t, "the finding of the check about the key's readers", mentioning(report.Findings, key), []string{finding})
-	sameSentences(t, "the changes of the check in the libraries section", mentioning(whats(report), "libraries: "), changes)
-	containsAll(t, report.Findings, "the infrastructure app holds the Secrets (organization) permission (write), which it does not need: take it off on the app's settings page")
 
+	// The plan of the pull request that takes the library off, and the merge's apply: the
+	// former library still reads the key, so the permission that takes it off is not
+	// named among the ones to take off the app, at write, as the app was made, or at read.
+	infrastructure := w.srv.Apps[w.p.GithubInfrastructureAppID]
+	for _, level := range []string{org.LevelRead, org.LevelWrite} {
+		infrastructure.Record.Permissions[org.PermissionOrgSecrets] = level
+		report, _ := w.run(t, root.Check, false)
+		sameSentences(t, "the findings of the check while the former library reads the key, the permission held at "+level, report.Findings, []string{spareChecks, spareFlows, reads})
+		sameSentences(t, "the changes of the check in the libraries section", mentioning(whats(report), "libraries: "), changes)
+	}
 	report, out := w.run(t, root.Apply, false)
+	sameSentences(t, "the findings of the apply that takes the key from the former library", report.Findings, []string{spareChecks, spareFlows, reads})
 	sameSentences(t, "the changes of the apply in the libraries section", mentioning(whats(report), "libraries: "), changes)
 	for _, name := range []string{key, client} {
 		if got := w.srv.OrgSecrets[owner][name]; got == nil || len(got.RepositoryIDs) != 0 {
@@ -614,6 +631,26 @@ func TestEngineReleaseSecretReadersAfterTheLastLibrary(t *testing.T) {
 	if got := w.srv.OrgSecrets[owner][key]; got != nil && !got.UpdatedAt.Equal(sealedAt) {
 		t.Error("the apply sealed the release app's key again; it sets the list of its readers alone")
 	}
+
+	// The run after it: nothing is left for the permission to do, and it is named with
+	// the others, each app's by the permissions' names.
+	report, _ = w.run(t, root.Check, false)
+	sameSentences(t, "the findings of the check after the readers were narrowed", report.Findings, []string{spareChecks, spareOrg, spareFlows})
+	sameSentences(t, "the changes of the check after the readers were narrowed", whats(report), nil)
+
+	// A key every repository reads, which a run without its pinned version cannot seal
+	// again, is a finding about the secrets, and holds the other one back as a change does.
+	w.srv.OrgSecrets[owner][key].Visibility = "all"
+	pinned := w.p.GithubReleaseKeyVersion
+	w.p.GithubReleaseKeyVersion = ""
+	report, _ = w.run(t, root.Check, false)
+	sameSentences(t, "the finding about a key every repository reads", mentioning(report.Findings, key), []string{
+		"the organization secret " + key + " is read by all repositories of " + owner + ", not by the libraries alone: seal it again, which limits it to them (bedrock secret add github-release-key --from-file <the file>)",
+	})
+	sameSentences(t, "the finding about the permission while a key every repository reads stands", mentioning(report.Findings, "Secrets (organization)"), nil)
+	containsAll(t, report.Findings, spareChecks)
+	w.srv.OrgSecrets[owner][key].Visibility = github.VisibilitySelected
+	w.p.GithubReleaseKeyVersion = pinned
 
 	// A person takes off the app what its declaration no longer names.
 	for _, m := range w.p.AppManifests() {

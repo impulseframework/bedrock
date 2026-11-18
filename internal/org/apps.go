@@ -279,7 +279,7 @@ func (m AppManifest) Verify(app *github.App, installations []github.Installation
 	}
 	for _, name := range sortedKeys(app.Permissions) {
 		if _, declared := m.Permissions[name]; !declared {
-			findings = append(findings, fmt.Sprintf("%s holds the %s permission (%s), which it does not need: take it off on the app's settings page", m.Role.Title(), permissionTitle(name), app.Permissions[name]))
+			findings = append(findings, m.Unneeded(name, app.Permissions[name]))
 		}
 	}
 	i := slices.IndexFunc(installations, func(in github.Installation) bool { return in.Account.Login == organization })
@@ -291,6 +291,12 @@ func (m AppManifest) Verify(app *github.App, installations []github.Installation
 	}
 
 	return findings
+}
+
+// Unneeded is the finding about a permission the app holds, at the level held, that its
+// declaration does not name: Verify's sentence for it.
+func (m AppManifest) Unneeded(permission, held string) string {
+	return fmt.Sprintf("%s holds the %s permission (%s), which it does not need: take it off on the app's settings page", m.Role.Title(), permissionTitle(permission), held)
 }
 
 // level ranks a permission's level: read below write below admin.
