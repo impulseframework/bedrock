@@ -12,7 +12,7 @@ require (
 	github.com/go-playground/errors/v5 v5.4.0
 	github.com/google/go-cmp v0.7.0
 	github.com/hashicorp/hcl/v2 v2.25.0
-	github.com/impulseframework/impulse v0.4.1-0.20261118081036-6ba087ca89dc
+	github.com/impulseframework/impulse v0.5.0
 	github.com/spf13/cobra v1.10.2
 	github.com/zclconf/go-cty v1.20.0
 	golang.org/x/crypto v0.59.0
@@ -74,6 +74,6 @@ require (
 	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	golang.org/x/tools v0.52.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20261012220534-4341edf3f941 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261104224025-d1e00e9f33ab // indirect
 )
