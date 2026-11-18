@@ -153,14 +153,15 @@ func (m *Model) auth(a *app.App, cfg *config, profile *app.Profile, pkg *app.Aut
 		return Auth{}, errors.Newf("the %s auth package (%s) constructs %d session Auths; an auth constructs one (session.NewAuth) and registers its sign-in methods on it", pkg.Name, pkg.Dir, len(constructions))
 	}
 	outlets := boundOutlets(profile, pkg.Path)
-	for _, registration := range constructions[0].Methods {
+	for i := range constructions[0].Methods {
+		registration := &constructions[0].Methods[i]
 		method := Method{Auth: pkg.Name, Name: registration.Name, Kind: registration.Kind, Authority: registration.Authority, Tenants: registration.Tenants, PersonalAccounts: registration.PersonalAccounts}
 		switch {
 		case method.Directory():
 			if err := m.registrationVariables(cfg, &method); err != nil {
 				return Auth{}, err
 			}
-			if err := method.tenantSlot(&registration); err != nil {
+			if err := method.tenantSlot(registration); err != nil {
 				return Auth{}, err
 			}
 			if err := method.routes(outlets); err != nil {
@@ -173,7 +174,7 @@ func (m *Model) auth(a *app.App, cfg *config, profile *app.Profile, pkg *app.Aut
 			if err := method.routes(outlets); err != nil {
 				return Auth{}, err
 			}
-			if err := method.personaCast(a, pkg, &registration); err != nil {
+			if err := method.personaCast(a, pkg, registration); err != nil {
 				return Auth{}, err
 			}
 		}
