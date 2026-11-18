@@ -52,9 +52,11 @@ const (
 	// squarespacePath is where Squarespace Domains, the registrar of record behind Cloud
 	// Domains and a common one besides, sets a domain's name servers; it has no API.
 	squarespacePath = "At Squarespace Domains: the domain's DNS settings, Domain Nameservers, Use Custom Nameservers (two to thirteen servers); the change takes up to 48 hours to take effect."
-	// serverMisbehaving is the Go resolver's text for an answer of SERVFAIL: the servers
-	// a name is delegated to do not answer for it, as when its zone was made again on
-	// other name servers and the delegation still names the old ones.
+	// serverMisbehaving is the Go resolver's text for an answer that is a failure. Marked
+	// temporary it is SERVFAIL: the servers a name is delegated to do not answer for it,
+	// as when its zone was made again on other name servers and the delegation still
+	// names the old ones, or when the zone its registration names is gone. Without the
+	// mark it is the resolver's own refusal of the question.
 	serverMisbehaving = "server misbehaving"
 )
 
@@ -137,8 +139,8 @@ type AuthorizationReader interface {
 // AuthorizationReaderFunc opens an AuthorizationReader.
 type AuthorizationReaderFunc func(ctx context.Context) (AuthorizationReader, error)
 
-// Resolver answers the public questions the check asks. *net.Resolver is the real one;
-// tests pass a fake.
+// Resolver answers the public questions the check asks, each of a name with its trailing
+// dot (rooted). *net.Resolver is the real one; tests pass a fake.
 type Resolver interface {
 	LookupNS(ctx context.Context, name string) ([]*net.NS, error)
 	LookupHost(ctx context.Context, host string) ([]string, error)
@@ -343,10 +345,11 @@ const (
 	// the zone's name servers do not answer yet.
 	Registering
 	// ApexUndelegated is a registrable domain (an apex, such as example.com) whose
-	// registrar names other name servers, or none.
+	// registrar names other name servers, none, or servers that do not answer for it.
 	ApexUndelegated
 	// LabelUndelegated is a label of a domain served elsewhere (apps.example.com) for
-	// which that domain's DNS provider holds no NS records pointing at the zone.
+	// which that domain's DNS provider holds no NS records pointing at the zone, or
+	// holds ones pointing at servers that do not answer for it.
 	LabelUndelegated
 	// Refused is an apex, not delegated, that answers records that are not the zone's: a
 	// domain with other DNS on it, which is never delegated whole.
@@ -372,7 +375,10 @@ type Report struct {
 	ZoneName    string
 	NameServers []string
 	// Answered are the name servers the world sees for the domain; Lame says the
-	// servers it is delegated to do not answer for it (Repoint), so none are seen.
+	// domain does not resolve, as when the servers it is delegated to do not answer for
+	// it, so none are seen: a registration to point at the zone for a domain the network
+	// layer registers (Repoint), and the registrar's or the DNS provider's step for any
+	// other (ApexUndelegated, LabelUndelegated).
 	Answered []string
 	Lame     bool
 	// Delegation is what the answers show.
@@ -424,10 +430,15 @@ type appsZone struct {
 // and the authorization record, and reports what is in place and what is missing. It is
 // refused when the domain is not a bare lowercase name, when the zone does not exist or
 // serves another domain, and when the zone lacks a record the network layer's apply
-// creates (the apex and wildcard addresses, the authorization record); an answer the
-// resolver fails to give, other than "no such record", stops it too, except the servers'
-// failure to answer for a domain the network layer registers, which is a registration
-// to point at the zone (Repoint).
+// creates (the apex and wildcard addresses, the authorization record). What the resolver
+// cannot answer about the domain's name servers is an answer about the world and not a
+// failure of the check: a domain with no such record answers none, and one whose lookup
+// is answered with a failure, or not in time, does not resolve (Lame, see delegation),
+// which is a registration to point at the zone for a domain the network layer registers
+// (Repoint) and the registrar's or the DNS provider's step for any other. Such a domain
+// is asked nothing more. A label handed onward is read the same way (checkLabels). Any
+// other failure of a lookup, beyond "no such record", stops the check, but for the
+// authorization record's of a domain not delegated yet.
 func Check(ctx context.Context, l *Lookups, req CheckRequest) (*Report, error) {
 	if err := Validate(req.Domain); err != nil {
 		return nil, err
@@ -447,13 +458,12 @@ func Check(ctx context.Context, l *Lookups, req CheckRequest) (*Report, error) {
 		Domain: req.Domain, Project: req.Project, Zone: req.Zone, Vanity: req.Vanity, Delegating: req.Delegating,
 		ZoneName: z.zone.DNSName, NameServers: z.zone.NameServers, Authorization: z.authorization,
 	}
-	r.Answered, err = nameServers(ctx, l.Resolver, req.Domain)
-	r.Lame = registered && serverFailure(err)
-	if err != nil && !r.Lame {
+	r.Answered, r.Lame, err = delegation(ctx, l.Resolver, req.Domain)
+	if err != nil {
 		return nil, err
 	}
 	switch {
-	case r.Lame:
+	case r.Lame && registered:
 		r.Delegation = Repoint
 	case sameNames(r.Answered, r.NameServers):
 		r.Delegation = Delegated
@@ -473,8 +483,13 @@ func Check(ctx context.Context, l *Lookups, req CheckRequest) (*Report, error) {
 
 		return r, nil
 	}
+	if r.Lame {
+		// Nothing under the domain resolves, the authorization record no more than the
+		// rest.
+		return r, nil
+	}
 	r.AuthorizationResolves, err = resolvesTo(ctx, l.Resolver, z.authorization)
-	if err != nil && (r.Delegation == Delegated || !serverFailure(err)) {
+	if err != nil && (r.Delegation == Delegated || !unanswered(err)) {
 		return nil, err
 	}
 
@@ -509,7 +524,7 @@ func checkKept(ctx context.Context, l *Lookups, req CheckRequest) (*Report, erro
 	}
 	r := &Report{Domain: req.Domain, Project: req.Project, Vanity: true, CustomerDNS: true, Address: address, Authorization: *authorization}
 	for _, host := range req.Hostnames {
-		answered, err := l.Resolver.LookupHost(ctx, host)
+		answered, err := l.Resolver.LookupHost(ctx, rooted(host))
 		if err := answered4(err, "the addresses of "+host); err != nil {
 			return nil, err
 		}
@@ -573,13 +588,13 @@ func ipv4(addresses []string) []string {
 // checkLabels asks the world, for each label the zone hands onward, which name servers
 // its name answers, once the domain is delegated to the zone; before that nothing under
 // the domain reaches the zone, and the labels are reported unread. Servers that do not
-// answer for the name (SERVFAIL) are Lame, not a failure of the check.
+// answer for the name (unanswered) are Lame, not a failure of the check.
 func (r *Report) checkLabels(ctx context.Context, resolver Resolver, req CheckRequest) error {
 	for _, label := range req.Labels {
 		lr := LabelReport{Label: label}
 		if r.Delegation == Delegated {
 			answered, err := nameServers(ctx, resolver, label.Name+"."+req.Domain)
-			lr.Lame = serverFailure(err)
+			lr.Lame = unanswered(err)
 			if err != nil && !lr.Lame {
 				return err
 			}
@@ -591,12 +606,42 @@ func (r *Report) checkLabels(ctx context.Context, resolver Resolver, req CheckRe
 	return nil
 }
 
-// serverFailure reports a lookup that the servers answered with a failure (SERVFAIL),
-// which a domain whose delegation names servers that do not serve its zone gets.
-func serverFailure(err error) bool {
+// unanswered reports a lookup the resolver could not answer: it was answered with a
+// failure (SERVFAIL), which a name whose delegation names servers that do not serve its
+// zone gets, or no answer came in time, which it can get when those servers are gone.
+// The resolver's own refusal of a question, which the Go resolver words as it words
+// SERVFAIL but does not mark temporary, is not one.
+func unanswered(err error) bool {
 	var dnsErr *net.DNSError
 
-	return errors.As(err, &dnsErr) && !dnsErr.IsNotFound && !dnsErr.IsTimeout && dnsErr.Err == serverMisbehaving
+	return errors.As(err, &dnsErr) && !dnsErr.IsNotFound && (dnsErr.IsTimeout || (dnsErr.IsTemporary && dnsErr.Err == serverMisbehaving))
+}
+
+// rooted is the name as the resolver is asked for it: fully qualified, with the trailing
+// dot, so that it is the one name asked. The resolver tries a name without the dot with
+// each suffix of the machine's search list too (search in /etc/resolv.conf), and for a
+// name's name servers and mail servers it answers what the last name tried got: "no such
+// host", from example.dev.localdomain, for an example.dev whose own lookup was answered
+// with a failure.
+func rooted(name string) string {
+	return strings.TrimSuffix(name, ".") + "."
+}
+
+// delegation asks the world for the domain's name servers, and says whether the domain
+// does not resolve (lame): the resolver could not answer for it (unanswered), and the
+// domain answers no address either. A domain that answers addresses does resolve, so the
+// failure said nothing about it and stops the check, as does the end of the run's own
+// time.
+func delegation(ctx context.Context, resolver Resolver, domain string) (servers []string, lame bool, err error) {
+	servers, err = nameServers(ctx, resolver, domain)
+	if !unanswered(err) || ctx.Err() != nil {
+		return servers, false, err
+	}
+	if hosts, _ := resolver.LookupHost(ctx, rooted(domain)); len(hosts) > 0 {
+		return nil, false, err
+	}
+
+	return nil, true, nil
 }
 
 // registeredHere reports whether the network layer's placement lists the domain among
@@ -692,7 +737,8 @@ func readZone(ctx context.Context, open ZoneReaderFunc, req CheckRequest) (*apps
 
 // classify tells the shapes of a domain that does not answer the zone's name servers
 // apart: a label of a domain served elsewhere, an apex that carries other DNS (refused),
-// or an apex with nothing else on it.
+// or an apex with nothing else on it. An apex that does not resolve (Lame) is asked
+// nothing more: the world sees no record of it, so it carries none to refuse it for.
 func (r *Report) classify(ctx context.Context, resolver Resolver, address string) error {
 	apex, err := publicsuffix.EffectiveTLDPlusOne(r.Domain)
 	if err != nil {
@@ -704,7 +750,12 @@ func (r *Report) classify(ctx context.Context, resolver Resolver, address string
 
 		return nil
 	}
-	hosts, err := resolver.LookupHost(ctx, r.Domain)
+	if r.Lame {
+		r.Delegation = ApexUndelegated
+
+		return nil
+	}
+	hosts, err := resolver.LookupHost(ctx, rooted(r.Domain))
 	if err := answered(err, "the addresses of "+r.Domain); err != nil {
 		return err
 	}
@@ -718,7 +769,7 @@ func (r *Report) classify(ctx context.Context, resolver Resolver, address string
 		}
 		r.Foreign = append(r.Foreign, typ+" "+h)
 	}
-	mx, err := resolver.LookupMX(ctx, r.Domain)
+	mx, err := resolver.LookupMX(ctx, rooted(r.Domain))
 	if err := answered(err, "the mail servers of "+r.Domain); err != nil {
 		return err
 	}
@@ -735,7 +786,7 @@ func (r *Report) classify(ctx context.Context, resolver Resolver, address string
 
 // nameServers are the name servers the world sees for the domain; none when it has none.
 func nameServers(ctx context.Context, resolver Resolver, name string) ([]string, error) {
-	ns, err := resolver.LookupNS(ctx, name)
+	ns, err := resolver.LookupNS(ctx, rooted(name))
 	if err := answered(err, "the name servers of "+name); err != nil {
 		return nil, err
 	}
@@ -750,7 +801,7 @@ func nameServers(ctx context.Context, resolver Resolver, name string) ([]string,
 // resolvesTo reports whether the record's name resolves, through its CNAME, to the
 // record's data.
 func resolvesTo(ctx context.Context, resolver Resolver, rec Record) (bool, error) {
-	target, err := resolver.LookupCNAME(ctx, rec.Name)
+	target, err := resolver.LookupCNAME(ctx, rooted(rec.Name))
 	if err := answered(err, "the record "+rec.Name); err != nil {
 		return false, err
 	}
@@ -839,7 +890,7 @@ func (r *Report) Write(w io.Writer) {
 		for _, ns := range r.NameServers {
 			fmt.Fprintln(w, strings.TrimSuffix(ns, "."))
 		}
-		if len(r.Answered) == 0 && !r.Delegating {
+		if len(r.Answered) == 0 && !r.Lame && !r.Delegating {
 			fmt.Fprintf(w, "%s answers no name servers at all: if it is not registered yet, bedrock domain add registers it through Cloud Domains in %s instead, with no registrar step.\n", r.Domain, DefaultLayer)
 		}
 	case Repoint:
@@ -966,6 +1017,13 @@ func (r *Report) writeAuthorization(w io.Writer) {
 	case Repoint:
 		fmt.Fprintln(w, "The certificate is still waiting on the authorization record below, which the zone holds and which resolves once the registration points at the zone.")
 	case ApexUndelegated, LabelUndelegated, Refused:
+		if r.Lame {
+			// Nothing under the domain resolves until its delegation names the zone, so
+			// there is no place to add the record sooner.
+			fmt.Fprintln(w, "The certificate is still waiting on the authorization record below, which the zone holds and which resolves once the delegation is in place.")
+
+			break
+		}
 		host := r.Domain
 		if r.Delegation == LabelUndelegated {
 			host = r.Parent
@@ -981,7 +1039,7 @@ func (r *Report) writeAuthorization(w io.Writer) {
 // answeredNow says which name servers the domain answers today, for a message.
 func (r *Report) answeredNow() string {
 	if r.Lame {
-		return "the name servers it is delegated to do not answer for it"
+		return "it does not resolve, as when the name servers it is delegated to do not answer for it"
 	}
 	if len(r.Answered) == 0 {
 		return "it answers none"

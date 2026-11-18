@@ -447,7 +447,8 @@ type labelWorld struct {
 	lame map[string]bool
 }
 
-func (w labelWorld) LookupNS(ctx context.Context, name string) ([]*net.NS, error) {
+func (w labelWorld) LookupNS(ctx context.Context, asked string) ([]*net.NS, error) {
+	name := strings.TrimSuffix(asked, ".")
 	if hosts, ok := w.sets[name]; ok {
 		ns := make([]*net.NS, 0, len(hosts))
 		for _, h := range hosts {
@@ -457,10 +458,10 @@ func (w labelWorld) LookupNS(ctx context.Context, name string) ([]*net.NS, error
 		return ns, nil
 	}
 	if w.lame[name] {
-		return nil, &net.DNSError{Err: "server misbehaving", Name: name, IsTemporary: true}
+		return nil, &net.DNSError{Err: "server misbehaving", Name: asked, IsTemporary: true}
 	}
 
-	return w.world.LookupNS(ctx, name)
+	return w.world.LookupNS(ctx, asked)
 }
 
 // rootCheckRepo is a root organization repository whose placement holds the domains
@@ -487,9 +488,10 @@ func rootCheckRepo(t *testing.T, recorded bool, domains map[string]org.Domain) s
 // TestRootDomainCheck runs domain check over a root organization: each domain's zone in
 // the boot project, the delegation as the world sees it, then each label handed onward,
 // passing when every domain is delegated and every label answers its servers; exit 1
-// with the registrar step and the labels waiting on an undelegated domain, or with a
-// label whose servers do not answer for it; nothing to check without a domain; and a
-// refusal before the boot project is recorded.
+// with the registrar step and the labels waiting on an undelegated domain, the same for
+// a domain whose registration names servers that do not answer for it, or with a label
+// whose servers do not answer for it; nothing to check without a domain; and a refusal
+// before the boot project is recorded.
 func TestRootDomainCheck(t *testing.T) {
 	t.Parallel()
 
@@ -544,6 +546,20 @@ func TestRootDomainCheck(t *testing.T) {
 			wantCode: 1,
 			wantOut: []string{
 				"clientbay.example does not answer the zone's name servers (it answers none).",
+				"At the registrar where clientbay.example is registered: set its name servers to the zone's 1 below",
+				"\n" + strings.TrimSuffix(checkServer, ".") + "\n",
+				"The 2 name(s) handed onward under clientbay.example resolve once the domain is delegated here.",
+			},
+			absent: []string{"bedrock domain add", "is handed to"},
+		},
+		{
+			name:     "a domain whose registration names servers that do not answer for it exits 1 with the registrar step, as an undelegated one",
+			recorded: true,
+			domains:  handed,
+			world:    labelWorld{lame: map[string]bool{clientbay: true}},
+			wantCode: 1,
+			wantOut: []string{
+				"clientbay.example does not answer the zone's name servers (it does not resolve, as when the name servers it is delegated to do not answer for it).",
 				"At the registrar where clientbay.example is registered: set its name servers to the zone's 1 below",
 				"\n" + strings.TrimSuffix(checkServer, ".") + "\n",
 				"The 2 name(s) handed onward under clientbay.example resolve once the domain is delegated here.",
