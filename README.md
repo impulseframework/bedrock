@@ -2685,7 +2685,8 @@ what is the new organization's own to decide (`appsDomain`, `spanner.config`, tw
 with the primary the root organization's, `teamGroups`, `contactDomains`, and
 `entitlementDurations`, `labels` and `vanityDomains` as wanted); run again, it fills in
 what the root organization supplies (the Google Cloud organization and billing account,
-the GitHub organization with its Bot Account, default branch and three App IDs, the
+the GitHub organization with its Bot Account, default branch, three App IDs and, where the
+root organization names one, the word the Apps' names start with (`githubAppPrefix`), the
 Cloud Build authorization, the break-glass account, the bedrock pin and `root`), chooses
 the boot project's four-hex suffix, lists the organization in `placement.json`
 (`hostingOrganizations`) and renders, printing what the merge creates. The merge's `org

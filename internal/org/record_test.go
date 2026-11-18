@@ -136,6 +136,62 @@ func TestFill(t *testing.T) {
 	})
 }
 
+// TestFillAppPrefix: the three GitHub Apps are the root organization's, so a record takes
+// the word their names start with from it. A root organization that names the word, as
+// one whose GitHub organization's login is too long for the names does, fills it into a
+// record that names none, and the record is held to the names the apps have; filled
+// again it stays. A record that names the same word as its root organization, the login
+// among them, is taken; one that names another is refused with both words.
+func TestFillAppPrefix(t *testing.T) {
+	t.Parallel()
+
+	const login = "an-organization-with-a-long-login"
+	tests := []struct {
+		name       string
+		rootPrefix string
+		prefix     string
+		want       string
+		wantErr    string
+	}{
+		{name: "filled in from the root organization", rootPrefix: "imr", want: "imr"},
+		{name: "the root organization's own word kept", rootPrefix: "imr", prefix: "imr", want: "imr"},
+		{name: "another word than the root organization's", rootPrefix: "imr", prefix: "rgb", wantErr: `githubAppPrefix is "rgb", and the root organization's GitHub Apps' names start with "imr"`},
+		{name: "the login where the root organization names a word", rootPrefix: "imr", prefix: login, wantErr: `githubAppPrefix is "an-organization-with-a-long-login", and the root organization's GitHub Apps' names start with "imr"`},
+		{name: "none where the root organization names none"},
+		{name: "the login where the root organization names none", prefix: "imp-example"},
+		{name: "another word than the login", prefix: "rgb", wantErr: `githubAppPrefix is "rgb", and the root organization's GitHub Apps' names start with "imp-example"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := rootPlacement(t)
+			if tt.rootPrefix != "" {
+				root.GithubOrganization, root.GithubAppPrefix = login, tt.rootPrefix
+			}
+			h := hostingRecord()
+			h.GithubAppPrefix = tt.prefix
+			err := Fill(root, h)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Fill() error = %v, want %q", err, tt.wantErr)
+				}
+
+				return
+			}
+			if err != nil {
+				t.Fatalf("Fill() error = %v", err)
+			}
+			if h.GithubAppPrefix != tt.want || h.AppName(InfrastructureApp) != root.AppName(InfrastructureApp) {
+				t.Errorf("githubAppPrefix = %q, want %q; the infrastructure app is %s, and the root organization's %s", h.GithubAppPrefix, tt.want, h.AppName(InfrastructureApp), root.AppName(InfrastructureApp))
+			}
+			if err := Fill(root, h); err != nil || h.GithubAppPrefix != tt.want {
+				t.Errorf("Fill() again: error %v, githubAppPrefix %q, want %q", err, h.GithubAppPrefix, tt.want)
+			}
+		})
+	}
+}
+
 // TestRecordAndPending: Record lists a filled organization in the root organization's
 // placement once, keeps a recorded folder, and Pending names the ones not created yet.
 func TestRecordAndPending(t *testing.T) {

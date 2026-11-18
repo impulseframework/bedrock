@@ -95,3 +95,59 @@ func TestOrgCreate(t *testing.T) {
 		t.Errorf("a hosting organization got a record directory: %v", err)
 	}
 }
+
+// TestOrgCreateAppPrefix: under a root organization that names the word its GitHub Apps'
+// names start with, because its GitHub organization's login is too long for the names,
+// the record carries the word from the first run, the second run fills it into a record
+// that lacks it and passes, and a record that names another word is refused with both.
+func TestOrgCreateAppPrefix(t *testing.T) {
+	t.Parallel()
+
+	dir := rootRepo(t)
+	editPlacement(t, dir, func(p *org.Placement) {
+		p.GithubOrganization, p.GithubAppPrefix = "imp-example-organization", "imx"
+	})
+	if code, out := runOrg(t, "org", "render", "--dir", dir); code != 0 {
+		t.Fatalf("org render: %d\n%s", code, out)
+	}
+	record := org.RecordPath(dir, "rgb")
+	if code, out := runOrg(t, "org", "create", "rgb", "--dir", dir); code != 0 {
+		t.Fatalf("org create: %d\n%s", code, out)
+	}
+	h, err := org.ReadPlacementUnchecked(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.GithubAppPrefix != "imx" {
+		t.Errorf("the skeleton's githubAppPrefix = %q, want the root organization's imx", h.GithubAppPrefix)
+	}
+
+	// The person fills in what is the organization's own; the word is taken out, as in a
+	// record written before bedrock filled it in.
+	h.GithubAppPrefix = ""
+	h.AppsDomain, h.Spanner.Config, h.MonthlyBudget = "apps.rgb.example", "nam10", 500
+	h.Regions[1] = org.Region{Name: "us-west3", Code: "uw3"}
+	h.TeamGroups = map[string]string{"tst": "team-tst@imp.example", "stg": "team-stg@imp.example", "prd": "team-prd@imp.example"}
+	if err := h.Write(record); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runOrg(t, "org", "create", "rgb", "--dir", dir); code != 0 {
+		t.Fatalf("org create again: %d\n%s", code, out)
+	}
+	filled, err := org.ReadRecord(dir, "rgb")
+	if err != nil {
+		t.Fatalf("the record does not read as a hosting placement: %v", err)
+	}
+	if filled.GithubAppPrefix != "imx" || filled.AppName(org.InfrastructureApp) != "imx-infrastructure" {
+		t.Errorf("githubAppPrefix = %q, the infrastructure app %s; want the root organization's imx", filled.GithubAppPrefix, filled.AppName(org.InfrastructureApp))
+	}
+
+	filled.GithubAppPrefix = "rgb"
+	if err := filled.Write(record); err != nil {
+		t.Fatal(err)
+	}
+	want := `githubAppPrefix is "rgb", and the root organization's GitHub Apps' names start with "imx"`
+	if _, err := execute(orgDeps(""), "", "org", "create", "rgb", "--dir", dir); err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), record) {
+		t.Errorf("org create of a record that names another word: %v, want %q", err, want)
+	}
+}

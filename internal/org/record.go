@@ -81,12 +81,12 @@ func ReadRecord(dir, prefix string) (*Placement, error) {
 // supplies, and chooses the boot project's suffix when none is chosen yet, so that the
 // record is complete before the creation runs: the Google Cloud organization and its
 // domain, the billing account (the root organization's unless the record names one), the
-// GitHub organization, its Bot Account, default branch and the three apps' ids and
-// slug, the Cloud Build authorization (the same connection token, read from the root
-// organization's boot project), the break-glass account, the bedrock pin, and the root
-// organization itself (root). What the person wrote and the root organization does not
-// supply stays. It refuses a record whose prefix is the root organization's or whose
-// values contradict the root organization's.
+// GitHub organization, its Bot Account, default branch and the three apps' ids, the word
+// their names start with and the release app's slug, the Cloud Build authorization (the
+// same connection token, read from the root organization's boot project), the break-glass
+// account, the bedrock pin, and the root organization itself (root). What the person
+// wrote and the root organization does not supply stays. It refuses a record whose prefix
+// is the root organization's or whose values contradict the root organization's.
 func Fill(root, h *Placement) error {
 	if !root.IsRoot() {
 		return errors.New("the placement is a hosting organization's, and only a root organization creates another organization")
@@ -112,6 +112,9 @@ func Fill(root, h *Placement) error {
 	h.OrganizationDomain, h.OrganizationID, h.DirectoryCustomerID = root.OrganizationDomain, root.OrganizationID, root.DirectoryCustomerID
 	h.GithubOrganization, h.GithubBotAccount, h.GithubDefaultBranch = root.GithubOrganization, root.GithubBotAccount, root.GithubDefaultBranch
 	h.GithubInfrastructureAppID, h.GithubDeployerAppID, h.GithubReleaseAppID = root.GithubInfrastructureAppID, root.GithubDeployerAppID, root.GithubReleaseAppID
+	if err := fillAppPrefix(root, h); err != nil {
+		return err
+	}
 	if h.GithubReleaseAppSlug == "" {
 		h.GithubReleaseAppSlug = root.ReleaseAppSlug()
 	}
@@ -142,6 +145,20 @@ func Fill(root, h *Placement) error {
 	}
 
 	return h.Validate()
+}
+
+// fillAppPrefix gives the record the word the root organization's GitHub Apps' names
+// start with (githubAppPrefix), and refuses a record that names another: the three apps
+// are the root organization's, made once at its bootstrap, so a hosting organization's
+// placement is held to the names they have, and never to names made from the GitHub
+// organization's login where the root organization chose a word.
+func fillAppPrefix(root, h *Placement) error {
+	if h.GithubAppPrefix != "" && h.GithubAppPrefix != root.AppNamePrefix() {
+		return errors.Newf("githubAppPrefix is %q, and the root organization's GitHub Apps' names start with %q: the three apps are the root organization's, made once at its bootstrap, and a hosting organization's placement names them by the same word; take githubAppPrefix out, and bedrock org create fills in the root organization's where it names one", h.GithubAppPrefix, root.AppNamePrefix())
+	}
+	h.GithubAppPrefix = root.GithubAppPrefix
+
+	return nil
 }
 
 // TokenSecretRegional reports whether the Cloud Build token secret the placement names is

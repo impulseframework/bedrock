@@ -176,8 +176,9 @@ type Placement struct {
 	// GithubAppPrefix is the word the three GitHub Apps' names start with
 	// (<word>-infrastructure, <word>-deployer, <word>-release), when it is not the GitHub
 	// organization's login: for a login that would make a name longer than GitHub's 34
-	// characters, or names that are taken. A root organization's, which makes the apps;
-	// left out otherwise.
+	// characters, or names that are taken. A root organization's, which makes the apps; a
+	// hosting organization's placement carries its root organization's, filled in with
+	// the App IDs when the organization is recorded (Fill), since the apps are the same.
 	GithubAppPrefix string `json:"githubAppPrefix,omitempty"`
 	// GithubReleaseAppID is the App ID of the release GitHub App, the only actor that
 	// creates, moves or deletes a release tag of an application's repository: digits,
