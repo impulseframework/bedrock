@@ -7,8 +7,8 @@
 # its policy but neither add nor read a version. Someone adds the value as a
 # version (Secret Version Adder on the environment's secrets) and
 # var.secret_versions pins which version the environment runs; a generated
-# secret's versions are the pipeline's (below). Automatic replication: nothing
-# here has a residency requirement.
+# or versioned secret's versions are the pipeline's (below). Automatic
+# replication: nothing here has a residency requirement.
 #
 # Modeled on CCC's reference deployment, one resource per
 # secret there, one for_each here.
@@ -83,9 +83,15 @@ resource "google_secret_manager_secret_iam_member" "app_accessor" {
 # Accessor for the migrate command's secrets (locals.tf, migrate_secrets): the
 # deploy identity, which runs the migrate command on the build worker, reads
 # the generated password of each auth's first administrator to seed the
-# administrator user with and the mailbox's app password the data level opens
-# the mail sender with, and no other runtime secret. A pull-request stack
-# grants nothing: it shares tst's containers, whose grants tst's stack holds.
+# administrator user with, the mailbox's app password the data level opens
+# the mail sender with, and the versions of the versioned secrets at the
+# levels the command constructs, and no other runtime secret. Those are the
+# versioned secrets a retirement can act on (bedrock secret retire): the
+# command rewrites the stored values that name a version at the levels it
+# constructs, with every enabled version of the secret, and a versioned secret
+# declared at another level holds nothing it could rewrite, is refused a
+# retirement at the plan, and is never read here. A pull-request stack grants
+# nothing: it shares tst's containers, whose grants tst's stack holds.
 resource "google_secret_manager_secret_iam_member" "migrate_accessor" {
   for_each = local.is_pr ? toset([]) : local.migrate_secrets
 
@@ -109,7 +115,8 @@ resource "google_secret_manager_secret_iam_member" "migrate_accessor" {
 # (bedrock secret rotate, the operations workflow) adds the next version as the
 # operations identity and runs the live release again. Both identities hold
 # Secret Version Adder on these containers alone: adding, never reading. A
-# pull-request stack reads tst's and grants nothing.
+# versioned secret (below) is generated the same way and takes the same
+# grants. A pull-request stack reads tst's and grants nothing.
 # ---------------------------------------------------------------------------
 
 locals {
@@ -129,6 +136,36 @@ resource "google_secret_manager_secret_iam_member" "generated_adder" {
   secret_id = local.secret_ids[each.value.key]
   role      = "roles/secretmanager.secretVersionAdder"
   member    = each.value.member
+
+  depends_on = [google_secret_manager_secret.beacon]
+}
+
+# ---------------------------------------------------------------------------
+# Versioned secrets
+#
+# A secret the code declares secret:"versioned" (local.versioned_secrets) is
+# generated as above, and a process receives every enabled version of it, not
+# the newest alone: the plan step lists the container's enabled versions at
+# every build (var.versioned_secret_versions) and locals.tf names one
+# variable per version (secret_mounts). A rotation adds a version, which the
+# next build hands over beside the earlier ones. A retirement (bedrock secret
+# retire, the operations workflow) takes one away: the live release's build
+# has the application rewrite every stored value that names the version and
+# deploys a revision without it, and the workflow's job then disables the
+# version as the operations identity. That identity holds 1-org's
+# secretVersionDisabler on these containers alone: disabling a version, and
+# nothing else of it. No identity here destroys a version: a backup taken
+# before the retirement holds values under it, and a disabled version is one
+# gcloud secrets versions enable away. A pull-request stack grants nothing.
+# ---------------------------------------------------------------------------
+
+resource "google_secret_manager_secret_iam_member" "versioned_disabler" {
+  for_each = local.is_pr ? {} : local.versioned_secrets
+
+  project   = local.project_id
+  secret_id = local.secret_ids[each.key]
+  role      = local.org.secret_version_disabler_role[var.environment]
+  member    = local.identities.operations_identity_member
 
   depends_on = [google_secret_manager_secret.beacon]
 }

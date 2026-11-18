@@ -507,17 +507,22 @@ func (d *Desired) PlanReporterSlug() string {
 
 // The words the ruleset's rules use.
 const (
-	rulesetName          = "default branch"
-	ruleDeletion         = "deletion"
-	ruleNonFastForward   = "non_fast_forward"
-	rulePullRequest      = "pull_request"
-	ruleRequiredChecks   = "required_status_checks"
-	ruleCreation         = "creation"
-	ruleUpdate           = "update"
-	cloudBuildAppSlug    = "google-cloud-build"
-	actionsAppSlug       = "github-actions"
-	tagRulesetName       = "version tags"
-	runnerGroupName      = "applications"
+	rulesetName        = "default branch"
+	ruleDeletion       = "deletion"
+	ruleNonFastForward = "non_fast_forward"
+	rulePullRequest    = "pull_request"
+	ruleRequiredChecks = "required_status_checks"
+	ruleCreation       = "creation"
+	ruleUpdate         = "update"
+	cloudBuildAppSlug  = "google-cloud-build"
+	actionsAppSlug     = "github-actions"
+	tagRulesetName     = "version tags"
+	// runnerGroupName is bedrock's runner group: its name says whose it is, so no group a
+	// person made is taken for it, and a runner in it that the placement does not name is
+	// the apply's to remove.
+	runnerGroupName = "bedrock-applications"
+	// runnerDeleting is the status GitHub lists a hosted runner under while it removes it.
+	runnerDeleting       = "Deleting"
 	runnerVariable       = "CI_LARGE_RUNNER"
 	runnerImageID        = "2306"
 	runnerImageSource    = "github"

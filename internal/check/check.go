@@ -160,10 +160,11 @@ type Report struct {
 	// so the exception stays visible.
 	Latest []LatestSecret
 	// Generated are the entries of secret_versions in terraform.tfvars that disagree with
-	// the code's secret tags, per environment: a generated secret (secret:"generated",
-	// whose version the pipeline derives at each build) with a version number, latest or
-	// no entry, where the word generated belongs; and a secret someone puts in place
-	// carrying the word. Refused: the stack's own precondition refuses the same.
+	// the code's secret tags, per environment: a secret the tooling makes
+	// (secret:"generated" or secret:"versioned", whose versions the pipeline derives at
+	// each build) with a version number, latest, the other tag's word or no entry, where
+	// its own tag's word belongs; and a secret someone puts in place carrying either
+	// word. Refused: the stack's own precondition refuses the same.
 	Generated []GeneratedFinding
 	// Retirements are the entries of retired in terraform.tfvars, the variables a
 	// release retires: each a line of the report naming what the variable declares (a
@@ -418,11 +419,21 @@ func scanRetired(dir string, m *derive.Model) ([]Retirement, error) {
 	return found, nil
 }
 
+// derivedAtEachBuild says what the pipeline derives for a secret the tooling makes, in
+// place of a pin: a generated secret's one version, a versioned secret's every enabled one.
+func derivedAtEachBuild(s *derive.Secret) string {
+	if s.Versioned {
+		return "its enabled versions are read at each build, and a process receives every one"
+	}
+
+	return "its version is derived at each build"
+}
+
 // scanGenerated reads the stack's terraform.tfvars against the code's secret tags,
-// environment by environment in promotion order: a generated secret's entry is the word
-// generated in every environment (its version is derived at each build, so a number or
-// latest there pins nothing and a missing entry leaves the placement silent about it),
-// and no other secret's entry is the word.
+// environment by environment in promotion order: the entry of a secret the tooling makes
+// is its tag's word in every environment, generated or versioned (its versions are
+// derived at each build, so a number or latest there pins nothing and a missing entry
+// leaves the placement silent about it), and no other secret's entry is either word.
 func scanGenerated(dir string, m *derive.Model) ([]GeneratedFinding, error) {
 	var found []GeneratedFinding
 	for _, env := range m.Placement.Environments {
@@ -433,14 +444,15 @@ func scanGenerated(dir string, m *derive.Model) ([]GeneratedFinding, error) {
 		for _, s := range m.Secrets {
 			name := s.Variable.Name
 			value, present := values[name]
+			word := s.Word()
 			var problem string
 			switch {
 			case s.Generated && !present:
-				problem = fmt.Sprintf("%s is generated (secret:%q at %s:%d) and secret_versions.%s in terraform.tfvars has no entry for it: write %s = %q there; its version is derived at each build", name, secret.Generated, s.Variable.File, s.Variable.Line, env, name, secret.Generated)
-			case s.Generated && value != secret.Generated:
-				problem = fmt.Sprintf("%s is generated (secret:%q at %s:%d) and secret_versions.%s in terraform.tfvars pins %q where the word %s belongs: write %s = %q there; its version is derived at each build, and bedrock secret rotate %s %s adds the next", name, secret.Generated, s.Variable.File, s.Variable.Line, env, value, secret.Generated, name, secret.Generated, env, name)
-			case !s.Generated && value == secret.Generated:
-				problem = fmt.Sprintf("%s carries the word %s in secret_versions.%s in terraform.tfvars, and the code declares it secret:\"true\" (%s:%d): pin a version number (bedrock secret pin %s %s <version>), or declare it secret:%q in the code", name, secret.Generated, env, s.Variable.File, s.Variable.Line, env, name, secret.Generated)
+				problem = fmt.Sprintf("%s is %s (secret:%q at %s:%d) and secret_versions.%s in terraform.tfvars has no entry for it: write %s = %q there; %s", name, word, word, s.Variable.File, s.Variable.Line, env, name, word, derivedAtEachBuild(&s))
+			case s.Generated && value != word:
+				problem = fmt.Sprintf("%s is %s (secret:%q at %s:%d) and secret_versions.%s in terraform.tfvars pins %q where the word %s belongs: write %s = %q there; %s, and bedrock secret rotate %s %s adds the next", name, word, word, s.Variable.File, s.Variable.Line, env, value, word, name, word, derivedAtEachBuild(&s), env, name)
+			case !s.Generated && (value == secret.Generated || value == secret.Versioned):
+				problem = fmt.Sprintf("%s carries the word %s in secret_versions.%s in terraform.tfvars, and the code declares it secret:\"true\" (%s:%d): pin a version number (bedrock secret pin %s %s <version>), or declare it secret:%q in the code", name, value, env, s.Variable.File, s.Variable.Line, env, name, value)
 			default:
 				continue
 			}

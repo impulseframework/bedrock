@@ -207,6 +207,10 @@ func PlanEnvironmentStack(ctx context.Context, clients *Clients, w Workspace, ou
 	if err != nil {
 		return err
 	}
+	retiring, err := planRetirement(ctx, clients, m, subs, pins, out)
+	if err != nil {
+		return err
+	}
 	args, err := s.planArguments(ctx, w, subs, env, plan, generation, pins)
 	if err != nil {
 		return err
@@ -219,9 +223,8 @@ func PlanEnvironmentStack(ctx context.Context, clients *Clients, w Workspace, ou
 		return err
 	}
 	facts := map[string]string{stackPlanFact: p.Summary()}
-	if len(pins) > 0 {
-		facts[generatedFact] = generatedFactValue(pins)
-	}
+	maps.Copy(facts, pins.facts())
+	maps.Copy(facts, retiring)
 
 	return w.Append(facts)
 }
@@ -277,11 +280,12 @@ func (s *stack) planAndTest(ctx context.Context, clients *Clients, w Workspace, 
 }
 
 // planArguments are the tag build's plan arguments: the environment and the database
-// generation, the generated secrets' pins and the run's restore. The stack never
+// generation, the generated secrets' pins, the versioned secrets' versions and the run's
+// restore. The stack never
 // touches a service's revision template (the pipeline builds every revision from the
 // revision_templates output), so an apply starts no revision, in maintenance or out of
 // it, and the plan is told nothing of the maintenance variable.
-func (s *stack) planArguments(ctx context.Context, w Workspace, subs, env map[string]string, plan string, generation int, pins map[string]string) ([]string, error) {
+func (s *stack) planArguments(ctx context.Context, w Workspace, subs, env map[string]string, plan string, generation int, pins *derivedPins) ([]string, error) {
 	vars := make([]string, 0, 6)
 	vars = append(vars, varFlag, "environment="+subs[envSub], varFlag, "database_generation="+strconv.Itoa(generation))
 	vars = append(vars, generatedArgs(pins)...)

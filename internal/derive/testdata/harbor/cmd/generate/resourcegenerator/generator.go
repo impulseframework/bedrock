@@ -19,7 +19,7 @@ func newGenerator(ctx context.Context) (generation.Generator, error) {
 		generation.GenerateHandlers("app"),
 		// The router is generated from the outlet declarations: the console is the default
 		// outlet, the staff auth's directory sessions under /api with its browser application
-		// at /; the portal is a second outlet, the members auth's directory and password
+		// at /; the portal is a second outlet, the members auth's directory and okta
 		// sessions under /portal/api with its browser application at /portal.
 		generation.GenerateRouter(),
 		generation.GenerateRoutes("pkg/router", "api",
@@ -27,7 +27,7 @@ func newGenerator(ctx context.Context) (generation.Generator, error) {
 			generation.WebApp("/"),
 		),
 		generation.WithRouterOutlet("portal", "portal/api",
-			generation.Auth("github.com/impulseframework/harbor/pkg/auth/members", generation.AzureMethod("directory")),
+			generation.Auth("github.com/impulseframework/harbor/pkg/auth/members", generation.AzureMethod("directory"), generation.OIDCMethod("okta")),
 			generation.WebApp("/portal"),
 		),
 		generation.GenerateHandlerTests("test/authz"),

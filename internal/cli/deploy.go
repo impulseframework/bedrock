@@ -72,8 +72,12 @@ the later steps share: the trigger's kind (a tag's build, or a pull request's, w
 to tst), the pull request's instruction (the words after its latest /gcbrun comment: shared-db,
 reload-db, down), the image and its tags (<release>-<env> and <commit>-<env>), and whether the
 migrations run and traffic shifts. It refuses a build that is neither a tag's nor a pull
-request's, one that names no services, a pull-request build with no connection or
-no /gcbrun comment, an unknown option, and shared-db with reload-db. A tag build may carry a
+request's, one that says it is both, one that names no services, a pull-request build with no
+connection or no /gcbrun comment, an unknown option, and shared-db with reload-db. A build
+carries one instruction (a restore, a rollback, a migration operation, the end of a maintenance,
+a retirement) and what goes with it: a second instruction beside it, the stack trigger's action,
+a reason with no restore or rollback, and a restore's database with no restore are refused, since
+the operations workflow never sends them together. A tag build may carry a
 restore instruction (_RESTORE: empty, or production-backup for the environment on production's
 instance; _REQUESTER names who asked): the environment's database is replaced before the release
 deploys, which the facts carry on (RESTORE, RESTORE_REQUESTER); a pull-request build carries none,

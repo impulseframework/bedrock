@@ -16,6 +16,9 @@ state_bucket = "{{.P.StateBucket}}"
 # registration's overview page), once for the organization
 {{- else if eq .Slot.Field "Tenants"}} the tenants it admits,
 # each named: <name>=<tenant id>, comma-separated, once for the organization
+{{- else if eq .Slot.Field "Issuer"}} the provider's
+# issuer URL, the one its configuration is read under, once for the
+# organization
 {{- else}} the Workspaces it admits, each
 # named with its domains: <name>=<domain>[+<domain>], comma-separated, once for
 # the organization
@@ -66,7 +69,9 @@ mail_from = ""
 # (bedrock secret pin). "latest" only for a secret the placement marks as
 # tracking it. "generated" for a secret the code declares secret:"generated":
 # the pipeline makes its value and derives its version at each build, so the
-# word stays, and bedrock secret rotate adds the next version.
+# word stays, and bedrock secret rotate adds the next version. "versioned" for
+# one it declares secret:"versioned": made the same way, and a process
+# receives every enabled version (bedrock secret retire takes one away).
 secret_versions = {
 {{.TfvarsSecretVersions}}
 }

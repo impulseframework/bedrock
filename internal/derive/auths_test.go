@@ -118,11 +118,12 @@ func TestAuthAdministrator(t *testing.T) {
 }
 
 // TestRegistrationVariables finds a directory method's settings among the variables by
-// the convention and gives each its role: the slot the registration declares, the
-// client credentials and the callback, and for a Google registration under the
-// directory's authority the role groups, with the development template's defaults. A
-// registration declaring no variable for a required setting, both shapes of its slot, or
-// its client secret without the secret tag is refused.
+// the convention and gives each its role: the slot the registration declares, or the
+// issuer of an organization's own identity provider, the client credentials and the
+// callback, and for a Google registration under the directory's authority the role
+// groups, with the development template's defaults. A registration declaring no variable
+// for a required setting, both shapes of its slot, or its client secret without the
+// secret tag is refused.
 func TestRegistrationVariables(t *testing.T) {
 	t.Parallel()
 
@@ -189,6 +190,44 @@ func TestRegistrationVariables(t *testing.T) {
 				variable("APP_KEEPERS_PERSONA_CLIENT_ID", false), variable("APP_KEEPERS_PERSONA_REDIRECT_URL", false),
 			},
 			wantErr: "the keepers auth's persona registration (persona) declares no APP_KEEPERS_PERSONA_ISSUER variable",
+		},
+		{
+			name:   "an identity provider's registration reads its issuer, placed, then the client credentials and the callback",
+			method: Method{Auth: "members", Name: "okta", Kind: app.MethodOIDC, Authority: app.AuthorityApplication},
+			variables: []Variable{
+				variable("APP_MEMBERS_OKTA_ISSUER", false), variable("APP_MEMBERS_OKTA_CLIENT_ID", false),
+				variable("APP_MEMBERS_OKTA_CLIENT_SECRET", true), variable("APP_MEMBERS_OKTA_REDIRECT_URL", false),
+			},
+			wantRoles:  map[string]Role{"APP_MEMBERS_OKTA_ISSUER": RoleProviderIssuer, "APP_MEMBERS_OKTA_CLIENT_ID": RoleClientID, "APP_MEMBERS_OKTA_CLIENT_SECRET": RoleClientSecret, "APP_MEMBERS_OKTA_REDIRECT_URL": RoleRedirectURL},
+			wantFields: []string{FieldIssuer, FieldClientID, FieldClientSecret, FieldRedirectURL},
+		},
+		{
+			name:   "an identity provider's registration under the directory's authority reads no role groups",
+			method: Method{Auth: "staff", Name: "keycloak", Kind: app.MethodOIDC, Authority: app.AuthorityDirectory},
+			variables: []Variable{
+				variable("APP_STAFF_KEYCLOAK_ISSUER", false), variable("APP_STAFF_KEYCLOAK_CLIENT_ID", false),
+				variable("APP_STAFF_KEYCLOAK_CLIENT_SECRET", true), variable("APP_STAFF_KEYCLOAK_REDIRECT_URL", false),
+				variable("APP_STAFF_KEYCLOAK_GROUP_PREFIX", false),
+			},
+			wantRoles:  map[string]Role{"APP_STAFF_KEYCLOAK_ISSUER": RoleProviderIssuer, "APP_STAFF_KEYCLOAK_GROUP_PREFIX": RoleNone},
+			wantFields: []string{FieldIssuer, FieldClientID, FieldClientSecret, FieldRedirectURL},
+		},
+		{
+			name:   "an identity provider's registration declaring no issuer is refused",
+			method: Method{Auth: "members", Name: "okta", Kind: app.MethodOIDC, Authority: app.AuthorityApplication},
+			variables: []Variable{
+				variable("APP_MEMBERS_OKTA_CLIENT_ID", false), variable("APP_MEMBERS_OKTA_CLIENT_SECRET", true), variable("APP_MEMBERS_OKTA_REDIRECT_URL", false),
+			},
+			wantErr: "the members auth's okta registration (oidc) declares no APP_MEMBERS_OKTA_ISSUER variable",
+		},
+		{
+			name:   "an identity provider's client secret without the secret tag",
+			method: Method{Auth: "members", Name: "okta", Kind: app.MethodOIDC, Authority: app.AuthorityApplication},
+			variables: []Variable{
+				variable("APP_MEMBERS_OKTA_ISSUER", false), variable("APP_MEMBERS_OKTA_CLIENT_ID", false),
+				variable("APP_MEMBERS_OKTA_CLIENT_SECRET", false), variable("APP_MEMBERS_OKTA_REDIRECT_URL", false),
+			},
+			wantErr: `APP_MEMBERS_OKTA_CLIENT_SECRET (dataConfig.app_members_okta_client_secret) is the okta registration's client secret and carries no secret:"true" tag`,
 		},
 		{
 			name:   "a Microsoft registration admitting any tenant declares no slot",
@@ -291,6 +330,69 @@ func TestRegistrationVariables(t *testing.T) {
 				t.Errorf("defaults = %q, %q; want %q, %q", method.GroupPrefixDefault, method.GroupLookupDefault, tt.wantPrefix, tt.wantLookup)
 			}
 		})
+	}
+}
+
+// TestMethodKinds sorts the sign-in methods by kind: Microsoft Entra, Google and an
+// organization's own identity provider are directory methods, whose registrations the
+// stack carries with a hand step at the provider, each named as the README and the
+// stack's descriptions name it; the persona method is configured by the placement alone,
+// and the password method needs nothing of the stack. Only a Microsoft registration names
+// a front-channel logout.
+func TestMethodKinds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		kind         string
+		wantDir      bool
+		wantPersona  bool
+		wantLogout   bool
+		wantProvider string
+	}{
+		{kind: app.MethodAzure, wantDir: true, wantLogout: true, wantProvider: "Microsoft"},
+		{kind: app.MethodGoogle, wantDir: true, wantProvider: "Google"},
+		{kind: app.MethodOIDC, wantDir: true, wantProvider: "the identity provider"},
+		{kind: app.MethodPersona, wantPersona: true, wantProvider: "the persona provider"},
+		{kind: app.MethodPassword},
+	}
+	for _, tt := range tests {
+		t.Run(tt.kind, func(t *testing.T) {
+			t.Parallel()
+
+			m := Method{Kind: tt.kind}
+			if got := m.Directory(); got != tt.wantDir {
+				t.Errorf("Directory() = %t, want %t", got, tt.wantDir)
+			}
+			if got := m.Persona(); got != tt.wantPersona {
+				t.Errorf("Persona() = %t, want %t", got, tt.wantPersona)
+			}
+			if got := m.FrontChannelLogout(); got != tt.wantLogout {
+				t.Errorf("FrontChannelLogout() = %t, want %t", got, tt.wantLogout)
+			}
+			if got := m.Provider(); got != tt.wantProvider {
+				t.Errorf("Provider() = %q, want %q", got, tt.wantProvider)
+			}
+		})
+	}
+}
+
+// TestProviderIssuerRole holds an identity provider's issuer to what the stack does with
+// it: a placement variable (never derived, unlike the persona provider's issuer), once
+// for the organization rather than per environment, since it names the provider, and
+// carried by every process that constructs the level, since the registration checks it
+// when it is made.
+func TestProviderIssuerRole(t *testing.T) {
+	t.Parallel()
+
+	r := RoleProviderIssuer
+	if !r.Placed() || r.Derived() || r.PerEnvironment() || !r.ConstructionTime() {
+		t.Errorf("%s: placed %t, derived %t, per environment %t, construction time %t; want placed, not derived, once for the organization, read at construction", r, r.Placed(), r.Derived(), r.PerEnvironment(), r.ConstructionTime())
+	}
+	if v := (Variable{Role: r}); v.Supply() != SupplyPlacement {
+		t.Errorf("Supply() = %v, want SupplyPlacement", v.Supply())
+	}
+	if RoleIssuer.Placed() || !RoleIssuer.Derived() {
+		t.Errorf("%s, the persona provider's issuer, is no longer the stack's to derive", RoleIssuer)
 	}
 }
 
@@ -406,6 +508,13 @@ func TestMethodRoutes(t *testing.T) {
 			wantOutlet:   "portal",
 			wantCallback: "/portal/api/user/directory/callback",
 			wantLogout:   "/portal/api/user/directory/logout",
+		},
+		{
+			name:         "an identity provider's registration on a second outlet, with no front-channel logout",
+			method:       Method{Auth: "members", Name: "okta", Kind: app.MethodOIDC},
+			outlets:      []boundOutlet{{site: "harbor", outlet: app.Outlet{Name: "portal", Prefix: "portal/api"}}},
+			wantOutlet:   "portal",
+			wantCallback: "/portal/api/user/okta/callback",
 		},
 		{
 			name:    "no outlet bound",

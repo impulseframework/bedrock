@@ -1,14 +1,16 @@
 // secrets.go is the deploy sequence's seam to Secret Manager: the image build reads the
 // build secrets it passes to docker, and the talk-back reads the deployer app's private
 // key, each as the build's deploy identity, by the version the stack names; the
-// plan steps read the generated secrets' containers as the identity they plan as, and a
-// tag build's seeds one (generated.go).
+// plan steps list the enabled versions of the generated and versioned secrets' containers
+// as the identity they plan as, and a tag build's seeds one (generated.go); the migrate
+// step reads the versions a retirement rewrites under and away from (retire.go).
 
 package deploy
 
 import (
 	"context"
 	"path"
+	"slices"
 	"strconv"
 
 	"cloud.google.com/go/iam"
@@ -34,9 +36,9 @@ type Secrets interface {
 	// Create creates the container in the project, with automatic replication and the
 	// labels.
 	Create(ctx context.Context, project, id string, labels map[string]string) error
-	// Newest is the number of the container's newest enabled version, "" when it has
-	// none.
-	Newest(ctx context.Context, container string) (string, error)
+	// EnabledVersions are the numbers of the container's enabled versions, oldest first; none
+	// when it has none.
+	EnabledVersions(ctx context.Context, container string) ([]string, error)
 	// Grant adds the member to the role on the container's own policy; a member already
 	// in the role is left as it is.
 	Grant(ctx context.Context, container, role, member string) error
@@ -130,29 +132,31 @@ func (s *secretManager) Create(ctx context.Context, project, id string, labels m
 	return nil
 }
 
-func (s *secretManager) Newest(ctx context.Context, container string) (string, error) {
+func (s *secretManager) EnabledVersions(ctx context.Context, container string) ([]string, error) {
 	it := s.client.ListSecretVersions(ctx, &secretmanagerpb.ListSecretVersionsRequest{Parent: container, Filter: "state:" + enabledState})
-	newest := 0
+	var numbers []int
 	for {
 		v, err := it.Next()
 		if errors.Is(err, iterator.Done) {
 			break
 		}
 		if err != nil {
-			return "", errors.Wrapf(err, "secretmanager.Client.ListSecretVersions(): %s", container)
+			return nil, errors.Wrapf(err, "secretmanager.Client.ListSecretVersions(): %s", container)
 		}
 		if v.GetState() != secretmanagerpb.SecretVersion_ENABLED {
 			continue
 		}
-		if n, err := strconv.Atoi(path.Base(v.GetName())); err == nil && n > newest {
-			newest = n
+		if n, err := strconv.Atoi(path.Base(v.GetName())); err == nil {
+			numbers = append(numbers, n)
 		}
 	}
-	if newest == 0 {
-		return "", nil
+	slices.Sort(numbers)
+	versions := make([]string, 0, len(numbers))
+	for _, n := range numbers {
+		versions = append(versions, strconv.Itoa(n))
 	}
 
-	return strconv.Itoa(newest), nil
+	return versions, nil
 }
 
 func (s *secretManager) Grant(ctx context.Context, container, role, member string) error {

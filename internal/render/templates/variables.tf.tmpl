@@ -285,7 +285,10 @@ variable "secret_versions" {
     "generated" is the entry of a secret the code declares secret:"generated"
     (bedrock render seeds it): the pipeline makes its value and passes its
     version in var.generated_secret_versions, so a number here pins nothing,
-    and bedrock check refuses one there and the word on any other secret.
+    and bedrock check refuses one there and the word on any other secret. The
+    word "versioned" is the entry of a secret the code declares
+    secret:"versioned" the same way: the pipeline makes its values and passes
+    every enabled version in var.versioned_secret_versions.
 
       secret_versions = {
         {{.Integration}} = { {{.SecretExample}} }
@@ -299,10 +302,10 @@ variable "secret_versions" {
   validation {
     condition = alltrue(flatten([
       for env, versions in var.secret_versions : [
-        for name, version in versions : can(regex("^([1-9][0-9]*|latest|generated)$", version))
+        for name, version in versions : can(regex("^([1-9][0-9]*|latest|generated|versioned)$", version))
       ]
     ]))
-    error_message = "Every secret version is a positive integer, the word latest, or the word generated for a secret the code declares secret:\"generated\"."
+    error_message = "Every secret version is a positive integer, the word latest, or the secret tag's word for a secret the tooling makes: generated for one the code declares secret:\"generated\", versioned for one it declares secret:\"versioned\"."
   }
 }
 
@@ -323,6 +326,28 @@ variable "generated_secret_versions" {
   validation {
     condition     = alltrue([for name, version in var.generated_secret_versions : can(regex("^[1-9][0-9]*$", version))])
     error_message = "Every generated secret version is a positive integer, the number the build derived."
+  }
+}
+
+variable "versioned_secret_versions" {
+  description = <<-EOT
+    The versions of each versioned secret this environment's processes receive
+    (the fields of {{.SecretsFiles}} tagged secret:"versioned"), keyed by the
+    environment variable: the numbers of every enabled version of the secret's
+    container, as the pipeline's plan step listed them (adding version 1 as the
+    apply identity when the container was empty) and passed with -var. A
+    process receives one variable per version, the variable's name with the
+    version's number after it; the highest number is the current version.
+    Never written in terraform.tfvars. A plan run by hand without it mounts no
+    versioned secret and shows that as its change; the next release build
+    mounts them again.
+  EOT
+  type        = map(list(string))
+  default     = {}
+
+  validation {
+    condition     = alltrue(flatten([for name, versions in var.versioned_secret_versions : [for version in versions : can(regex("^[1-9][0-9]*$", version))]]))
+    error_message = "Every versioned secret version is a positive integer, a number the build listed."
   }
 }
 
@@ -401,6 +426,10 @@ variable "{{$m.Var "CLIENT_ID"}}" {
     per environment, with the redirect URI this stack outputs as
     {{$m.Var "REDIRECT_URL"}} and the front-channel logout URL it outputs as
     {{$m.Var "LOGOUT_URL"}}.
+{{- else if $m.IdentityProvider}}
+    Created by hand at the identity provider, one client per environment: a
+    confidential web application client, with a client secret, and the redirect
+    URI this stack outputs as {{$m.Var "REDIRECT_URL"}}.
 {{- else}}
     Created by hand in the environment project's console (APIs & Services >
     Credentials > OAuth client ID, Web application) with the redirect URI this
@@ -459,6 +488,30 @@ variable "{{$m.Var "WORKSPACES"}}" {
   description = "The Google Workspaces {{$m.Label}} admits, each named with its domains: <name>=<domain>[+<domain>], comma-separated ({{.Variable.Name}}, {{.Variable.Declaration}}); the name is the connection every link made through it carries. The session library validates the list when the registration is made, at construction, so every data-level process carries it and the first release in an environment waits on it (README, \"Hand steps\")."
   type        = string
   default     = ""
+}
+
+{{end -}}
+{{with .Setting "Issuer" -}}
+variable "{{$m.Var "ISSUER"}}" {
+  description = <<-EOT
+    The issuer URL of the identity provider {{$m.Label}} signs in through
+    ({{.Variable.Name}}, {{.Variable.Declaration}}): the provider's configuration is
+    read at <issuer>/.well-known/openid-configuration, and every sign-in's token
+    must carry it. It names the organization's provider, once for the
+    organization: another issuer is another provider, whose people no link made
+    so far knows. The session library refuses a missing or malformed one when the
+    registration is made, at construction, so every data-level process carries it
+    and the first release in an environment waits on it (README, "Hand steps"). It
+    is an https URL: the stack is a cloud environment, where the provider's keys
+    and the sign-in's tokens are never fetched or sent in the clear.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.{{$m.Var "ISSUER"}} == "" || can(regex("^https://[^/?#]+(/[^?#]*)?$", var.{{$m.Var "ISSUER"}}))
+    error_message = "{{$m.Var "ISSUER"}} is the provider's issuer URL: absolute and https (https://accounts.google.com), with no query or fragment, or empty before the registration. An http issuer is refused: this stack is a cloud environment, and the provider's keys and the sign-in's tokens do not travel in the clear."
+  }
 }
 
 {{end -}}
@@ -534,11 +587,12 @@ variable "{{.Var}}" {
   description = <<-EOT
     Per environment, the sign-in name of {{.Label}}'s first administrator
     ({{.Variable.Name}}, {{.Variable.File}} {{.Variable.Declaration}}): the name the
-    directory presents, the user principal name on Entra or the email on Google.
-    The migrate command seeds the administrator role membership under it while
-    the auth's users table holds no rows, so the first person to sign in holds
-    the role; empty until named, and the first release in an environment refuses
-    to seed without it (README, "Hand steps").
+    directory presents, the user principal name on Entra, the email on Google, or
+    the preferred username at an organization's own identity provider (the email
+    when it sends none). The migrate command seeds the administrator role
+    membership under it while the auth's users table holds no rows, so the first
+    person to sign in holds the role; empty until named, and the first release in
+    an environment refuses to seed without it (README, "Hand steps").
   EOT
   type        = map(string)
   default = {

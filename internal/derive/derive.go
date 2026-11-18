@@ -184,12 +184,15 @@ type Variable struct {
 	// deploy step does.
 	Image bool
 	// Secret reports that the variable holds a credential: the field carries the
-	// secret tag, secret:"true" or secret:"generated". Generated reports the second: a
-	// value the tooling makes (32 random bytes, base64) and nobody types, whose version
-	// the pipeline derives at each build. SecretTag is the tag's value as written, or
-	// empty.
+	// secret tag, secret:"true", secret:"generated" or secret:"versioned". Generated
+	// reports the last two: a value the tooling makes (32 random bytes, base64) and nobody
+	// types, whose versions the pipeline derives at each build. Versioned reports the
+	// last alone: every enabled version of the secret reaches the processes, each under
+	// a variable of its own (VersionVariable), where a generated secret's newest alone
+	// does, under the variable's name. SecretTag is the tag's value as written, or empty.
 	Secret    bool
 	Generated bool
+	Versioned bool
 	SecretTag string
 }
 
@@ -338,6 +341,17 @@ const (
 	// environment.
 	RoleIssuer          Role = "issuer"
 	RolePersonaClientID Role = "persona-client-id"
+	// RoleProviderIssuer is the issuer URL of an organization's own identity provider
+	// (APP_<AUTH>_<REGISTRATION>_ISSUER of an oidc method: an Okta, a Keycloak, or Google
+	// used as a plain OpenID Connect provider), a placement variable once for the
+	// organization, unlike the persona provider's issuer, which the stack derives. It
+	// names the provider the way a Google registration's hosted domain or a Microsoft
+	// registration's tenant names the directory: the provider's configuration is read
+	// under it and every sign-in's token carries it, so another issuer is another provider,
+	// whose people no link made so far knows. The registration refuses a missing or
+	// malformed issuer when it is made, at construction, so every process that constructs
+	// the level carries it.
+	RoleProviderIssuer Role = "provider-issuer"
 	// RoleAdministrator is the sign-in name of an auth's first administrator
 	// (APP_<AUTH>_ADMINISTRATOR), placed per environment: the deployment's migrate command
 	// seeds the administrator role membership under it while the auth's users table holds
@@ -368,7 +382,7 @@ func (r Role) Derived() bool {
 // Placed reports a role whose value is a placement variable.
 func (r Role) Placed() bool {
 	switch r {
-	case RoleClientID, RoleHostedDomain, RoleGroupPrefix, RoleGroupLookup, RoleTenantID, RoleTenants, RoleWorkspaces, RoleAdministeredTenants, RoleAdministeredWorkspaces, RoleAdministrator, RoleMailbox, RoleMailFrom:
+	case RoleClientID, RoleHostedDomain, RoleGroupPrefix, RoleGroupLookup, RoleTenantID, RoleTenants, RoleWorkspaces, RoleAdministeredTenants, RoleAdministeredWorkspaces, RoleProviderIssuer, RoleAdministrator, RoleMailbox, RoleMailFrom:
 		return true
 	default:
 		return false
@@ -383,13 +397,13 @@ func (r Role) PerEnvironment() bool {
 }
 
 // ConstructionTime reports a directory role the session library reads when the method is
-// registered on the Auth, at construction (the organization slot it validates, the group
-// prefix role synchronization needs), so every process that constructs the level needs
-// it; the other directory roles are read when someone signs in, which only the served
-// site does.
+// registered on the Auth, at construction (the organization slot it validates, an
+// identity provider's issuer whose shape it checks, the group prefix role
+// synchronization needs), so every process that constructs the level needs it; the other
+// directory roles are read when someone signs in, which only the served site does.
 func (r Role) ConstructionTime() bool {
 	switch r {
-	case RoleHostedDomain, RoleGroupPrefix, RoleTenantID, RoleTenants, RoleWorkspaces, RoleAdministeredTenants, RoleAdministeredWorkspaces:
+	case RoleHostedDomain, RoleGroupPrefix, RoleTenantID, RoleTenants, RoleWorkspaces, RoleAdministeredTenants, RoleAdministeredWorkspaces, RoleProviderIssuer:
 		return true
 	default:
 		return false
@@ -614,15 +628,30 @@ const cookieKeyField = "CookieKey"
 // secretTag is the struct tag that declares a secret: secret:"true" mounts the
 // variable from Secret Manager at a pinned version, secret:"generated" mounts a value
 // the tooling makes and nobody types (the pipeline adds the first version and derives
-// the pin at each build; bedrock secret rotate adds the next), secret:"false" says a
-// value whose name sounds like a credential is a plain one. The environment library
-// reads its own env tag only, so the second tag costs the running program nothing.
+// the pin at each build; bedrock secret rotate adds the next), secret:"versioned" is a
+// generated value whose every enabled version is mounted, each under the variable's name
+// with the version's number after it (bedrock secret retire takes a version away),
+// secret:"false" says a value whose name sounds like a credential is a plain one. The
+// environment library reads its own env tag only, so the second tag costs the running
+// program nothing.
 const (
 	secretTag       = "secret"
 	secretTrue      = "true"
 	secretGenerated = "generated"
+	secretVersioned = "versioned"
 	secretFalse     = "false"
 )
+
+// VersionVariable is the variable a process receives one version of a versioned secret
+// under: the declared variable, an underscore and the Secret Manager version's number
+// (APP_SECRET_KEY_2 for version 2 of APP_SECRET_KEY).
+func VersionVariable(variable, version string) string {
+	return variable + "_" + version
+}
+
+// versionVariableRE matches a name that ends the way a versioned secret's variables do:
+// an underscore and a version's number.
+var versionVariableRE = regexp.MustCompile(`^(.+)_[1-9]\d*$`)
 
 // secretSuffixes are the name endings that sound like a credential: a key, a secret,
 // credentials, a password, or a token. They decide nothing; a variable with such a name
@@ -635,9 +664,22 @@ type Secret struct {
 	// Name is the secret container's name segment: the variable without its APP_ prefix,
 	// in kebab case.
 	Name string
-	// Generated reports a value the tooling makes (secret:"generated"): the placement
-	// carries the word generated for it, never a version number.
+	// Generated reports a value the tooling makes (secret:"generated" or
+	// secret:"versioned"): the placement carries the tag's word for it, never a version
+	// number. Versioned reports the second: every enabled version reaches the processes.
 	Generated bool
+	Versioned bool
+}
+
+// Word is what the placement's secret_versions carries for a secret the tooling makes,
+// in place of a version number: the secret tag's own word, generated or versioned.
+// Empty for a secret someone puts in place, which is pinned by number.
+func (s *Secret) Word() string {
+	if !s.Generated {
+		return ""
+	}
+
+	return s.Variable.SecretTag
 }
 
 // Database is the struct that identifies the database, with its three variables.
@@ -717,7 +759,8 @@ type Method struct {
 	// Name is the registration name: the segment of the method's routes
 	// (user/<name>/callback) and of its variables.
 	Name string
-	// Kind is the method: password, azure, google, or persona.
+	// Kind is the method: password, azure, google, oidc (an organization's own identity
+	// provider), or persona.
 	Kind string
 	// Authority is who owns role membership for a directory method: directory or
 	// application (app.AuthorityDirectory, app.AuthorityApplication).
@@ -754,12 +797,14 @@ type Method struct {
 	CastFile string
 }
 
-// Directory reports a method whose people sign in through a directory, Microsoft Entra
-// or Google: the stack carries the registration's placement variables, its client secret
-// and a hand step for the registration at the directory. The persona method is none: its
-// provider is configured by the placement alone.
+// Directory reports a method whose people sign in through a directory, Microsoft Entra,
+// Google, or an organization's own identity provider through the generic OpenID Connect
+// method (an Okta, a Keycloak, or Google used as a plain OpenID Connect provider): the
+// stack carries the registration's placement variables, its client secret and a hand
+// step for the registration at the directory. The persona method is none: its provider
+// is configured by the placement alone.
 func (m *Method) Directory() bool {
-	return m.Kind == app.MethodAzure || m.Kind == app.MethodGoogle
+	return m.Kind == app.MethodAzure || m.Kind == app.MethodGoogle || m.Kind == app.MethodOIDC
 }
 
 // Persona reports the persona method: the sign-in of the test environments through the
@@ -786,13 +831,16 @@ func (m *Method) Stem() string {
 	return strings.ReplaceAll(m.Auth+"_"+m.Name, "-", "_")
 }
 
-// Provider names who the browser is sent to: Microsoft or Google.
+// Provider names who the browser is sent to: Microsoft, Google, the identity provider
+// (an organization's own, in impulse's words for it), or the persona provider.
 func (m *Method) Provider() string {
 	switch m.Kind {
 	case app.MethodAzure:
 		return "Microsoft"
 	case app.MethodGoogle:
 		return "Google"
+	case app.MethodOIDC:
+		return "the identity provider"
 	case app.MethodPersona:
 		return "the persona provider"
 	default:
@@ -1003,14 +1051,17 @@ func (m *Model) classify(cfg *config) error {
 			v.Role = RoleCookieKey
 		}
 		v.Image = cfg.image[v.Name]
-		secret, generated, err := secretFor(v)
+		declared, err := secretFor(v)
 		if err != nil {
 			return err
 		}
-		v.Secret, v.Generated = secret, generated
+		v.Secret, v.Generated, v.Versioned = declared.secret, declared.generated, declared.versioned
 		if v.Secret {
-			m.Secrets = append(m.Secrets, Secret{Variable: v, Name: secretName(v.Name), Generated: generated})
+			m.Secrets = append(m.Secrets, Secret{Variable: v, Name: secretName(v.Name), Generated: v.Generated, Versioned: v.Versioned})
 		}
+	}
+	if err := m.versionVariablesFree(); err != nil {
+		return err
 	}
 	m.Database = Database{
 		Project:  m.byRole(RoleDatabaseProject),
@@ -1099,31 +1150,83 @@ func (m *Model) Level(name string) (Level, bool) {
 	return Level{}, false
 }
 
+// RetirementOutOfReach says why no version of the versioned secret can be retired, empty
+// when one can. A retirement has the migrate command rewrite every stored value that
+// names the version, at the levels that command constructs: the stack hands it the
+// versioned secrets declared at those levels and grants the deploy identity, which runs
+// it, their containers alone. A versioned secret declared at another level never reaches
+// the command, which holds nothing written under it to rewrite or to confirm.
+func (m *Model) RetirementOutOfReach(s *Secret) string {
+	constructs := "the application has no migrate command"
+	if m.Migrate != nil {
+		if m.Migrate.Reads(s.Variable.Level) {
+			return ""
+		}
+		constructs = "it constructs " + strings.Join(m.Migrate.Levels, ", ")
+	}
+
+	return s.Variable.Name + " is declared at the " + s.Variable.Level + " level, which the migrate command does not construct (" + constructs + "): a retirement has that command rewrite the stored values that name the version, and it neither receives this secret nor reaches anything written under it, so it has nothing to rewrite or to confirm. The versions of a secret declared there stay enabled; one whose versions are to be retired is declared at a level the migrate command constructs"
+}
+
+// versionVariablesFree refuses a variable the code declares under a name a versioned
+// secret's versions are handed over by: APP_SECRET_KEY_2 beside a versioned
+// APP_SECRET_KEY would be set twice on the revision, once by each.
+func (m *Model) versionVariablesFree() error {
+	for i := range m.Variables {
+		v := &m.Variables[i]
+		match := versionVariableRE.FindStringSubmatch(v.Name)
+		if match == nil {
+			continue
+		}
+		for _, s := range m.Secrets {
+			if s.Versioned && s.Variable.Name == match[1] {
+				return errors.Newf("%s:%d: %s (%s) is the name a process receives one version of %s under (%s is secret:%q, so every enabled version is handed over as %s_<version>): give the variable another name", v.File, v.Line, v.Name, v.Declaration(), s.Variable.Name, s.Variable.Declaration(), secretVersioned, s.Variable.Name)
+			}
+		}
+	}
+
+	return nil
+}
+
+// secretDeclaration is what a variable's secret tag says of it: a credential mounted
+// from Secret Manager (secret), one whose value the tooling makes (generated), and one
+// whose every enabled version is mounted (versioned, which is generated too).
+type secretDeclaration struct {
+	secret    bool
+	generated bool
+	versioned bool
+}
+
 // secretFor reads the variable's secret tag: "true" makes it a secret, "generated" a
-// secret whose value the tooling makes, "false" a plain value. Any other value is
-// refused, and so is a variable whose name sounds like a credential and carries no tag,
-// since the name alone decides nothing. A variable in a role the stack derives is the
-// stack's to set, whatever its name sounds like (the Firebase web API key is one), and
-// tagging it a secret is refused: the stack sets it on the process as a plain value and
-// would never mount it.
-func secretFor(v *Variable) (secret, generated bool, err error) {
+// secret whose value the tooling makes, "versioned" a generated one whose every enabled
+// version reaches the processes, "false" a plain value. Any other value is refused, and
+// so is a variable whose name sounds like a credential and carries no tag, since the name
+// alone decides nothing. A variable in a role the stack derives is the stack's to set,
+// whatever its name sounds like (the Firebase web API key is one), and tagging it a
+// secret is refused: the stack sets it on the process as a plain value and would never
+// mount it. A variable in any role is read under its one name, so declaring it versioned
+// is refused: its processes would receive a variable per version and none by that name.
+func secretFor(v *Variable) (secretDeclaration, error) {
 	switch v.SecretTag {
-	case secretTrue, secretGenerated:
+	case secretTrue, secretGenerated, secretVersioned:
 		if v.Role.Derived() {
-			return false, false, errors.Newf("%s:%d: %s (%s) is a value the stack derives and sets on the process, not a secret: drop the secret tag", v.File, v.Line, v.Name, v.Declaration())
+			return secretDeclaration{}, errors.Newf("%s:%d: %s (%s) is a value the stack derives and sets on the process, not a secret: drop the secret tag", v.File, v.Line, v.Name, v.Declaration())
+		}
+		if v.SecretTag == secretVersioned && v.Role != RoleNone {
+			return secretDeclaration{}, errors.Newf("%s:%d: %s (%s) is read under its one name, and secret:%q hands a process one variable per enabled version (%s_1, %s_2) and none named %s: tag it secret:%q", v.File, v.Line, v.Name, v.Declaration(), secretVersioned, v.Name, v.Name, v.Name, secretGenerated)
 		}
 
-		return true, v.SecretTag == secretGenerated, nil
+		return secretDeclaration{secret: true, generated: v.SecretTag != secretTrue, versioned: v.SecretTag == secretVersioned}, nil
 	case secretFalse:
-		return false, false, nil
+		return secretDeclaration{}, nil
 	case "":
 		if isSecret(v.Name) && !v.Role.Derived() {
-			return false, false, errors.Newf("%s:%d: %s sounds like a credential (its name ends in %s) and %s carries no secret tag: add secret:\"true\" to mount it from Secret Manager, secret:\"generated\" for a value the tooling makes, or secret:\"false\" if it is a plain value", v.File, v.Line, v.Name, suffixOf(v.Name), v.Declaration())
+			return secretDeclaration{}, errors.Newf("%s:%d: %s sounds like a credential (its name ends in %s) and %s carries no secret tag: add secret:\"true\" to mount it from Secret Manager, secret:\"generated\" for a value the tooling makes, secret:\"versioned\" for one whose every enabled version the process receives, or secret:\"false\" if it is a plain value", v.File, v.Line, v.Name, suffixOf(v.Name), v.Declaration())
 		}
 
-		return false, false, nil
+		return secretDeclaration{}, nil
 	default:
-		return false, false, errors.Newf("%s:%d: secret:%q on %s: the secret tag takes \"true\", \"generated\" or \"false\"", v.File, v.Line, v.SecretTag, v.Declaration())
+		return secretDeclaration{}, errors.Newf("%s:%d: secret:%q on %s: the secret tag takes \"true\", \"generated\", \"versioned\" or \"false\"", v.File, v.Line, v.SecretTag, v.Declaration())
 	}
 }
 

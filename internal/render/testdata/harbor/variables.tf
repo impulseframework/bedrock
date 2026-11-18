@@ -88,6 +88,7 @@ variable "hostnames" {
     host: each directory registration's redirect URL is built from it, the
     callback the generated router (pkg/router) registers for it:
     https://<host>/portal/api/user/directory/callback for the members auth's directory registration (APP_MEMBERS_DIRECTORY_REDIRECT_URL),
+    https://<host>/portal/api/user/okta/callback for the members auth's okta registration (APP_MEMBERS_OKTA_REDIRECT_URL),
     https://<host>/api/user/directory/callback for the staff auth's directory registration (APP_STAFF_DIRECTORY_REDIRECT_URL).
     Every hostname here is registered with the
     load balancer by an entry in 2-net's hosts; output net_hosts is that entry.
@@ -252,7 +253,10 @@ variable "secret_versions" {
     "generated" is the entry of a secret the code declares secret:"generated"
     (bedrock render seeds it): the pipeline makes its value and passes its
     version in var.generated_secret_versions, so a number here pins nothing,
-    and bedrock check refuses one there and the word on any other secret.
+    and bedrock check refuses one there and the word on any other secret. The
+    word "versioned" is the entry of a secret the code declares
+    secret:"versioned" the same way: the pipeline makes its values and passes
+    every enabled version in var.versioned_secret_versions.
 
       secret_versions = {
         tst = { APP_COOKIE_KEY = "1", APP_MAIL_APP_PASSWORD = "1" }
@@ -268,10 +272,10 @@ variable "secret_versions" {
   validation {
     condition = alltrue(flatten([
       for env, versions in var.secret_versions : [
-        for name, version in versions : can(regex("^([1-9][0-9]*|latest|generated)$", version))
+        for name, version in versions : can(regex("^([1-9][0-9]*|latest|generated|versioned)$", version))
       ]
     ]))
-    error_message = "Every secret version is a positive integer, the word latest, or the word generated for a secret the code declares secret:\"generated\"."
+    error_message = "Every secret version is a positive integer, the word latest, or the secret tag's word for a secret the tooling makes: generated for one the code declares secret:\"generated\", versioned for one it declares secret:\"versioned\"."
   }
 }
 
@@ -292,6 +296,28 @@ variable "generated_secret_versions" {
   validation {
     condition     = alltrue([for name, version in var.generated_secret_versions : can(regex("^[1-9][0-9]*$", version))])
     error_message = "Every generated secret version is a positive integer, the number the build derived."
+  }
+}
+
+variable "versioned_secret_versions" {
+  description = <<-EOT
+    The versions of each versioned secret this environment's processes receive
+    (the fields of pkg/config/data.go tagged secret:"versioned"), keyed by the
+    environment variable: the numbers of every enabled version of the secret's
+    container, as the pipeline's plan step listed them (adding version 1 as the
+    apply identity when the container was empty) and passed with -var. A
+    process receives one variable per version, the variable's name with the
+    version's number after it; the highest number is the current version.
+    Never written in terraform.tfvars. A plan run by hand without it mounts no
+    versioned secret and shows that as its change; the next release build
+    mounts them again.
+  EOT
+  type        = map(list(string))
+  default     = {}
+
+  validation {
+    condition     = alltrue(flatten([for name, versions in var.versioned_secret_versions : [for version in versions : can(regex("^[1-9][0-9]*$", version))]]))
+    error_message = "Every versioned secret version is a positive integer, a number the build listed."
   }
 }
 
@@ -403,6 +429,46 @@ variable "members_directory_administered_tenants" {
   default     = ""
 }
 
+variable "members_okta_client_id" {
+  description = <<-EOT
+    Per environment, the client ID of the members auth's okta registration with the identity provider
+    (APP_MEMBERS_OKTA_CLIENT_ID, pkg/config/data.go dataConfig.MembersOktaClientID).
+    Created by hand at the identity provider, one client per environment: a
+    confidential web application client, with a client secret, and the redirect
+    URI this stack outputs as members_okta_redirect_url.
+    The client ID is public; its secret goes into the members-okta-client-secret
+    container. Empty until registered.
+  EOT
+  type        = map(string)
+  default = {
+    tst = ""
+    stg = ""
+    prd = ""
+  }
+}
+
+variable "members_okta_issuer" {
+  description = <<-EOT
+    The issuer URL of the identity provider the members auth's okta registration signs in through
+    (APP_MEMBERS_OKTA_ISSUER, dataConfig.MembersOktaIssuer): the provider's configuration is
+    read at <issuer>/.well-known/openid-configuration, and every sign-in's token
+    must carry it. It names the organization's provider, once for the
+    organization: another issuer is another provider, whose people no link made
+    so far knows. The session library refuses a missing or malformed one when the
+    registration is made, at construction, so every data-level process carries it
+    and the first release in an environment waits on it (README, "Hand steps"). It
+    is an https URL: the stack is a cloud environment, where the provider's keys
+    and the sign-in's tokens are never fetched or sent in the clear.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.members_okta_issuer == "" || can(regex("^https://[^/?#]+(/[^?#]*)?$", var.members_okta_issuer))
+    error_message = "members_okta_issuer is the provider's issuer URL: absolute and https (https://accounts.google.com), with no query or fragment, or empty before the registration. An http issuer is refused: this stack is a cloud environment, and the provider's keys and the sign-in's tokens do not travel in the clear."
+  }
+}
+
 variable "staff_directory_client_id" {
   description = <<-EOT
     Per environment, the client ID of the staff auth's directory registration with Google
@@ -473,11 +539,12 @@ variable "members_administrator" {
   description = <<-EOT
     Per environment, the sign-in name of the members auth's first administrator
     (APP_MEMBERS_ADMINISTRATOR, pkg/config/data.go dataConfig.MembersAdministrator): the name the
-    directory presents, the user principal name on Entra or the email on Google.
-    The migrate command seeds the administrator role membership under it while
-    the auth's users table holds no rows, so the first person to sign in holds
-    the role; empty until named, and the first release in an environment refuses
-    to seed without it (README, "Hand steps").
+    directory presents, the user principal name on Entra, the email on Google, or
+    the preferred username at an organization's own identity provider (the email
+    when it sends none). The migrate command seeds the administrator role
+    membership under it while the auth's users table holds no rows, so the first
+    person to sign in holds the role; empty until named, and the first release in
+    an environment refuses to seed without it (README, "Hand steps").
   EOT
   type        = map(string)
   default = {

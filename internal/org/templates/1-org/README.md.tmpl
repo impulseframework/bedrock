@@ -133,6 +133,15 @@ trigger plans it on a pull request as `{{.Prefix}}-org-gbl-plan`.
   operator entitlement, creates a container ahead of the release that first
   reads it (`bedrock secret add`) and adds the value, and the application
   stack adopts the container.
+- The custom role `secretVersionDisabler`: disables a secret version
+  (`secretmanager.versions.disable`) and nothing else: no payload, no adding,
+  no enabling, no destroying. An application's stack grants it on the
+  containers of its versioned secrets alone (`secret:"versioned"` in the code)
+  to the environment's operations identity, for `bedrock secret retire`: the
+  operations workflow disables a version once the application has rewritten
+  every stored value that named it. The cloud's own
+  `roles/secretmanager.secretVersionManager` also destroys versions, which the
+  pipeline never does to a retired one.
 - The custom role `spannerPlanReader`: reads an instance's
   databases, their IAM policies and their backup schedules
   (`spanner.instances.get`, `spanner.databases.get`, `spanner.databases.list`,
@@ -600,6 +609,7 @@ bucket, prefix `1-org`.
 | `project_ids`, `project_numbers` | Project ID and number by environment code. |
 | `secret_container_admin_role` | By project key, the full name of the `secretContainerAdmin` role in that project. |
 | `secret_operator_role` | By project key, the full name of the `secretOperator` role in that project. |
+| `secret_version_disabler_role` | By project key, the full name of the `secretVersionDisabler` role in that project. |
 | `run_job_policy_admin_role` | By project key, the full name of the `runJobPolicyAdmin` role in that project. |
 | `spanner_plan_reader_role` | By project key, the full name of the `spannerPlanReader` role in that project. |
 | `cloud_build_trigger_runner_role` | By project key, the full name of the `cloudBuildTriggerRunner` role in that project. |

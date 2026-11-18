@@ -1,11 +1,13 @@
 // Package members is the members auth: the portal's people, who sign in through the
-// organization's directory (OpenID Connect against Microsoft Entra) and hold their roles
-// in the members permission store, which the application assigns: the directory proves
-// who someone is, and the deployment seeds the first administrator's membership under the
-// sign-in name the placement names (APP_MEMBERS_ADMINISTRATOR) while the auth has no users.
+// organization's directory (OpenID Connect against Microsoft Entra) or through a partner
+// organization's own identity provider (okta, the generic OpenID Connect method) and hold
+// their roles in the members permission store, which the application assigns: the
+// directory proves who someone is, and the deployment seeds the first administrator's
+// membership under the sign-in name the placement names (APP_MEMBERS_ADMINISTRATOR) while
+// the auth has no users.
 //
 // An auth is a package. It owns its session manager, one Auth session with the sign-in
-// methods registered on it (here directory), with its own session, user,
+// methods registered on it (here directory and okta), with its own session, user,
 // identity, auth event and pending sign-in tables and cookie; its permission store, with
 // its own table prefix; and its role configuration. Each method is its own file in this
 // package, named for its registration. The package is named for the population, never
@@ -24,6 +26,7 @@ import (
 	"github.com/impulseframework/impulse/access/spannerstore"
 	"github.com/impulseframework/impulse/session"
 	"github.com/impulseframework/impulse/session/azure"
+	"github.com/impulseframework/impulse/session/oidc"
 	"github.com/impulseframework/impulse/session/sessionstorage"
 )
 
@@ -64,6 +67,11 @@ type Settings struct {
 	// APP_MEMBERS_DIRECTORY_ADMINISTERED_TENANTS, APP_MEMBERS_DIRECTORY_CLIENT_ID,
 	// APP_MEMBERS_DIRECTORY_CLIENT_SECRET, APP_MEMBERS_DIRECTORY_REDIRECT_URL).
 	Directory DirectorySettings
+	// Okta is the okta registration's settings: how the application is known to the
+	// partner organization's identity provider, read from the environment
+	// (APP_MEMBERS_OKTA_ISSUER, APP_MEMBERS_OKTA_CLIENT_ID, APP_MEMBERS_OKTA_CLIENT_SECRET,
+	// APP_MEMBERS_OKTA_REDIRECT_URL).
+	Okta OktaSettings
 }
 
 // Session is the auth's session manager: one Auth session over the Spanner store, whose
@@ -83,6 +91,7 @@ type Auth struct {
 type Handlers struct {
 	*Session
 	directory *azure.Method
+	okta      *oidc.Method
 }
 
 // PendingStatus reports the sign-in that waits for a password confirmation, if any.
@@ -143,6 +152,7 @@ func New(ctx context.Context, db *cloudspanner.Client, settings *Settings) (*Aut
 	if err != nil {
 		return nil, err
 	}
+	handlers.okta = registerOkta(authSession, accessClient, settings)
 
 	return &Auth{access: accessClient, handlers: handlers}, nil
 }

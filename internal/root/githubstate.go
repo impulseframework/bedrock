@@ -328,25 +328,48 @@ func (e *engine) runnerGroup(ctx context.Context) (int64, error) {
 }
 
 // runner brings the organization's larger runner to the placement: the variable that
-// names it, and when the placement sizes it, the group and the runner.
+// names it; when the placement sizes it, the group and the runner; and in every case the
+// removal of a runner in bedrock's group that the placement does not name.
 func (e *engine) runner(ctx context.Context) error {
 	if err := e.runnerVariable(ctx); err != nil {
 		return err
 	}
-	hosted := e.d.HostedRunner()
-	if hosted == nil {
-		return nil
-	}
 	owner := e.p.GithubOrganization
-	groupID, err := e.runnerGroup(ctx)
-	if err != nil {
-		return err
+	hosted := e.d.HostedRunner()
+	var groupID int64
+	if hosted != nil {
+		id, err := e.runnerGroup(ctx)
+		if err != nil {
+			return err
+		}
+		groupID = id
+	} else {
+		id, err := e.standingRunnerGroup(ctx)
+		if err != nil || id == 0 {
+			return err
+		}
+		groupID = id
 	}
-	hosted.RunnerGroupID = groupID
 	runners, err := e.gh.HostedRunners(ctx, owner)
 	if err != nil {
 		return errors.Wrapf(err, "listing the hosted runners of %s", owner)
 	}
+	if hosted != nil {
+		if err := e.hostedRunner(ctx, hosted, groupID, runners); err != nil {
+			return err
+		}
+	}
+
+	return e.retireRunners(ctx, groupID, runners)
+}
+
+// hostedRunner makes the larger runner the placement sizes in bedrock's group, or brings
+// the one that stands into the group with the placement's ceiling. A size that differs is
+// a finding: a runner's size cannot change in place, and a new name makes the new runner
+// beside it, which retireRunners then removes.
+func (e *engine) hostedRunner(ctx context.Context, hosted *github.HostedRunnerRequest, groupID int64, runners []github.HostedRunner) error {
+	owner := e.p.GithubOrganization
+	hosted.RunnerGroupID = groupID
 	i := slices.IndexFunc(runners, func(r github.HostedRunner) bool { return r.Name == hosted.Name })
 	if i < 0 {
 		return e.change(ctx, sectionGitHub, fmt.Sprintf("makes the larger runner %s (%s, at most %d at once) in the group %s", hosted.Name, hosted.Size, hosted.MaximumRunners, runnerGroupName), func(ctx context.Context) error {
@@ -355,14 +378,69 @@ func (e *engine) runner(ctx context.Context) error {
 			return err
 		})
 	}
-	got2 := runners[i]
-	if got2.MachineSize != nil && got2.MachineSize.ID != hosted.Size {
-		e.finding(fmt.Sprintf("the larger runner %s is a %s, and placement.json sizes it %s (ciLargeRunnerSize): a runner's size cannot change in place; delete the runner on GitHub and let the apply make it again", hosted.Name, got2.MachineSize.ID, hosted.Size))
+	stands := runners[i]
+	if stands.MachineSize != nil && stands.MachineSize.ID != hosted.Size {
+		e.finding(fmt.Sprintf("the larger runner %s is a %s, and placement.json sizes it %s (ciLargeRunnerSize): a runner's size cannot change in place; give the runner a new name in placement.json (ciLargeRunner), and the apply makes the new one and removes %s", hosted.Name, stands.MachineSize.ID, hosted.Size, hosted.Name))
 	}
-	if groupID != 0 && (got2.RunnerGroupID != groupID || got2.MaximumRunners != hosted.MaximumRunners) {
+	if groupID != 0 && (stands.RunnerGroupID != groupID || stands.MaximumRunners != hosted.MaximumRunners) {
 		return e.change(ctx, sectionGitHub, fmt.Sprintf("moves the larger runner %s into the group %s with at most %d at once", hosted.Name, runnerGroupName, hosted.MaximumRunners), func(ctx context.Context) error {
-			return e.gh.UpdateHostedRunner(ctx, owner, got2.ID, groupID, hosted.MaximumRunners)
+			return e.gh.UpdateHostedRunner(ctx, owner, stands.ID, groupID, hosted.MaximumRunners)
 		})
+	}
+
+	return nil
+}
+
+// standingRunnerGroup is the id of bedrock's runner group when it stands, 0 when it does
+// not: the placement sizes no runner, so the group is not made, and a group that stands
+// holds runners an earlier placement sized.
+func (e *engine) standingRunnerGroup(ctx context.Context) (int64, error) {
+	owner := e.p.GithubOrganization
+	groups, err := e.gh.RunnerGroups(ctx, owner)
+	if err != nil {
+		return 0, errors.Wrapf(err, "listing the runner groups of %s", owner)
+	}
+	if i := slices.IndexFunc(groups, func(g github.RunnerGroup) bool { return g.Name == runnerGroupName }); i >= 0 {
+		return groups[i].ID, nil
+	}
+
+	return 0, nil
+}
+
+// retireRunners removes every GitHub-hosted runner in bedrock's group that the placement
+// does not name: the runner of an earlier name after a rename (a new size is a new name),
+// every runner of the group once the placement sizes none, and one a person made in the
+// group. The group is bedrock's (runnerGroupName), so a runner in it is the apply's to
+// make and to remove. A runner the placement names is never removed, sized or not, and
+// one GitHub is removing already is left to it. The variable has moved to the placement's
+// runner before this runs, so no new job is sent to a runner removed here. A runner that
+// is running a job is removed like any other: GitHub takes the removal and lets the job
+// finish (a job ran its ten minutes to success after its runner had left the listing, in
+// the lab on 2026-11-16), and the runner's own record says nothing of a job, so there is
+// nothing to wait for and nothing to read it from. The plan's line says so.
+func (e *engine) retireRunners(ctx context.Context, groupID int64, runners []github.HostedRunner) error {
+	if groupID == 0 {
+		return nil
+	}
+	owner := e.p.GithubOrganization
+	why := "placement.json no longer names it (ciLargeRunner)"
+	if e.d.HostedRunner() == nil {
+		why = "placement.json sizes no larger runner (ciLargeRunnerSize)"
+	}
+	for _, r := range runners {
+		if r.RunnerGroupID != groupID || r.Name == e.p.CiLargeRunner || r.Status == runnerDeleting {
+			continue
+		}
+		size := ""
+		if r.MachineSize != nil {
+			size = " (" + r.MachineSize.ID + ")"
+		}
+		what := fmt.Sprintf("removes the larger runner %s%s from the group %s: %s; a job running on it finishes", r.Name, size, runnerGroupName, why)
+		if err := e.change(ctx, sectionGitHub, what, func(ctx context.Context) error {
+			return e.gh.DeleteHostedRunner(ctx, owner, r.ID)
+		}); err != nil {
+			return err
+		}
 	}
 
 	return nil

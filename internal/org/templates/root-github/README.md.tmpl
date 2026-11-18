@@ -174,9 +174,18 @@ long jobs on. The apply sets it as the organization variable `CI_LARGE_RUNNER`, 
 workflow reads where it chooses its runner
 (`runs-on: ${{"{{"}} vars.CI_LARGE_RUNNER || 'ubuntu-latest' {{"}}"}}`). With `ciLargeRunnerSize`
 (`8-core`, say) the apply creates that runner itself: a GitHub-hosted runner of the name
-and size in the runner group `applications`, with at most `ciLargeRunnerMaximum` running
-at once. The group admits public repositories when the placement lists a public library;
-a group that did not would leave a public library's jobs waiting.
+and size in the runner group `bedrock-applications`, with at most `ciLargeRunnerMaximum`
+running at once. The group admits public repositories when the placement lists a public
+library; a group that did not would leave a public library's jobs waiting.
+
+The group is bedrock's, and so is every runner in it: the apply removes a runner in the
+group that `ciLargeRunner` does not name, and the plan names each one. A runner's size
+cannot change in place, so a new size is a new name: the apply makes the runner of the new
+name, moves the variable to it, and removes the runner of the old name. With
+`ciLargeRunnerSize` left out, the apply removes every runner of the group except one
+`ciLargeRunner` names; the group stays, empty. A job that is running on a runner the apply
+removes finishes: GitHub takes the runner out of the listing and lets the job end. A runner
+made by hand belongs in a group of its own, which bedrock never touches.
 
 GitHub bills a larger runner per minute, for a public repository too, and a pull request
 from a fork runs on it once its workflows are approved. The variable is bedrock's: one set

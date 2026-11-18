@@ -398,7 +398,7 @@ and what its absence means:
   through when an auth registers the persona method (`impulse add method <auth>
   persona`): the provider's `issuer` URL (https) and the application's `clientId` root
   at the provider (lowercase letters, digits and hyphens starting with a letter), both
-  from Redgrade's registration of the application. The stack sets the issuer on the
+  from the provider's registration of the application. The stack sets the issuer on the
   served site in the first environment and its pull requests alone, so the method is
   registered there and nowhere else and a later environment never offers it; derives each
   deployment's client ID from the root (`<root>-pr<N>` for a pull request,
@@ -467,7 +467,13 @@ local, `max_instances` in `locals.tf`, so one rendered stack serves every enviro
 
 What the stack carries comes from declarations in the code: a config variable tagged as
 a secret becomes a Secret Manager container mounted at a pinned version; a directory auth
-becomes the registration variables, the redirect output and the hand steps in the README;
+(a registration with Microsoft Entra, with Google, or with an organization's own identity
+provider through the generic OpenID Connect method, `impulse add method <auth> oidc
+<registration>`: an Okta, a Keycloak, or Google used as a plain OpenID Connect provider,
+whose issuer URL becomes a stack variable once for the organization,
+`<auth>_<registration>_issuer`, an `https` URL: the plan refuses an `http` issuer, since a
+rendered stack is a cloud environment) becomes the registration variables, the redirect
+output and the hand steps in the README;
 an auth's first-administrator variable (`APP_<AUTH>_ADMINISTRATOR`, the sign-in name the
 migrate command seeds the administrator role membership under while the auth has no users)
 becomes a stack variable per environment, carried by every data-level process, and a hand
@@ -688,8 +694,10 @@ It also refuses:
 - an entry of `secret_versions` in `terraform.tfvars` that disagrees with the code's
   secret tags: a version number, `latest` or no entry for a secret declared
   `secret:"generated"`, whose version the pipeline derives at each build and whose entry
-  is the word `generated` in every environment; and the word on a secret someone puts in
-  place. Each line names the environment, the entry and what to write.
+  is the word `generated` in every environment; the same for a secret declared
+  `secret:"versioned"`, whose entry is the word `versioned` (the other word is refused
+  there as a number is); and either word on a secret someone puts in place. Each line
+  names the environment, the entry and what to write.
 - a variable in `retired` in `terraform.tfvars` that nothing declares: no secret, no
   build secret (any environment's `build_secrets`), no file store and no Firestore
   database by that variable. The list names what a release retires (the stack README,
@@ -729,14 +737,15 @@ It also refuses:
   them, so render and check both stop before the stack is written. `APP_FIREBASE_API_KEY`
   without the database, or at another level than it, is refused the same way.
 
-- an auth registering the persona method (`oidc.SignIn`, `impulse add method persona`)
-  under a `placement.json` that names no persona provider (`persona`), since the method is
-  registered where the stack sets the issuer and nowhere else; a `persona` block that no
-  auth's method reads; a persona method whose registration synchronizes roles from the
-  provider (`RoleSync`), since the provider asserts who a persona is and the cast seeds
-  what it may do; and a persona method whose cast (`pkg/auth/<auth>/cast.json`) is
-  missing or does not read (no persona, a login outside its shape, a login twice), naming
-  the registration and the file.
+- an auth registering the persona method (`oidc.SignIn` with no client secret, `impulse
+  add method persona`; with a client secret it is an organization's own identity provider,
+  a directory method) under a `placement.json` that names no persona provider (`persona`),
+  since the method is registered where the stack sets the issuer and nowhere else; a
+  `persona` block that no auth's method reads; a persona method whose registration
+  synchronizes roles from the provider (`RoleSync`), since the provider asserts who a
+  persona is and the cast seeds what it may do; and a persona method whose cast
+  (`pkg/auth/<auth>/cast.json`) is missing or does not read (no persona, a login outside
+  its shape, a login twice), naming the registration and the file.
 
 It also warns, without failing, about the maintenance windows (Maintenance windows,
 below): production with no maintenance setting in `placement.json`, when the application
@@ -888,7 +897,14 @@ thing one step hands the next. In order:
   the pull request's instruction (the words after its latest `/gcbrun` comment:
   `shared-db`, `reload-db`, `down`), the image and its tags, whether the migrations run
   and traffic shifts (a stale pull-request database, one whose last build applied a
-  migration no longer in the tree, is the stack job's decision, `deploy pr-stack`). A tag build may carry a restore
+  migration no longer in the tree, is the stack job's decision, `deploy pr-stack`). A
+  build is a tag's or a pull request's and never both, and it carries one instruction (a
+  restore, a rollback, a migration operation, the end of a maintenance, a retirement)
+  with what goes with it: a second instruction beside it, the stack trigger's action
+  (`_STACK_ACTION`), a reason with no restore or rollback, and a restore's database with
+  no restore are refused here, since the operations workflow never sends them together;
+  the stack trigger's own steps (`deploy stack first`, `teardown`, `destroy`) refuse a
+  release build's instruction the same way. A tag build may carry a restore
   instruction (`_RESTORE`: `empty`, or `production-backup` for the environment on
   production's instance, with `_REQUESTER` naming who asked): the environment's database
   is replaced before the release deploys. A pull-request build carries none, and
@@ -1144,7 +1160,17 @@ thing one step hands the next. In order:
   generated secrets' pins (`secret:"generated"`): the newest enabled version of each
   container, read as the apply identity, version 1 added when the container has none
   (the container created ahead of the apply, which adopts it), passed to the plan as
-  `var.generated_secret_versions` and left for the record. Before the plan, in an
+  `var.generated_secret_versions` and left for the record. A versioned secret
+  (`secret:"versioned"`) is read the same way, and every enabled version of its container
+  is listed, oldest first, and passed as `var.versioned_secret_versions`, so the revision
+  receives one variable per version. A run that retires a version (`bedrock secret
+  retire`, `_RETIRE_SECRET` and `_RETIRE_VERSION` on the build) is refused here, with
+  nothing changed, when the release does not declare the variable versioned, when the
+  version is not enabled, when it is the newest enabled version, and when the
+  environment's live release does not hold the newest enabled version by its deployment
+  record (it could not open what the rewrite writes: `bedrock rerun` first); otherwise
+  the plan is told every enabled version but the one retiring, and the versions are left
+  for the migrate step. Before the plan, in an
   environment other than the first, it refuses the release when the code declares a
   secret the environment's `secret_versions` in `terraform.tfvars` pins no version for
   (the process would start without the variable): the refusal names the environment,
@@ -1201,8 +1227,9 @@ thing one step hands the next. In order:
   yet (the capacity guard `deploy plan-environments` runs, with the same refusal, so a
   sixth application's first apply on a full shared instance stops here and not inside
   tofu's apply), plans with the environment and the
-  generated secrets' pins derived from their containers the way a pull request's plan
-  derives them (each container's newest enabled version; nothing while a container has
+  generated secrets' pins and the versioned secrets' versions derived from their
+  containers the way a pull request's plan derives them (each container's newest enabled
+  version, or every enabled one for a versioned secret; nothing while a container has
   none, since the first release adds it), prints the plan's summary and applies it. After
   a teardown the workflow's `run` action then runs the release the environment ran.
 - `deploy migrate`: runs the release's migrate command, which `deploy build-image` took
@@ -1228,7 +1255,16 @@ thing one step hands the next. In order:
   <n>`), leaves the force for the record, then runs it as it always does; `rerun` is the
   command as it always does. An operation that cannot run (an unknown action or table, a
   force whose version is missing or not an integer, a force without a requester) is
-  refused by `deploy resolve` and again here, before the command runs.
+  refused by `deploy resolve` and again here, before the command runs. A build that
+  retires a version of a versioned secret (`bedrock secret retire`: `_RETIRE_SECRET`,
+  `_RETIRE_VERSION` and `_REQUESTER`, with no restore, rollback or migration operation
+  beside them) runs the migrations as always and then the command once more with
+  `-retire-secret <VARIABLE>_<version>`, with every enabled version of the secret in its
+  environment, each read as the deploy identity (the plan step leaves their names,
+  `RETIRE_SECRET_VERSIONS`; the values are never printed): an exit 0 is the application's
+  word that no stored value names the version, and the step leaves the retirement for
+  the record; any other exit stops the build before a revision without the version
+  deploys, and so does a build that would skip its migrations.
 - `deploy jobs`: makes this build's job for the job process (`cmd/jobs`) after the
   stack's apply, before the migrations, from the release's job template (the
   `revision_templates` output's `job`: identity, variables, secret mounts, timeout,
@@ -1439,6 +1475,8 @@ version. Two commands move them along.
 bedrock secret add tst APP_MAIL_API_KEY --from-file key.txt     # a new version, the container created when absent
 bedrock secret pin tst APP_MAIL_API_KEY 2                       # terraform.tfvars secret_versions.tst
 bedrock secret rotate tst APP_COOKIE_KEY                        # a generated secret: a random version, the live release run again
+bedrock secret rotate tst APP_SECRET_KEY                        # a versioned secret: a random version beside the earlier ones
+bedrock secret retire tst APP_SECRET_KEY 1                      # a versioned secret: version 1 rewritten away, dropped, then disabled
 ```
 
 `secret add` stores a value as a new version of the container the stack names for the
@@ -1485,6 +1523,81 @@ random version (the stack grants that identity and the apply identity the adding
 versions on the generated containers alone) and runs the live release again, so a
 revision pinned to the new version takes traffic in the same action; a rotated cookie key
 signs every user of the environment out, which is the point.
+
+A secret the code declares `secret:"versioned"` (the application's own secret, under which
+its stored secret fields are encrypted) is generated the same way, and a service is handed
+every enabled version of it, not the newest alone: a value written under an earlier version
+still opens after a rotation. Its entry in `secret_versions` is the word `versioned` in
+every environment (`render` seeds it and `check` holds it to the word), `secret add` and
+`secret pin` refuse the variable, and a variable in a role the framework reads under its
+one name (the cookie key, a client secret) cannot be declared so. At each build the plan
+step lists the container's enabled versions as the apply identity (adding version 1 when
+it has none) and passes them to the plan (`var.versioned_secret_versions`); the revision
+gets one variable per version, the declared variable's name, an underscore and the Secret
+Manager version's number: `APP_SECRET_KEY_1` from version 1, `APP_SECRET_KEY_2` from
+version 2. The highest number is the current version, no variable carries the bare name,
+and code that declares a variable under such a name beside the secret is refused. The
+deployment record names the versions (`versionedSecrets`), and the migrate command
+receives the same variables for a versioned secret at a level it constructs.
+
+`secret rotate <env> <VARIABLE>` serves a versioned secret as it serves a generated one: a
+new random version, the live release run again. The same image runs under the new
+configuration, holding the new version beside the earlier ones; a revision that does not
+start leaves the one before it serving, and the run then says that the new version stays
+enabled in Secret Manager and that the next release takes it up.
+
+`secret retire <env> <VARIABLE> <version>` takes a version out of use, through the
+operations workflow's `retire` action, in three moves whose order protects the running
+service. The live release's build runs again with the instruction, and its plan step
+refuses, with nothing changed and a sentence saying what to do, a secret declared at a
+level the migrate command does not construct, a version that is not enabled, the newest
+enabled version (every value is written under it: rotate first), and any version while the
+live release does not hold the newest enabled one (the rewrite writes under the newest,
+which that release could not open, and it may still write under the one retiring: `bedrock
+rerun` first). First, after the build's migrations, the release's migrate command is run
+once more as `migrate -retire-secret <VARIABLE>_<version>` (`-retire-secret
+APP_SECRET_KEY_1`), on the build worker as the deploy identity, from the checkout's root,
+with the variables a migration runs with and one variable per enabled version of the
+secret, the retiring one included: the application rewrites every stored value that still
+names the version under the current one and confirms none is left by exiting 0. Any other
+exit fails the build there, with the version enabled, no revision deployed and nothing
+disabled; a release whose migrate command does not know the flag fails the same way.
+Second, the build deploys a revision that was handed every enabled version but that one,
+and moves the traffic to it, so the service no longer holds the version. Third, and only
+once the build has succeeded and its deployment record says the version was retired
+(`retiredSecret`, which the build writes after the application's confirmation and the
+traffic's move; a release on a bedrock that does not read the instruction writes none, and
+nothing is disabled), the workflow's job disables the version in Secret Manager as the
+environment's operations identity, which the stack grants `1-org`'s
+`secretVersionDisabler` role on the versioned containers alone (so `1-org` is applied by a
+bedrock that has the role before a stack that grants it). The job disables only while that
+record is the environment's newest live one: a release approved alongside the retirement
+plans while the version is still enabled, is handed it, and may take traffic after the
+retirement's build, so the job then disables nothing and says to ask again once that
+release is live. A version is disabled and never destroyed by the command: a backup taken
+before the retirement holds values under it, and `gcloud secrets versions enable` brings
+it back; destroying one is a step by hand once those backups have aged out. The service
+drops the version before it is disabled, never after: a revision that names a disabled
+version cannot start an instance.
+
+A version is retired only of a versioned secret declared at a level the migrate command
+constructs (the core and data levels). The framework's rewrite opens the data level and
+rewrites the values there, so a versioned secret declared at another level (one the site
+alone constructs) holds nothing the command could rewrite or confirm: the stack hands the
+migrate command, and grants the deploy identity that runs it, the versioned secrets at its
+levels alone (`migrate_accessor` in `secret-manager.tf`), and `secret retire` and the
+build's plan step refuse a retirement of any other, saying why. Such a secret's versions
+stay enabled.
+
+Pull requests deploy to the first environment and share its secrets: a pull request's
+stack mounts the versions that were enabled when it was planned, so its services built
+before a retirement there keep naming the retired version, and its own database is not the
+one the retirement rewrote. The command does nothing for them. After a retirement in the
+first environment, each open pull request is built again with a `/gcbrun` comment, whose
+build mounts the versions that are enabled, and one whose own database holds values
+written under the retired version takes `/gcbrun reload-db`. The retirement build's log
+names the pull requests that have an environment, and the workflow's job says what they
+need in its summary.
 
 A secret's container is protected from a destroy in every environment (`deletion_protection`
 in `secret-manager.tf`), as the file stores' buckets and the Firestore database are: a
@@ -2022,6 +2135,33 @@ for any release; the GitHub side never holds a deploy right. The workflow run na
 started it, Cloud Build records the operations identity, and the deployment record
 carries the requester and the restore. An environment the placement records no project
 for is not wired: the job stops before touching anything and says what to record.
+
+Every input of the workflow is held whole before a line uses it, in each job's first step,
+since the Run workflow button and the API take what the commands would have refused. The
+inputs reach the list of substitutions a build starts with (separated by commas, or by `|`
+where a reason travels), a step's outputs and, for the environment, the name of a variable
+the step reads; a value that carried the list's separator or a line break would end itself
+there and add a substitution of its own, which the pipeline's steps would read as the
+trigger's. So each value is judged by a shell `case` over the whole string, never line by
+line: the environment against the application's own, a release against
+`v<major>.<minor>.<patch>`, a version against an integer, a backup and a database against
+the characters their names are written with, the action and the table against their words,
+a secret's variable against the ones the code declares. The reason is free text: one that
+carries a `|` or a line break is refused with a sentence that says so, by the commands and
+by the job, and it is never encoded or rewritten, because a rollback and a restore run an
+earlier release's pipeline, which records the reason as it reads it. What a job reads from
+the environment's deployment records and passes to a build is held the same way, in the
+step that reads it: the live release (a rerun for a rotation, a retirement or the end of a
+maintenance, and a restore), a rollback's two releases, a cut's backup, and production's
+database with the backup it was restored from. A record is written by a release's build,
+and by anything else that may write to the records bucket, so one that holds something
+that is not a release tag, a backup's name or a database's name where a record says it
+stops the job before a build is started, with a sentence that names the record's object
+and never prints what it holds. The requester a build is told (`_REQUESTER`) is the login
+GitHub gives the run, which nobody types and which holds no separator. The pipeline is the
+second gate: a build that carries two instructions, an instruction on a pull request's
+build, or both a tag and a pull request's number is refused by its first step (`deploy
+resolve`).
 
 ## bedrock rollback
 
@@ -3028,8 +3168,8 @@ for the run; `GITHUB_TOKEN`, or gh's token, for
 organization owner's). It says what goes, project by project, and asks for the prefix typed
 back before anything runs (`--yes` stands in for it where there is no terminal). It destroys
 1-org, its GitHub repositories taken out of the state first so that they stay with their
-code, pull requests and releases (the rulesets, the operations environments, the runner group
-and the organization variable go), then 0-bootstrap on a local copy of its state, since the
+code, pull requests and releases (the rulesets and the operations environments go), then
+0-bootstrap on a local copy of its state, since the
 state bucket goes with the boot project; in each an apply with `destroy=true` records the
 projects' deletion policy, that no API is disabled first (one a resource outside the layer's
 state uses would refuse) and lifts the folders' protection, and the destroy is tried
@@ -3170,13 +3310,18 @@ runs the jobs their `//impulse:ci` lines choose on, the two test legs and the im
 without a line (`ciLargeRunner`, a runner's name, a runner label or a runner group set as
 the organization's Actions variable `CI_LARGE_RUNNER`, which takes the infrastructure
 app's Variables organization permission; empty for the standard runner). With
-`ciLargeRunnerSize` (`8-core`, say) 1-org creates that runner itself: a GitHub-hosted
-runner of the name and size on GitHub's current Ubuntu, in a runner group of the
-application repositories alone, capped at `ciLargeRunnerMaximum` running at once (0 for
-GitHub's default), through the app's Self-hosted runners organization permission; GitHub
-bills it per minute by its size on the Team and Enterprise plans. The runner's group
-admits public repositories when the placement lists a public library (a group that did not
-would leave that library's jobs waiting for a runner), and is closed to them otherwise. A repository that existed before the layer
+`ciLargeRunnerSize` (`8-core`, say) the root organization's apply creates that runner
+itself: a GitHub-hosted runner of the name and size on GitHub's current Ubuntu, in
+bedrock's runner group `bedrock-applications`, capped at `ciLargeRunnerMaximum` running at
+once (0 for GitHub's default), through the infrastructure app's Self-hosted runners
+organization permission; GitHub bills it per minute by its size on the Team and Enterprise
+plans. The group admits public repositories when the placement lists a public library (a
+group that did not would leave that library's jobs waiting for a runner), and is closed to
+them otherwise. The group and every runner in it are bedrock's: the apply removes a runner
+in the group that `ciLargeRunner` does not name, and its plan names each one, so a new
+size, which is a new name, replaces the runner, and a placement that sizes none leaves the
+group empty. A job that is running on a runner the apply removes finishes: GitHub takes the
+runner out of the listing and lets the job end. A repository that existed before the layer
 declared it is adopted on the first apply: `bedrock org register` records `adopted` on the
 application's entry when GitHub has the repository, and an import block in 1-org adopts it
 into the state; a ruleset or Environment made on it by hand is imported first, and

@@ -127,6 +127,11 @@ output "secret_operator_role" {
   value       = { for k, r in google_project_iam_custom_role.secret_operator : k => r.id }
 }
 
+output "secret_version_disabler_role" {
+  description = "By project key, the full name of the secretVersionDisabler custom role in that project: disables a secret version, nothing else. An application's stack grants it on its versioned secrets' containers to the environment's operations identity, for bedrock secret retire."
+  value       = { for k, r in google_project_iam_custom_role.secret_version_disabler : k => r.id }
+}
+
 output "run_job_policy_admin_role" {
   description = "By project key, the full name of the runJobPolicyAdmin custom role in that project: reads and sets the IAM policy of Cloud Run jobs, nothing else. 2-env grants it on the environment project to each application's deploy identity."
   value       = { for k, r in google_project_iam_custom_role.run_job_policy_admin : k => r.id }

@@ -483,7 +483,10 @@ type Facts struct {
 	KeepsReleaseBackups bool
 	// Migration is the migration operation a release build carries (the operations
 	// workflow's version, rerun or force), which the migrate step does; nil for none.
-	Migration     *MigrateAction
+	Migration *MigrateAction
+	// Retirement is the retirement a release build carries (the operations workflow's
+	// retire), which the plan and migrate steps do; nil for none.
+	Retirement    *Retirement
 	Image         string
 	ImageTag      string
 	CommitTag     string
@@ -593,6 +596,9 @@ func newFacts(data []byte) (*Facts, error) {
 	if f.Tag == "" && f.PullRequest == "" {
 		return nil, errors.New("neither TAG_NAME nor _PR_NUMBER is set; a build is a tag's or a pull request's")
 	}
+	if f.Tag != "" && f.PullRequest != "" {
+		return nil, errors.Newf("TAG_NAME=%s with %s=%s: a build is a tag's or a pull request's, never both. A trigger sets the one it is for, so the other was added to this run, and the steps would not agree on which build this is", f.Tag, prNumberSub, f.PullRequest)
+	}
 	f.Environment = subs["_ENV"]
 	if !slices.Contains(environments, f.Environment) {
 		return nil, errors.Newf("_ENV must be tst, stg, or prd (got %q)", f.Environment)
@@ -616,8 +622,35 @@ func newFacts(data []byte) (*Facts, error) {
 	if err := f.maintenanceInstruction(); err != nil {
 		return nil, err
 	}
+	if err := f.retirement(); err != nil {
+		return nil, err
+	}
+	if err := f.strays(); err != nil {
+		return nil, err
+	}
 
 	return f, nil
+}
+
+// strays refuses what arrives beside the build's instruction, or with none, that no
+// reader above accounts for: the stack trigger's action, which no step of a release's
+// or a pull request's build reads; a reason, which goes with a restore or a rollback; a
+// restore's database and its backup with no restore. Each reader refuses the other
+// instructions beside its own, so a build carries one instruction and what goes with it,
+// and nothing the operations workflow does not send together: a substitution that is
+// here beside them was added to the run.
+func (f *Facts) strays() error {
+	subs := f.Substitutions
+	switch {
+	case subs[stackActionSub] != "":
+		return errors.Newf("%s=%s on a release's or a pull request's build: the action is the stack trigger's (the operations workflow's apply, teardown and destroy actions), and no step of this build reads it", stackActionSub, subs[stackActionSub])
+	case subs[reasonSub] != "" && f.Restore == "" && f.Rollback == "":
+		return errors.Newf("%s on a build that carries no restore (%s) and no rollback (%s): a reason goes with one of the two", reasonSub, restoreSub, rollbackSub)
+	case f.Restore == "" && (subs[restoreDatabaseSub] != "" || subs[restoreDatabaseBackupSub] != ""):
+		return errors.Newf("%s or %s on a build that carries no restore (%s): the database a restore reads and its backup go with a restore", restoreDatabaseSub, restoreDatabaseBackupSub, restoreSub)
+	}
+
+	return nil
 }
 
 // restore reads the restore instruction. A restore is a release build's: it returns the
@@ -706,6 +739,27 @@ func (f *Facts) maintenanceInstruction() error {
 	return nil
 }
 
+// retirement reads the retirement a release build may carry (bedrock secret retire,
+// through the operations workflow): the versioned secret's variable, the version and who
+// asked, with no restore, rollback, migration operation or maintenance instruction
+// beside it. It is a release build's: a retirement names who asked, and a pull-request
+// build that names a requester was refused above (restore). The run is otherwise the
+// release's own, from the start: the plan step hands the revision every enabled version
+// but the one retiring, and the migrate step has the application rewrite what names it
+// (retire.go).
+func (f *Facts) retirement() error {
+	r, err := retirementOf(f.Substitutions)
+	if err != nil || r == nil {
+		return err
+	}
+	if f.Restore != "" || f.Rollback != "" || f.Migration != nil || f.MaintenanceOff {
+		return errors.Newf("%s=%s with a restore, a rollback, a migration operation or a maintenance instruction: the run that retires a version does nothing else", retireVariableSub, r.Variable)
+	}
+	f.Retirement, f.Requester = r, r.Requester
+
+	return nil
+}
+
 // flagIf is the true flag when set, and nothing otherwise, for a fact other steps read as
 // set or empty.
 func flagIf(set bool) string {
@@ -790,6 +844,8 @@ func (f *Facts) trigger(ctx context.Context, comments CommentsFunc, out io.Write
 			fmt.Fprintf(out, "Restore run: %s's database is replaced (%s) before %s deploys, asked for by %s.\n", f.Environment, f.Restore, f.Tag, f.Requester)
 		case f.Migration != nil:
 			fmt.Fprintf(out, "Migration operation %s.\n", f.Migration)
+		case f.Retirement != nil:
+			fmt.Fprintf(out, "Retirement run: %s runs again in %s, and %s.\n", f.Tag, f.Environment, f.Retirement)
 		case f.Requester != "":
 			fmt.Fprintf(out, "Rerun: %s runs again in %s, asked for by %s.\n", f.Tag, f.Environment, f.Requester)
 		}

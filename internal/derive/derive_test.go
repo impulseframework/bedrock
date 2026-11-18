@@ -36,7 +36,12 @@ func fixturePlacement(t *testing.T, name string) *Placement {
 
 // secretLine is what a secret says about itself: variable, container name, declaration.
 func secretLine(s Secret) string {
-	return s.Variable.Name + " " + s.Name + " " + s.Variable.File + " " + s.Variable.Declaration()
+	line := s.Variable.Name + " " + s.Name + " " + s.Variable.File + " " + s.Variable.Declaration()
+	if s.Versioned {
+		line += " " + s.Word()
+	}
+
+	return line
 }
 
 // methodLine is what a sign-in method says about itself: the auth and the registration,
@@ -130,6 +135,7 @@ func TestDerive(t *testing.T) {
 				"APP_MAIL_APP_PASSWORD mail-app-password pkg/config/data.go dataConfig.MailAppPassword",
 				"APP_STAFF_DIRECTORY_CLIENT_SECRET staff-directory-client-secret pkg/config/data.go dataConfig.StaffDirectoryClientSecret",
 				"APP_MEMBERS_DIRECTORY_CLIENT_SECRET members-directory-client-secret pkg/config/data.go dataConfig.MembersDirectoryClientSecret",
+				"APP_MEMBERS_OKTA_CLIENT_SECRET members-okta-client-secret pkg/config/data.go dataConfig.MembersOktaClientSecret",
 			},
 			wantCore: []string{varVersion, varServiceName, varLoggingProject, varTraceSampling},
 			wantData: []string{
@@ -139,6 +145,7 @@ func TestDerive(t *testing.T) {
 				"APP_STAFF_DIRECTORY_CLIENT_ID", "APP_STAFF_DIRECTORY_CLIENT_SECRET", "APP_STAFF_DIRECTORY_REDIRECT_URL", "APP_STAFF_DIRECTORY_HOSTED_DOMAIN",
 				"APP_STAFF_DIRECTORY_ADMINISTERED_WORKSPACES", "APP_STAFF_DIRECTORY_GROUP_PREFIX", "APP_STAFF_DIRECTORY_GROUP_LOOKUP",
 				"APP_MEMBERS_DIRECTORY_TENANT_ID", "APP_MEMBERS_DIRECTORY_ADMINISTERED_TENANTS", "APP_MEMBERS_DIRECTORY_CLIENT_ID", "APP_MEMBERS_DIRECTORY_CLIENT_SECRET", "APP_MEMBERS_DIRECTORY_REDIRECT_URL",
+				"APP_MEMBERS_OKTA_ISSUER", "APP_MEMBERS_OKTA_CLIENT_ID", "APP_MEMBERS_OKTA_CLIENT_SECRET", "APP_MEMBERS_OKTA_REDIRECT_URL",
 				varFileStore, varTasksQueue, "APP_MEMBERS_ADMINISTRATOR",
 			},
 			wantSite:     []string{varPort, "APP_CONSOLE_DIST", "APP_PORTAL_DIST", JobsTemplateVariable},
@@ -149,6 +156,10 @@ func TestDerive(t *testing.T) {
 				// The members registration builds its tenant through a helper that reads the
 				// administered tenants, the way impulse writes it, so the scan reads no shape.
 				"members/directory azure application: outlet portal, callback GET /portal/api/user/directory/callback, logout GET /portal/api/user/directory/logout; TenantID=APP_MEMBERS_DIRECTORY_TENANT_ID AdministeredTenants=APP_MEMBERS_DIRECTORY_ADMINISTERED_TENANTS ClientID=APP_MEMBERS_DIRECTORY_CLIENT_ID ClientSecret=APP_MEMBERS_DIRECTORY_CLIENT_SECRET RedirectURL=APP_MEMBERS_DIRECTORY_REDIRECT_URL; tenants one",
+				// The okta registration is an organization's own identity provider (the generic
+				// OpenID Connect method with a client secret): a directory method whose issuer
+				// stands where a Microsoft or Google registration's organization slot does.
+				"members/okta oidc application: outlet portal, callback GET /portal/api/user/okta/callback; Issuer=APP_MEMBERS_OKTA_ISSUER ClientID=APP_MEMBERS_OKTA_CLIENT_ID ClientSecret=APP_MEMBERS_OKTA_CLIENT_SECRET RedirectURL=APP_MEMBERS_OKTA_REDIRECT_URL",
 				"staff/directory google directory: outlet default, callback GET /api/user/directory/callback; HostedDomain=APP_STAFF_DIRECTORY_HOSTED_DOMAIN AdministeredWorkspaces=APP_STAFF_DIRECTORY_ADMINISTERED_WORKSPACES ClientID=APP_STAFF_DIRECTORY_CLIENT_ID ClientSecret=APP_STAFF_DIRECTORY_CLIENT_SECRET RedirectURL=APP_STAFF_DIRECTORY_REDIRECT_URL GroupPrefix=APP_STAFF_DIRECTORY_GROUP_PREFIX GroupLookup=APP_STAFF_DIRECTORY_GROUP_LOOKUP; groups staff- direct",
 			},
 			wantSchema: Schema{MigrationsDir: "schema/migrations", MigrateCall: "pkg/deploy MigrateSchema", GenerateDir: "cmd/generate", GeneratePackage: "generate"},
@@ -174,6 +185,10 @@ func TestDerive(t *testing.T) {
 				"APP_MEMBERS_DIRECTORY_TENANT_ID":     SupplyPlacement,
 				"APP_MEMBERS_DIRECTORY_CLIENT_SECRET": SupplySecret,
 				"APP_MEMBERS_DIRECTORY_REDIRECT_URL":  SupplyDerived,
+				"APP_MEMBERS_OKTA_ISSUER":             SupplyPlacement,
+				"APP_MEMBERS_OKTA_CLIENT_ID":          SupplyPlacement,
+				"APP_MEMBERS_OKTA_CLIENT_SECRET":      SupplySecret,
+				"APP_MEMBERS_OKTA_REDIRECT_URL":       SupplyDerived,
 				varPort:                               SupplyPlatform,
 				"APP_CONSOLE_DIST":                    SupplyImage,
 				"APP_PORTAL_DIST":                     SupplyImage,
@@ -185,7 +200,7 @@ func TestDerive(t *testing.T) {
 				varFirebaseAPIKey:                     SupplyDerived,
 			},
 			wantHooks:          []hook.Stage{hook.AfterMigrate, hook.BeforeTraffic, hook.AfterTraffic},
-			wantFirestore:      "schema/firestore: 3 index(es) subscriptions_resource_key_expiry, subscriptions_resource_domain_expiry, subscriptions_resource_expiry; 2 field(s) subscriptions_expiry (ttl), changes_expires (ttl); rules_version = '2';",
+			wantFirestore:      "schema/firestore: 3 index(es) subscriptions_resource_key_expiry, subscriptions_resource_domains_expiry, subscriptions_resource_expiry; 2 field(s) subscriptions_expiry (ttl), changes_expires (ttl); rules_version = '2';",
 			wantFileStores:     []string{"APP_FILE_STORE data dataConfig.FileStore: default, files, files, google_storage_bucket.files[0]"},
 			wantScheduled:      []string{"send-daily-digest: POST /_scheduled/send-daily-digest at 0 7 * * 1-5 in America/New_York"},
 			wantFileRoutes:     []string{"POST /api/attach-manifest: the @upload method AttachManifest", "GET /api/manifests/{id}/file: the @file column Manifest.Key"},
@@ -206,13 +221,14 @@ func TestDerive(t *testing.T) {
 			wantAdministrators: []string{"keepers APP_KEEPERS_ADMINISTRATOR_PASSWORD administrator-password"},
 			wantSecrets: []string{
 				"APP_COOKIE_KEY cookie-key pkg/config/data.go dataConfig.CookieKey",
+				"APP_SECRET_KEY secret-key pkg/config/data.go dataConfig.SecretKey versioned",
 				"APP_MAIL_APP_PASSWORD mail-app-password pkg/config/data.go dataConfig.MailAppPassword",
 				"APP_KEEPERS_ADMINISTRATOR_PASSWORD keepers-administrator-password pkg/config/data.go dataConfig.KeepersAdministratorPassword",
 			},
 			wantCore: []string{varVersion, varServiceName, varLoggingProject},
 			wantData: []string{
 				varDatabaseProject, varDatabaseInstance, varDatabaseName,
-				"APP_DEFAULT_SESSION_TIMEOUT", "APP_COOKIE_KEY", varPublicURL, varMailMailbox, varMailFrom, varMailAppPassword, "APP_KEEPERS_ADMINISTRATOR_PASSWORD",
+				"APP_DEFAULT_SESSION_TIMEOUT", "APP_COOKIE_KEY", "APP_SECRET_KEY", varPublicURL, varMailMailbox, varMailFrom, varMailAppPassword, "APP_KEEPERS_ADMINISTRATOR_PASSWORD",
 				"APP_KEEPERS_PERSONA_ISSUER", "APP_KEEPERS_PERSONA_CLIENT_ID", "APP_KEEPERS_PERSONA_REDIRECT_URL",
 			},
 			wantSite:     []string{varPort, "APP_CONSOLE_DIST"},
@@ -264,7 +280,7 @@ func TestDerive(t *testing.T) {
 				SiteBundleVariable: SupplyDerived,
 				varPort:            SupplyPlatform,
 			},
-			wantFirestore:      "schema/firestore: 3 index(es) subscriptions_resource_key_expiry, subscriptions_resource_domain_expiry, subscriptions_resource_expiry; 2 field(s) subscriptions_expiry (ttl), changes_expires (ttl); rules_version = '2';",
+			wantFirestore:      "schema/firestore: 3 index(es) subscriptions_resource_key_expiry, subscriptions_resource_domains_expiry, subscriptions_resource_expiry; 2 field(s) subscriptions_expiry (ttl), changes_expires (ttl); rules_version = '2';",
 			wantAdministrators: []string{"staff APP_STAFF_ADMINISTRATOR_PASSWORD administrator-password"},
 			wantScheduled:      []string{"close-stale-holds: POST /_scheduled/close-stale-holds at */15 * * * * in UTC", "send-weekly-letter: POST /_scheduled/send-weekly-letter at 0 9 * * 1 in Europe/London"},
 			wantFileRoutes:     []string{"GET /api/notices/{id}/file: the @file column Notice.Key"},
@@ -1192,19 +1208,19 @@ func TestSecretFor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		v             Variable
-		want          bool
-		wantGenerated bool
-		wantErr       string
+		name    string
+		v       Variable
+		want    secretDeclaration
+		wantErr string
 	}{
-		{name: "tagged true", v: Variable{Name: "APP_COOKIE_KEY", SecretTag: "true"}, want: true},
-		{name: "tagged generated is a secret the tooling makes", v: Variable{Name: "APP_COOKIE_KEY", SecretTag: "generated"}, want: true, wantGenerated: true},
-		{name: "tagged true with a plain name", v: Variable{Name: "APP_SMTP_PASS", SecretTag: "true"}, want: true},
-		{name: "tagged false with a credential-sounding name", v: Variable{Name: "APP_LICENSE_KEY", SecretTag: "false"}, want: false},
-		{name: "untagged plain name", v: Variable{Name: "APP_STAFF_OIDC_CLIENT_ID"}, want: false},
-		{name: "an untagged credential-sounding name in a role the stack derives is the stack's", v: Variable{Name: varFirebaseAPIKey, Role: RoleFirebaseAPIKey}, want: false},
-		{name: "a derived role tagged false is fine", v: Variable{Name: varFirebaseAPIKey, Role: RoleFirebaseAPIKey, SecretTag: "false"}, want: false},
+		{name: "tagged true", v: Variable{Name: "APP_COOKIE_KEY", SecretTag: "true"}, want: secretDeclaration{secret: true}},
+		{name: "tagged generated is a secret the tooling makes", v: Variable{Name: "APP_COOKIE_KEY", SecretTag: "generated"}, want: secretDeclaration{secret: true, generated: true}},
+		{name: "tagged versioned is a secret the tooling makes whose every enabled version is handed over", v: Variable{Name: "APP_SECRET_KEY", SecretTag: "versioned"}, want: secretDeclaration{secret: true, generated: true, versioned: true}},
+		{name: "tagged true with a plain name", v: Variable{Name: "APP_SMTP_PASS", SecretTag: "true"}, want: secretDeclaration{secret: true}},
+		{name: "tagged false with a credential-sounding name", v: Variable{Name: "APP_LICENSE_KEY", SecretTag: "false"}},
+		{name: "untagged plain name", v: Variable{Name: "APP_STAFF_OIDC_CLIENT_ID"}},
+		{name: "an untagged credential-sounding name in a role the stack derives is the stack's", v: Variable{Name: varFirebaseAPIKey, Role: RoleFirebaseAPIKey}},
+		{name: "a derived role tagged false is fine", v: Variable{Name: varFirebaseAPIKey, Role: RoleFirebaseAPIKey, SecretTag: "false"}},
 		{
 			name:    "a derived role tagged generated is refused too",
 			v:       Variable{Name: varFirebaseAPIKey, Role: RoleFirebaseAPIKey, SecretTag: "generated", File: "pkg/config/data.go", Line: 20, Struct: "dataConfig", Field: "FirebaseAPIKey"},
@@ -1216,14 +1232,19 @@ func TestSecretFor(t *testing.T) {
 			wantErr: "pkg/config/data.go:20: APP_FIREBASE_API_KEY (dataConfig.FirebaseAPIKey) is a value the stack derives and sets on the process, not a secret: drop the secret tag",
 		},
 		{
+			name:    "a variable read under its one name is refused as versioned: the cookie key",
+			v:       Variable{Name: "APP_COOKIE_KEY", Role: RoleCookieKey, SecretTag: "versioned", File: "pkg/config/data.go", Line: 3, Struct: "dataConfig", Field: "CookieKey"},
+			wantErr: `pkg/config/data.go:3: APP_COOKIE_KEY (dataConfig.CookieKey) is read under its one name, and secret:"versioned" hands a process one variable per enabled version (APP_COOKIE_KEY_1, APP_COOKIE_KEY_2) and none named APP_COOKIE_KEY: tag it secret:"generated"`,
+		},
+		{
 			name:    "untagged credential-sounding name is refused",
 			v:       Variable{Name: "APP_MAIL_API_KEY", File: "pkg/config/data.go", Line: 12, Struct: "dataConfig", Field: "MailAPIKey"},
-			wantErr: `pkg/config/data.go:12: APP_MAIL_API_KEY sounds like a credential (its name ends in _KEY) and dataConfig.MailAPIKey carries no secret tag: add secret:"true" to mount it from Secret Manager, secret:"generated" for a value the tooling makes, or secret:"false" if it is a plain value`,
+			wantErr: `pkg/config/data.go:12: APP_MAIL_API_KEY sounds like a credential (its name ends in _KEY) and dataConfig.MailAPIKey carries no secret tag: add secret:"true" to mount it from Secret Manager, secret:"generated" for a value the tooling makes, secret:"versioned" for one whose every enabled version the process receives, or secret:"false" if it is a plain value`,
 		},
 		{
 			name:    "another value is refused",
 			v:       Variable{Name: "APP_COOKIE_KEY", SecretTag: "yes", File: "pkg/config/data.go", Line: 3, Struct: "dataConfig", Field: "CookieKey"},
-			wantErr: `pkg/config/data.go:3: secret:"yes" on dataConfig.CookieKey: the secret tag takes "true", "generated" or "false"`,
+			wantErr: `pkg/config/data.go:3: secret:"yes" on dataConfig.CookieKey: the secret tag takes "true", "generated", "versioned" or "false"`,
 		},
 	}
 	for _, tt := range tests {
@@ -1231,7 +1252,7 @@ func TestSecretFor(t *testing.T) {
 			t.Parallel()
 
 			v := tt.v
-			got, generated, err := secretFor(&v)
+			got, err := secretFor(&v)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("secretFor() error = %v, wantErr %q", err, tt.wantErr)
@@ -1239,8 +1260,81 @@ func TestSecretFor(t *testing.T) {
 
 				return
 			}
-			if err != nil || got != tt.want || generated != tt.wantGenerated {
-				t.Errorf("secretFor() = %v, %v, %v; want %v, %v", got, generated, err, tt.want, tt.wantGenerated)
+			if err != nil || got != tt.want {
+				t.Errorf("secretFor() = %+v, %v; want %+v", got, err, tt.want)
+			}
+		})
+	}
+}
+
+// TestVersionVariablesFree: a variable the code declares under the name a versioned
+// secret hands one of its versions over by is refused, naming both; a name that ends in
+// a number beside a secret that is not versioned is no one's but its own.
+// TestRetirementOutOfReach: a version of a versioned secret is retired only where the
+// migrate command, which rewrites what names it, constructs the level the secret is
+// declared at; anywhere else the model says why not.
+func TestRetirementOutOfReach(t *testing.T) {
+	t.Parallel()
+
+	migrate := &Process{Name: migrateProcess, Levels: []string{LevelCore, LevelData}}
+	tests := []struct {
+		name    string
+		migrate *Process
+		level   string
+		want    string
+	}{
+		{name: "the data level, which the migrate command constructs", migrate: migrate, level: LevelData},
+		{name: "the core level, which it constructs too", migrate: migrate, level: LevelCore},
+		{name: "the site level, which it does not", migrate: migrate, level: LevelSite, want: "APP_SECRET_KEY is declared at the site level, which the migrate command does not construct (it constructs core, data): a retirement has that command rewrite the stored values that name the version, and it neither receives this secret nor reaches anything written under it, so it has nothing to rewrite or to confirm. The versions of a secret declared there stay enabled; one whose versions are to be retired is declared at a level the migrate command constructs"},
+		{name: "an application with no migrate command", level: LevelData, want: "APP_SECRET_KEY is declared at the data level, which the migrate command does not construct (the application has no migrate command)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := &Model{Migrate: tt.migrate}
+			s := &Secret{Variable: &Variable{Name: "APP_SECRET_KEY", Level: tt.level}, Versioned: true}
+			got := m.RetirementOutOfReach(s)
+			if (tt.want == "") != (got == "") || !strings.Contains(got, tt.want) {
+				t.Errorf("RetirementOutOfReach() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVersionVariablesFree(t *testing.T) {
+	t.Parallel()
+
+	secretKey := Variable{Name: "APP_SECRET_KEY", File: "pkg/config/data.go", Line: 40, Struct: "dataConfig", Field: "SecretKey", SecretTag: "versioned"}
+	second := Variable{Name: "APP_SECRET_KEY_2", File: "pkg/config/data.go", Line: 44, Struct: "dataConfig", Field: "SecondSecretKey", SecretTag: "false"}
+	tests := []struct {
+		name      string
+		versioned bool
+		wantErr   string
+	}{
+		{
+			name:      "beside a versioned secret",
+			versioned: true,
+			wantErr:   `pkg/config/data.go:44: APP_SECRET_KEY_2 (dataConfig.SecondSecretKey) is the name a process receives one version of APP_SECRET_KEY under (dataConfig.SecretKey is secret:"versioned", so every enabled version is handed over as APP_SECRET_KEY_<version>): give the variable another name`,
+		},
+		{name: "beside a secret that is not versioned"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := &Model{Variables: []Variable{secretKey, second}}
+			m.Secrets = []Secret{{Variable: &m.Variables[0], Name: "secret-key", Generated: true, Versioned: tt.versioned}}
+			err := m.versionVariablesFree()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("versionVariablesFree() error = %v", err)
+				}
+
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("versionVariablesFree() error = %v, want %q", err, tt.wantErr)
 			}
 		})
 	}
@@ -1554,7 +1648,7 @@ func TestDeriveJobsTemplate(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			wantErr: dataFile + ":256: APP_JOBS_TEMPLATE (dataConfig.Template) is declared at the data level, which cmd/deployment/migrate and cmd/jobs construct as well as the served site (main.go), and the stack sets the variable on the service alone: a process other than the served site would start with the job driver's template unset; embed the job driver's settings (jobstarter.Settings, resource/jobs/cloudrun) in the served site's configuration level, the one no other process constructs",
+			wantErr: dataFile + ":262: APP_JOBS_TEMPLATE (dataConfig.Template) is declared at the data level, which cmd/deployment/migrate and cmd/jobs construct as well as the served site (main.go), and the stack sets the variable on the service alone: a process other than the served site would start with the job driver's template unset; embed the job driver's settings (jobstarter.Settings, resource/jobs/cloudrun) in the served site's configuration level, the one no other process constructs",
 		},
 	}
 	for _, tt := range tests {

@@ -164,6 +164,12 @@ func NewDataConfiguration(ctx context.Context) (*DataConfiguration, error) {
 			ClientSecret:        env.MembersDirectoryClientSecret,
 			RedirectURL:         env.MembersDirectoryRedirectURL,
 		},
+		Okta: members.OktaSettings{
+			Issuer:       env.MembersOktaIssuer,
+			ClientID:     env.MembersOktaClientID,
+			ClientSecret: env.MembersOktaClientSecret,
+			RedirectURL:  env.MembersOktaRedirectURL,
+		},
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "members.New()")
@@ -291,6 +297,15 @@ type dataConfig struct {
 	MembersDirectoryClientID            string `env:"APP_MEMBERS_DIRECTORY_CLIENT_ID"`
 	MembersDirectoryClientSecret        string `env:"APP_MEMBERS_DIRECTORY_CLIENT_SECRET"        secret:"true"`
 	MembersDirectoryRedirectURL         string `env:"APP_MEMBERS_DIRECTORY_REDIRECT_URL"`
+
+	// The members auth's okta registration (pkg/auth/members/okta.go): how the application
+	// is known to the partner organization's own identity provider, under the
+	// registration's variables. Under the skipAuth build tag only the issuer and the
+	// redirect URL are read.
+	MembersOktaIssuer       string `env:"APP_MEMBERS_OKTA_ISSUER"`
+	MembersOktaClientID     string `env:"APP_MEMBERS_OKTA_CLIENT_ID"`
+	MembersOktaClientSecret string `env:"APP_MEMBERS_OKTA_CLIENT_SECRET" secret:"true"`
+	MembersOktaRedirectURL  string `env:"APP_MEMBERS_OKTA_REDIRECT_URL"`
 
 	// FileStore is the application's default file store: the Cloud Storage bucket its
 	// files live in, as a gs:// URL.

@@ -52,11 +52,11 @@ The command itself changes nothing.
 				return err
 			}
 			reason = strings.TrimSpace(reason)
-			switch {
-			case reason == "":
+			if reason == "" {
 				return errors.New("a rollback says why it was asked for: --reason, in a sentence")
-			case strings.Contains(reason, "|"):
-				return errors.New("the reason carries a | character, which the build's substitutions cannot; say it another way")
+			}
+			if err := reasonRefusal(reason); err != nil {
+				return err
 			}
 			out := cmd.OutOrStdout()
 			returns := "the release live before the live one"

@@ -56,7 +56,7 @@ func (m *Model) personaPlacement() error {
 			labels = append(labels, "the "+p.Auth+" auth's "+p.Name+" registration")
 		}
 
-		return errors.Newf("%s is the persona method and placement.json names no persona provider: add persona {\"issuer\": the provider's URL, \"clientId\": the application's client ID root}, both from Redgrade's registration of the application; the method is registered where the stack sets the issuer and nowhere else", strings.Join(labels, " and "))
+		return errors.Newf("%s is the persona method and placement.json names no persona provider: add persona {\"issuer\": the provider's URL, \"clientId\": the application's client ID root}, both from the provider's registration of the application; the method is registered where the stack sets the issuer and nowhere else", strings.Join(labels, " and "))
 	case len(personas) == 0 && m.Placement.Persona != nil:
 		return errors.New("placement.json names a persona provider (persona) and no auth registers the persona method (oidc.SignIn): drop the block, or add the method (impulse add method <auth> persona)")
 	}

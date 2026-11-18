@@ -1291,18 +1291,18 @@ func (f *Fake) Create(ctx context.Context, project, id string, labels map[string
 	return f.CreateSecret(ctx, project, id, labels)
 }
 
-// Newest is the number of the secret's newest enabled version, or empty.
-func (f *Fake) Newest(_ context.Context, container string) (string, error) {
+// EnabledVersions are the numbers of the secret's enabled versions, oldest first.
+func (f *Fake) EnabledVersions(_ context.Context, container string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	versions := f.Versions[container]
-	for i := len(versions) - 1; i >= 0; i-- {
-		if versions[i].State == "ENABLED" {
-			return versions[i].Version, nil
+	var enabled []string
+	for _, v := range f.Versions[container] {
+		if v.State == "ENABLED" {
+			enabled = append(enabled, v.Version)
 		}
 	}
 
-	return "", nil
+	return enabled, nil
 }
 
 // Grant adds the member to the role on the secret's own policy.

@@ -110,7 +110,7 @@ resource "google_firestore_index" "subscriptions_resource_key_expiry" {
   }
 }
 
-resource "google_firestore_index" "subscriptions_resource_domain_expiry" {
+resource "google_firestore_index" "subscriptions_resource_domains_expiry" {
   project     = local.project_id
   database    = google_firestore_database.firestore.name
   collection  = "subscriptions"
@@ -122,8 +122,8 @@ resource "google_firestore_index" "subscriptions_resource_domain_expiry" {
   }
 
   fields {
-    field_path = "domain"
-    order      = "ASCENDING"
+    field_path   = "domains"
+    array_config = "CONTAINS"
   }
 
   fields {

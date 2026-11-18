@@ -71,8 +71,8 @@ func newRestore(d deps) *cobra.Command {
 				return err
 			}
 			reason = strings.TrimSpace(reason)
-			if strings.Contains(reason, "|") {
-				return errors.New("the reason carries a | character, which the build's substitutions cannot; say it another way")
+			if err := reasonRefusal(reason); err != nil {
+				return err
 			}
 			sources := 0
 			for _, s := range []string{before, at, backup} {
@@ -169,6 +169,18 @@ func ownRestore(cmd *cobra.Command, d deps, rc *repositoryContext, env, tag stri
 	default:
 		fmt.Fprintf(out, "Asked, as %s, for %s to be restored to %s: the operations workflow of %s/%s runs it (%s). The run replaces %s's database (%s), deploys %s, and its record names you.\n",
 			login, env, tag, rc.owner, rc.repo, workflowURL(rc), env, kind, tag)
+	}
+
+	return nil
+}
+
+// reasonRefusal is why a reason cannot be passed on, nil for one that can. The operations
+// workflow hands the reason to the build in a list of substitutions separated by |, where
+// a | or a line break would end the reason and begin a substitution of its own; the
+// workflow's job refuses the same, for a run started from the button.
+func reasonRefusal(reason string) error {
+	if strings.ContainsAny(reason, "|\n\r") {
+		return errors.New("the reason is one line with no | character: the build's substitutions are separated by |, so a | or a line break would end the reason there. Say it in one line, another way")
 	}
 
 	return nil

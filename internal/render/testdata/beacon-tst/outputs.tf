@@ -63,7 +63,7 @@ output "revision_templates" {
         memory         = "512Mi"
         labels         = local.labels
         env            = local.service_env
-        secrets        = { for name, s in local.mounted_secrets : name => { secret = local.secret_ids[name], version = tostring(s.version) } }
+        secrets        = { for name, mount in local.secret_mounts : name => { secret = local.secret_ids[mount.key], version = tostring(mount.version) } }
       }
     }
     job = null
@@ -71,11 +71,12 @@ output "revision_templates" {
 }
 
 output "secrets" {
-  description = "Secret container ID by the environment variable it feeds, and the version this environment runs (null when not pinned yet)."
+  description = "Secret container ID by the environment variable the code declares, the version this environment runs (null when not pinned yet, and for a versioned secret), and the versions a versioned secret's processes receive, one variable each (empty for any other secret)."
   value = {
     for key, s in local.secrets : key => {
       secret_id = local.secret_ids[key]
       version   = lookup(local.secret_versions, key, null)
+      versions  = lookup(local.versioned_versions, key, [])
     }
   }
 }

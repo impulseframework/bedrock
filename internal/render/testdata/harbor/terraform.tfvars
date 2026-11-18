@@ -24,6 +24,17 @@ members_directory_tenant_id = ""
 # is asked for the code.
 members_directory_administered_tenants = ""
 
+# The members auth's okta registration with the identity provider (README, "Hand
+# steps"): the client id of each environment's registration, and the provider's
+# issuer URL, the one its configuration is read under, once for the
+# organization.
+members_okta_client_id = {
+  tst = ""
+  stg = ""
+  prd = ""
+}
+members_okta_issuer = ""
+
 # The staff auth's directory registration with Google (README, "Hand
 # steps"): the client id of each environment's registration.
 staff_directory_client_id = {
@@ -58,7 +69,9 @@ mail_mailbox = ""
 # (bedrock secret pin). "latest" only for a secret the placement marks as
 # tracking it. "generated" for a secret the code declares secret:"generated":
 # the pipeline makes its value and derives its version at each build, so the
-# word stays, and bedrock secret rotate adds the next version.
+# word stays, and bedrock secret rotate adds the next version. "versioned" for
+# one it declares secret:"versioned": made the same way, and a process
+# receives every enabled version (bedrock secret retire takes one away).
 secret_versions = {
   tst = {}
   stg = {}

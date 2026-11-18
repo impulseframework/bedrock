@@ -43,8 +43,9 @@ environment): it runs in the GitHub Environment named after the environment,
 as the environment's operations identity, and starts the stack trigger `2-env`
 holds for this application there, which applies the stack from the default
 branch as the apply identity (`bedrock deploy stack first`: the plan with the
-environment and the generated secrets' pins derived from their containers,
-nothing while a container has no version, which the first release adds).
+environment and the generated and versioned secrets' versions derived from
+their containers, nothing while a container has no version, which the first
+release adds).
 Nobody holds a cloud role for it: repository write and the Environment's
 approval are what the action takes, and the audit log names who asked. GitHub
 lists a workflow once a run of it exists or once a push to the default branch
@@ -221,6 +222,7 @@ from `2-env`'s state.
   | `APP_MAIL_APP_PASSWORD` | `dataConfig.MailAppPassword` | `...-mail-app-password` |
   | `APP_STAFF_DIRECTORY_CLIENT_SECRET` | `dataConfig.StaffDirectoryClientSecret` | `...-staff-directory-client-secret` |
   | `APP_MEMBERS_DIRECTORY_CLIENT_SECRET` | `dataConfig.MembersDirectoryClientSecret` | `...-members-directory-client-secret` |
+  | `APP_MEMBERS_OKTA_CLIENT_SECRET` | `dataConfig.MembersOktaClientSecret` | `...-members-okta-client-secret` |
 
   The site's identity holds accessor, and so does the job process's, on
   the secrets at the levels it constructs: it runs the application's own
@@ -418,6 +420,9 @@ above them.
 | `APP_MEMBERS_DIRECTORY_ADMINISTERED_TENANTS` | data | `var.members_directory_administered_tenants` | yes | yes | yes |
 | `APP_MEMBERS_DIRECTORY_CLIENT_ID` | data | `var.members_directory_client_id[env]` | yes | | |
 | `APP_MEMBERS_DIRECTORY_REDIRECT_URL` | data | `https://<first hostname>/portal/api/user/directory/callback` | yes | | |
+| `APP_MEMBERS_OKTA_ISSUER` | data | `var.members_okta_issuer` | yes | yes | yes |
+| `APP_MEMBERS_OKTA_CLIENT_ID` | data | `var.members_okta_client_id[env]` | yes | | |
+| `APP_MEMBERS_OKTA_REDIRECT_URL` | data | `https://<first hostname>/portal/api/user/okta/callback` | yes | | |
 | `APP_STAFF_DIRECTORY_HOSTED_DOMAIN` | data | `var.staff_directory_hosted_domain` | yes | yes | yes |
 | `APP_STAFF_DIRECTORY_ADMINISTERED_WORKSPACES` | data | `var.staff_directory_administered_workspaces` | yes | yes | yes |
 | `APP_STAFF_DIRECTORY_CLIENT_ID` | data | `var.staff_directory_client_id[env]` | yes | | |
@@ -429,9 +434,9 @@ above them.
 | `APP_MAIL_MAILBOX` | data | `var.mail_mailbox` | yes | yes | yes |
 | `APP_JOBS_TEMPLATE` | site | the job process's template job, which the site's own build's job is named from (the job driver's settings, `siteConfig.Template`) | yes | | |
 | `APP_SCHEDULER_INVOKER` | none, the framework reads it | the scheduler's invoker identity, unset in a pull-request stack | yes | | |
-| `APP_COOKIE_KEY`, `APP_MAIL_APP_PASSWORD`, `APP_STAFF_DIRECTORY_CLIENT_SECRET`, `APP_MEMBERS_DIRECTORY_CLIENT_SECRET` | data | secret, at the pinned version | yes | | yes |
+| `APP_COOKIE_KEY`, `APP_MAIL_APP_PASSWORD`, `APP_STAFF_DIRECTORY_CLIENT_SECRET`, `APP_MEMBERS_DIRECTORY_CLIENT_SECRET`, `APP_MEMBERS_OKTA_CLIENT_SECRET` | data | secret, at the pinned version | yes | | yes |
 
-The migrate command and the job process carry the registrations' organization slots and group prefixes because the session
+The migrate command and the job process carry the registrations' organization slots, identity providers' issuers and group prefixes because the session
 library validates them when it makes each registration, at construction. The migrate command carries the Firestore
 database because the data level opens its live service when it is constructed, and
 the release's role migration signals the running instances through it; the web
@@ -461,8 +466,8 @@ holding the secret operator entitlement for the time asked (`2-env`'s
 secret pin`) in the same pull request as the rotation and rolled out by the
 next apply and deploy. `latest` is allowed only where the map says so, for a
 secret whose placement marks it as tracking; a pinned number is the default
-posture. A secret the code declares `secret:"generated"` needs none of this
-(next section).
+posture. A secret the code declares `secret:"generated"` or
+`secret:"versioned"` needs none of this (next two sections).
 
 A new secret's value goes in ahead of the release that first reads it: the
 operator creates the container and adds the value (`bedrock secret add`
@@ -502,6 +507,69 @@ identities Secret Version Adder on the generated containers alone (adding,
 never reading). A rotated cookie key signs every user of that environment
 out, which is the point. `bedrock secret add` and `bedrock secret pin` refuse
 a generated variable.
+
+### Versioned secrets
+
+A secret declared `secret:"versioned"` in the code (none here) is
+generated the same way, and a process receives every enabled version of it,
+not the newest alone: values written under an earlier version still open
+after a rotation. Its entry in `secret_versions` is the word `versioned` in
+every environment (`bedrock render` seeds it, `bedrock check` holds it to the
+word, and `bedrock secret add` and `bedrock secret pin` refuse the variable).
+The release's plan step, as the apply identity, lists the container's enabled
+versions, adds version 1 when it has none, and passes the numbers to the plan
+(`var.versioned_secret_versions`); `locals.tf` (`secret_mounts`) names one
+variable per version, the variable's name, an underscore and the version's
+number: `APP_SECRET_KEY_1` and `APP_SECRET_KEY_2` for versions 1 and 2 of
+`APP_SECRET_KEY`. The highest number is the current version, and no variable
+carries the bare name. The deployment record names the versions
+(`versionedSecrets`). The migrate command receives the same variables for a
+versioned secret at a level it constructs.
+
+`bedrock secret rotate <env> <VARIABLE>` adds a random version as for a
+generated secret and runs the live release again: the same image under the
+new configuration, holding the new version beside the earlier ones. A
+revision that does not start leaves the one before it serving; the new version
+stays enabled in Secret Manager, and the next release takes it up.
+
+`bedrock secret retire <env> <VARIABLE> <version>` takes a version out of use,
+through the operations workflow's `retire` action. The live release's build
+runs again with the instruction. Its plan step refuses a secret declared at a
+level the migrate command does not construct (the command, which does the
+rewrite, never receives it, and the deploy identity reads the versioned
+secrets at the command's levels alone: `migrate_accessor` in
+`secret-manager.tf`), a version that is not enabled, the newest enabled
+version, and any version while the live release does not hold the newest (it
+could not open the rewrite: run it again first), and hands the revision every
+enabled version but that one. After its migrations, the release's migrate
+command runs once more with `-retire-secret <VARIABLE>_<version>`
+(`-retire-secret APP_SECRET_KEY_1`), with every enabled version in its
+environment, the retiring one included: the application rewrites every stored
+value that names the version under the current one and confirms none is left
+by exiting 0; any other exit fails the build before a revision deploys, with
+the version still enabled. The revision without the version then takes
+traffic, and the deployment record says what was retired (`retiredSecret`).
+Only when the build has succeeded and its record says so does the workflow's
+job disable the version in Secret Manager, as the environment's operations
+identity, which holds 1-org's `secretVersionDisabler` on the versioned
+containers alone (`secret-manager.tf`; a 1-org applied by a bedrock that has
+the role comes first), and only while that record is the environment's newest
+live one: a release that took traffic after the retirement's build was handed
+the version, so the job disables nothing and says to ask again once that
+release is live. A version is disabled and never destroyed by any of this: a
+backup taken before the retirement holds values under it, and `gcloud secrets
+versions enable` brings it back. Destroying one is a step by hand, once those
+backups have aged out.
+
+Pull requests deploy to tst and share its secrets: a pull
+request's stack mounts the versions that were enabled when it was planned, so
+its services built before a retirement in tst keep naming the
+retired version, and its own database is not the one the retirement rewrote.
+After such a retirement, build each open pull request again (a `/gcbrun`
+comment: its build mounts the versions that are enabled), with `/gcbrun
+reload-db` where its own database holds values written under the retired
+version. The retirement build's log names the pull requests that have an
+environment.
 
 ### Build secrets
 
@@ -1115,7 +1183,27 @@ Per environment, after the first apply:
    `https://harbor-pr<N>.impulseframework.dev/portal/api/user/directory/callback`, to the
    registration's redirect URIs before signing in there, until the organization
    runs a test identity gateway.
-2. In the Google Cloud console, in the environment project, for the staff auth's directory registration:
+2. At the identity provider, for the members auth's okta registration: one client per
+   environment at the organization's own OpenID Connect provider (an Okta, a
+   Keycloak, or Google used as a plain OpenID Connect provider), a confidential
+   web application client signing in by authorization code, with a client
+   secret, and the sign-in redirect URI = output `members_okta_redirect_url`. Put
+   its client ID in `terraform.tfvars` (`members_okta_client_id`) and the provider's
+   issuer URL in `members_okta_issuer` (once for the organization; an `https` URL,
+   as Google's `https://accounts.google.com`: the plan refuses an `http` one), and
+   add the client secret as version 1 of
+   `imp-<env>-gbl-harbor-members-okta-client-secret`. The issuer is the URL the provider's
+   configuration is read under (`<issuer>/.well-known/openid-configuration`) and
+   every sign-in's token carries, so another issuer is another provider, whose
+   people no link made so far knows; the session library refuses a missing or
+   malformed one at construction, so the first release in an environment waits
+   on it.
+   In tst, each pull request's environment signs in through the same
+   client: add its callback,
+   `https://harbor-pr<N>.impulseframework.dev/portal/api/user/okta/callback`, to the client's
+   sign-in redirect URIs before signing in there, until the organization runs a
+   test identity gateway.
+3. In the Google Cloud console, in the environment project, for the staff auth's directory registration:
    first the project's consent screen, if the organization has not configured
    it there yet (APIs & Services > OAuth consent screen, audience **Internal**,
    so only the organization's own users sign in; one per project, shared by
@@ -1146,13 +1234,15 @@ Per environment, after the first apply:
    its members can view its member list (the infrastructure repository's
    README, "The role groups"). If the role groups
    are nested, set `staff_directory_group_lookup = "nested"` in `terraform.tfvars`.
-3. Name the members auth's first administrator in `terraform.tfvars` (`members_administrator`), per
+4. Name the members auth's first administrator in `terraform.tfvars` (`members_administrator`), per
    environment: the sign-in name the directory presents (the user principal name
-   on Entra, the email on Google). The migrate command of the first release in the
-   environment seeds the administrator role membership under it while the auth's
-   users table holds no rows, and refuses to seed while the name is empty; the
-   person then signs in through the directory and holds the role.
-4. In the Google Workspace Admin console, once for the organization: a mailbox the
+   on Entra, the email on Google, the preferred username at an organization's own
+   identity provider, or its email when it sends none). The migrate command of the
+   first release in the environment seeds the administrator role membership under
+   it while the auth's users table holds no rows, and refuses to seed while the
+   name is empty; the person then signs in through the directory and holds the
+   role.
+5. In the Google Workspace Admin console, once for the organization: a mailbox the
    application sends its mail as (a no-reply address of the organization's domain),
    with 2-step verification turned on and an app password generated for it, and the
    SMTP relay service (Apps > Google Workspace > Gmail > Routing) accepting mail from
@@ -1163,9 +1253,9 @@ Per environment, after the first apply:
    pin. Until the mailbox is named the application writes its mail (the
    invitations and address verifications its auths send, link included) to the log
    and sends nothing, which a deployed environment is not left at.
-5. Generate a cookie key (`openssl rand -base64 32`) and add it as version 1
+6. Generate a cookie key (`openssl rand -base64 32`) and add it as version 1
    of `imp-<env>-gbl-harbor-cookie-key`.
-6. Pin the versions in `secret_versions` and apply.
+7. Pin the versions in `secret_versions` and apply.
 
 ## Inputs
 
@@ -1185,14 +1275,17 @@ Per environment, after the first apply:
 | `placeholder_image` | Image the services and job are created with. | `string` | `ghcr.io/impulseframework/welcome@sha256:106eb632ba7ae2857a044cec68c6efd8d647f67b2355f3b37e206b1686fee6aa` | no |
 | `restore` | Set by a restore run alone: the database's protection (and tst's file stores') lifted at the apply before the plan that replaces them. | `bool` | `false` | no |
 | `retired` | The secrets and file stores a release retires, by variable: each one's protection lifted, so that the next release can remove it ("Retiring a secret or a file store"). | `list(string)` | `[]` | no |
-| `secret_versions` | Pinned secret version per environment per variable; the word `generated` for a generated secret. | `map(map(string))` | all empty | no |
+| `secret_versions` | Pinned secret version per environment per variable; the word `generated` for a generated secret, `versioned` for a versioned one. | `map(map(string))` | all empty | no |
 | `substitutions` | Extra trigger substitutions per environment, for the hooks and the image build. | `map(map(string))` | `{}` | no |
 | `tasks_max_attempts` | Attempts per task of the queue. | `number` | `5` | no |
 | `tasks_max_concurrent` | Tasks of the queue in flight at once. | `number` | `10` | no |
 | `teardown` | Set by `bedrock teardown` alone: the services' deletion protection lifted at the apply before its destroy. | `bool` | `false` | no |
+| `versioned_secret_versions` | The versioned secrets' enabled versions, listed and passed by the pipeline's plan step; never written here. | `map(list(string))` | `{}` | no |
 | `members_directory_client_id` | Client ID of the members auth's directory registration, per environment. | `map(string)` | all empty | no |
 | `members_directory_tenant_id` | Tenant id of the Entra tenant the members auth's directory registration admits. | `string` | `""` | no |
 | `members_directory_administered_tenants` | The Entra tenants the deployment administers among those the members auth's directory registration admits, by tenant id; their sign-ins are asked for no sign-in code. | `string` | `""` | no |
+| `members_okta_client_id` | Client ID of the members auth's okta registration, per environment. | `map(string)` | all empty | no |
+| `members_okta_issuer` | Issuer URL of the identity provider the members auth's okta registration signs in through. | `string` | `""` | no |
 | `staff_directory_client_id` | Client ID of the staff auth's directory registration, per environment. | `map(string)` | all empty | no |
 | `staff_directory_group_lookup` | How far the groups read of the staff auth's directory registration reaches: direct or nested. | `string` | `"direct"` | no |
 | `staff_directory_group_prefix` | Prefix of the role groups of the staff auth's directory registration. | `string` | `"staff-"` | no |
@@ -1216,12 +1309,13 @@ Per environment, after the first apply:
 | `net_hosts` | The `hosts` entries for `2-net`: each hostname mapped to the backend service URI. |
 | `registry` | `<hostname>/<project>/<repository>`; null until `2-shr` registers harbor. |
 | `revision_templates` | Per service name, what its revision runs with (`serviceAccount`, `maxInstances`, `timeout`, `port`, `http2`, `args`, `cpu`, `memory`, `labels`, `env`, `secrets` by variable as `{ secret, version }`), and `job` for the job process; the pipeline builds every revision and job from it. |
-| `secrets` | Per variable: `secret_id` and the pinned `version` (null when unpinned). |
+| `secrets` | Per variable: `secret_id`, the pinned `version` (null when unpinned, and for a versioned secret) and the `versions` a versioned secret's processes receive. |
 | `services` | Per region code: `name`, `region`, `uri`. |
 | `stack_id` | The stack's id (four hex characters): the suffix of the names Google keeps after a delete, and the prefix of the stack's deployment records. |
 | `tasks_queue` | The task queue's resource name. |
 | `members_directory_redirect_url` | The redirect URI to register on the members auth's directory registration. |
 | `members_directory_logout_url` | The front-channel logout URL to register on the members auth's directory registration. |
+| `members_okta_redirect_url` | The redirect URI to register on the members auth's okta registration. |
 | `staff_directory_redirect_url` | The redirect URI to register on the staff auth's directory registration. |
 | `substitutions` | What the triggers pass to `cloudbuild.yaml`. |
 | `triggers` | `{ version, pr }` trigger IDs (`pr` null outside tst). |

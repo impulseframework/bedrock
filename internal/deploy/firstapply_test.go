@@ -22,6 +22,7 @@ func TestFirstApply(t *testing.T) {
 		deployBuild = `{"id": "b-1", "serviceAccount": "projects/p-stg/serviceAccounts/quill-deploy@p-stg.iam.gserviceaccount.com", "substitutions": {"_APP": "quill", "_ENV": "tst", "_APPLY_IDENTITY": "quill-apply@p-stg.iam.gserviceaccount.com", "_RECORDS_BUCKET": "records"}}`
 		applyBuild  = `{"id": "b-2", "serviceAccount": "projects/p-stg/serviceAccounts/quill-apply@p-stg.iam.gserviceaccount.com", "substitutions": {"_APP": "quill", "_ENV": "tst", "_APPLY_IDENTITY": "quill-apply@p-stg.iam.gserviceaccount.com", "_RECORDS_BUCKET": "records"}}`
 		bareBuild   = `{"id": "b-3", "substitutions": {"_APP": "quill", "_ENV": "tst", "_APPLY_IDENTITY": "quill-apply@p-stg.iam.gserviceaccount.com"}}`
+		restoring   = `{"id": "b-4", "substitutions": {"_APP": "quill", "_ENV": "tst", "_APPLY_IDENTITY": "quill-apply@p-stg.iam.gserviceaccount.com", "_RECORDS_BUCKET": "records", "_RESTORE": "empty", "_REQUESTER": "jo"}}`
 		initLine    = "tofu init -input=false -no-color -backend-config=prefix=3-app/quill/tst"
 		planLine    = "tofu plan -input=false -no-color -out=WS/stack.plan -var environment=tst"
 		showLine    = "tofu show -json WS/stack.plan"
@@ -115,6 +116,12 @@ func TestFirstApply(t *testing.T) {
 			},
 			wantTofu: initLine + " -backend-config=impersonate_service_account=quill-apply@p-stg.iam.gserviceaccount.com\n" + stateLine + "\n" + planLine + ` -var generated_secret_versions={APP_COOKIE_KEY="2"}` + "\n" + showLine + "\n" + applyLine,
 			wantEnv:  "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT=quill-apply@p-stg.iam.gserviceaccount.com",
+		},
+		{
+			name:       "a run that carries a release build's instruction is refused before anything is read",
+			build:      restoring,
+			wantNoTofu: true,
+			wantErr:    "_RESTORE=empty on the stack trigger's build: the trigger runs on the default branch with its action (_STACK_ACTION) and who asked",
 		},
 		{
 			name:       "a teardown older than the live release is no teardown: the stack is live",

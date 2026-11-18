@@ -151,7 +151,7 @@ func TestPersonaPlacementValidate(t *testing.T) {
 		wantErr string
 	}{
 		{name: "no provider"},
-		{name: "an issuer with a path and a client id root", persona: &PersonaPlacement{Issuer: "https://redgrade.example.com/persona", ClientID: "lanterns"}},
+		{name: "an issuer with a path and a client id root", persona: &PersonaPlacement{Issuer: "https://provider.example.com/persona", ClientID: "lanterns"}},
 		{name: "a plain http issuer", persona: &PersonaPlacement{Issuer: "http://persona.example.com", ClientID: "lanterns"}, wantErr: "persona.issuer"},
 		{name: "an issuer with a query", persona: &PersonaPlacement{Issuer: "https://persona.example.com/?x=1", ClientID: "lanterns"}, wantErr: "persona.issuer"},
 		{name: "a client id root starting with a digit", persona: &PersonaPlacement{Issuer: "https://persona.example.com", ClientID: "1st"}, wantErr: "persona.clientId"},

@@ -14,7 +14,7 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "resource", "order": "ASCENDING" },
-        { "fieldPath": "domain", "order": "ASCENDING" },
+        { "fieldPath": "domains", "arrayConfig": "CONTAINS" },
         { "fieldPath": "expiry", "order": "ASCENDING" }
       ]
     },

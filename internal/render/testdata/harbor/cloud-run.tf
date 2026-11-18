@@ -85,16 +85,17 @@ resource "google_cloud_run_v2_service" "app" {
       error_message = "secret_versions for ${var.environment} names a variable no secret in pkg/config declares. Known: ${join(", ", keys(local.secrets))}."
     }
 
-    # A generated secret's entry is the word generated, never a number: its
-    # version is derived at each build. The word on any other secret pins nothing.
+    # The entry of a secret the tooling makes is its tag's word, generated or
+    # versioned, never a number: its versions are derived at each build. Either
+    # word on any other secret pins nothing.
     precondition {
-      condition     = alltrue([for key in keys(local.generated_secrets) : lookup(local.declared_versions, key, "generated") == "generated"])
-      error_message = "secret_versions for ${var.environment} pins a version number for a generated secret (${join(", ", [for key in keys(local.generated_secrets) : key if lookup(local.declared_versions, key, "generated") != "generated"])}), whose version the pipeline derives at each build: write generated there."
+      condition     = alltrue([for key, word in local.secret_words : lookup(local.declared_versions, key, word) == word])
+      error_message = "secret_versions for ${var.environment} carries something other than the secret tag's word for a secret the tooling makes (${join(", ", [for key, word in local.secret_words : "${key}: ${word}" if lookup(local.declared_versions, key, word) != word])}), whose versions the pipeline derives at each build: write that word there."
     }
 
     precondition {
-      condition     = alltrue([for key, v in local.declared_versions : v != "generated" || contains(keys(local.generated_secrets), key)])
-      error_message = "secret_versions for ${var.environment} says generated for a secret the code does not declare secret:\"generated\" (${join(", ", [for key, v in local.declared_versions : key if v == "generated" && !contains(keys(local.generated_secrets), key)])}): pin a version number, or declare it generated in the code."
+      condition     = alltrue([for key, v in local.declared_versions : !contains(["generated", "versioned"], v) || contains(keys(local.secret_words), key)])
+      error_message = "secret_versions for ${var.environment} says generated or versioned for a secret the code declares neither secret:\"generated\" nor secret:\"versioned\" (${join(", ", [for key, v in local.declared_versions : key if contains(["generated", "versioned"], v) && !contains(keys(local.secret_words), key)])}): pin a version number, or declare it so in the code."
     }
   }
 

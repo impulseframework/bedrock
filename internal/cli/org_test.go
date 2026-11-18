@@ -1207,7 +1207,7 @@ func TestOrgRegisterThenRender(t *testing.T) {
 		// app is the application registered, a fixture under ../derive/testdata; others
 		// are the applications the organization holds before it. persona is written into
 		// the registered placement by hand, as the persona provider's block is until
-		// Redgrade's registration of the application hands it over: beacon's keepers auth
+		// the provider's registration of the application hands it over: beacon's keepers auth
 		// registers the persona method, which the block names the provider for.
 		app     string
 		others  []string

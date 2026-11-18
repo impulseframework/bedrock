@@ -242,7 +242,7 @@ func LatestVersions(layerDir, env string) ([]string, error) {
 
 // Versions reads the environment's secret_versions map in the layer's placement
 // (terraform.tfvars in layerDir) whole: each variable's entry as written, a version
-// number (bare or quoted), the word latest, or the word generated. No file, no
+// number (bare or quoted), the word latest, or the word generated or versioned. No file, no
 // secret_versions map and no map for the environment all hold none; a map that is not
 // written out, and an entry that is neither a string nor a number, are refused.
 func Versions(layerDir, env string) (map[string]string, error) {
@@ -296,7 +296,7 @@ func Versions(layerDir, env string) (map[string]string, error) {
 // The placement's maps EnvironmentValues reads for the pipeline: the substitutions the
 // application declares for its hooks and its image build (the stack's var.substitutions),
 // the build secrets' pins (var.build_secrets), and the secret versions (var.secret_versions,
-// whose values bedrock check reads whole: a number, latest, or generated).
+// whose values bedrock check reads whole: a number, latest, generated or versioned).
 const (
 	SubstitutionsKey = "substitutions"
 	BuildSecretsKey  = buildKey

@@ -1926,8 +1926,21 @@ func (s *Server) hostedRunners(w http.ResponseWriter, r *http.Request, org strin
 	}
 }
 
-// updateHostedRunner moves a hosted runner to a group and sets its ceiling (PATCH).
+// updateHostedRunner moves a hosted runner to a group and sets its ceiling (PATCH), or
+// removes it (DELETE), which GitHub answers 202 Accepted.
 func (s *Server) updateHostedRunner(w http.ResponseWriter, r *http.Request, org string, id int64) {
+	if r.Method == http.MethodDelete {
+		runners := s.HostedRunners[org]
+		if i := slices.IndexFunc(runners, func(runner *github.HostedRunner) bool { return runner.ID == id }); i >= 0 {
+			s.HostedRunners[org] = slices.Delete(runners, i, i+1)
+			w.WriteHeader(http.StatusAccepted)
+
+			return
+		}
+		reply(w, http.StatusNotFound, map[string]string{messageKey: notFound})
+
+		return
+	}
 	if r.Method != http.MethodPatch {
 		reply(w, http.StatusMethodNotAllowed, map[string]string{messageKey: r.Method})
 

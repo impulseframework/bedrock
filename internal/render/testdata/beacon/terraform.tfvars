@@ -23,11 +23,13 @@ mail_from = ""
 # (bedrock secret pin). "latest" only for a secret the placement marks as
 # tracking it. "generated" for a secret the code declares secret:"generated":
 # the pipeline makes its value and derives its version at each build, so the
-# word stays, and bedrock secret rotate adds the next version.
+# word stays, and bedrock secret rotate adds the next version. "versioned" for
+# one it declares secret:"versioned": made the same way, and a process
+# receives every enabled version (bedrock secret retire takes one away).
 secret_versions = {
-  tst = { APP_COOKIE_KEY = "generated", APP_KEEPERS_ADMINISTRATOR_PASSWORD = "generated" }
-  stg = { APP_COOKIE_KEY = "generated", APP_KEEPERS_ADMINISTRATOR_PASSWORD = "generated" }
-  prd = { APP_COOKIE_KEY = "generated", APP_KEEPERS_ADMINISTRATOR_PASSWORD = "generated" }
+  tst = { APP_COOKIE_KEY = "generated", APP_SECRET_KEY = "versioned", APP_KEEPERS_ADMINISTRATOR_PASSWORD = "generated" }
+  stg = { APP_COOKIE_KEY = "generated", APP_SECRET_KEY = "versioned", APP_KEEPERS_ADMINISTRATOR_PASSWORD = "generated" }
+  prd = { APP_COOKIE_KEY = "generated", APP_SECRET_KEY = "versioned", APP_KEEPERS_ADMINISTRATOR_PASSWORD = "generated" }
 }
 
 # The secrets and file stores a release retires, by variable: anything the
