@@ -398,7 +398,7 @@ and what its absence means:
   through when an auth registers the persona method (`impulse add method <auth>
   persona`): the provider's `issuer` URL (https) and the application's `clientId` root
   at the provider (lowercase letters, digits and hyphens starting with a letter), both
-  from Redgrade's registration of the application. The stack sets the issuer on the
+  from the provider's registration of the application. The stack sets the issuer on the
   served site in the first environment and its pull requests alone, so the method is
   registered there and nowhere else and a later environment never offers it; derives each
   deployment's client ID from the root (`<root>-pr<N>` for a pull request,

@@ -99,8 +99,8 @@ type Placement struct {
 	Labels map[string]string `json:"labels,omitempty"`
 	// Persona names the persona provider the first environment and its pull requests sign
 	// in through when an auth registers the persona method (impulse add method persona):
-	// the provider's issuer URL and the application's client ID root, both from Redgrade's
-	// registration of the application. The stack sets the issuer on the served site in
+	// the provider's issuer URL and the application's client ID root, both from the
+	// provider's registration of the application. The stack sets the issuer on the served site in
 	// the first environment and its pull requests alone (the method is registered where
 	// the issuer is set and nowhere else), derives each deployment's client ID from the
 	// root (<root>-pr<N> for a pull request, <root>-<first environment> for the
