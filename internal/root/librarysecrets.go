@@ -30,24 +30,32 @@ import (
 // former library would go on reading the release app's key, and no later run could see
 // it. So while the secrets leave anything to change or to report, the finding is taken
 // out of the report; it stands again on the first run that finds nothing left for the
-// permission to do.
+// permission to do. A run that stops before it has found that, here or in a section
+// before this one, leaves the finding out of the report it is printed with too
+// (engine.stopped).
 func (e *engine) releaseSecrets(ctx context.Context) error {
 	changes, findings := len(e.report.Changes), len(e.report.Findings)
 	if err := e.bringSecrets(ctx); err != nil {
 		return err
 	}
-	if len(e.report.Changes) == changes && len(e.report.Findings) == findings {
-		return nil
+	e.secretsSettled = true
+	if len(e.report.Changes) != changes || len(e.report.Findings) != findings {
+		e.holdSecretsFinding()
 	}
-	// The finding as the apps section words it, at either level an app holds the
-	// permission; where the declaration names the permission there is none to take out.
+
+	return nil
+}
+
+// holdSecretsFinding takes out of the report the finding that the infrastructure app
+// holds the organization's Secrets permission without need, as the apps section words it
+// at either level an app holds the permission; where the declaration names the permission
+// there is none to take out.
+func (e *engine) holdSecretsFinding() {
 	m := e.p.AppManifest(org.InfrastructureApp)
 	held := []string{m.Unneeded(org.PermissionOrgSecrets, org.LevelRead), m.Unneeded(org.PermissionOrgSecrets, org.LevelWrite)}
 	e.report.Findings = slices.DeleteFunc(e.report.Findings, func(f string) bool {
 		return slices.Contains(held, f)
 	})
-
-	return nil
 }
 
 // bringSecrets keeps the two organization secrets: sealed when they are missing and the
@@ -154,8 +162,9 @@ func (e *engine) releaseClientID(ctx context.Context, seal *keySource) (string, 
 // goes on with no change and no finding. An app that still holds the permission from when
 // the placement listed a library is not refused, and the former libraries are taken off
 // the secrets. Where the app is declared the permission, the refusal is the run's error,
-// in a sentence that names the permission: the run stops here, and the report whose
-// finding names it is never printed. Any other error is answered as it came.
+// in a sentence that names the permission: the run stops here, and the report printed
+// before the error carries the apps section's finding that the app lacks it. Any other
+// error is answered as it came.
 func (e *engine) refusedSecrets(err error) error {
 	if !github.NotAccessible(err) {
 		return err

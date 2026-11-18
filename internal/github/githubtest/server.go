@@ -210,6 +210,12 @@ type Server struct {
 	// stands or not: GitHub's answer to an app that does not hold the organization's
 	// Secrets permission.
 	OrgSecretsRefused map[string]bool
+	// Failing answers a request made with the token, by its method and path (GET
+	// /repos/o/r/issues/7/comments), with the status named, before the token's routes
+	// look at it: a call GitHub fails, for a test of what a run does when one does. The
+	// routes an app's JWT opens (/app/...) and a manifest's conversion are served before
+	// it and never fail by it. Set under Update once the server serves.
+	Failing map[string]int
 	// ImmutableReleases are the organizations' policies on immutable releases, by
 	// organization: all, none or selected, none for an organization that never set one.
 	// An organization in ImmutableReleasesHidden answers not found to the read and the
@@ -324,6 +330,7 @@ func New(t *testing.T) *Server {
 		PublicApps: map[string]github.App{}, OrgInstallations: map[string][]github.OrgInstallation{}, Memberships: map[string]string{},
 		DefaultBranch: "main",
 		OrgSecrets:    map[string]map[string]*OrgSecret{}, OrgRulesets: map[string][]*github.Ruleset{}, OrgSecretsRefused: map[string]bool{},
+		Failing:           map[string]int{},
 		ImmutableReleases: map[string]string{}, ImmutableReleasesHidden: map[string]bool{},
 		secretsPublic: public, secretsPrivate: private,
 	}
@@ -731,6 +738,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Header.Get("Authorization") != "Bearer test-token" {
 		reply(w, http.StatusUnauthorized, map[string]string{messageKey: "Bad credentials"})
+
+		return
+	}
+	if status, failing := s.Failing[r.Method+" "+path]; failing {
+		reply(w, status, map[string]string{messageKey: "failing in this test"})
 
 		return
 	}

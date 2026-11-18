@@ -122,7 +122,8 @@ func AppToken(ctx context.Context, rc *RunClients, gh deploy.GitHubFunc, p *org.
 
 // PlanRun is bedrock org plan: it says what the pull request's merge would change in the
 // root organization, in the log and in one comment on the pull request as the deployer
-// app, and exits well whatever it found; a change that cannot be read is the error.
+// app, and exits well whatever it found; a change that cannot be read is the error, and
+// the plan that stopped at it says what it had gathered in both places (stoppedPlan).
 func PlanRun(ctx context.Context, clients *Clients, rc *RunClients, req *RunRequest, out io.Writer) error {
 	t, err := read(ctx, rc, req, org.PlanCommand, out)
 	if err != nil {
@@ -138,7 +139,14 @@ func PlanRun(ctx context.Context, clients *Clients, rc *RunClients, req *RunRequ
 	}
 	report, err := Run(ctx, clients, &Request{Placement: t.p, Dir: req.Dir, Mode: Plan, Commit: t.commit, GitHubToken: infra}, out)
 	if err != nil {
-		return err
+		return stoppedPlan(report, err, t.commit, t.p, out, func(body string) error {
+			deployer, terr := AppToken(ctx, rc, clients.GitHub, t.p, org.DeployerApp)
+			if terr != nil {
+				return terr
+			}
+
+			return postPlan(ctx, clients.GitHub(deployer), t.p, number, body, org.DeployerApp.Title(), out)
+		})
 	}
 	report.Write(out, Plan)
 	deployer, err := AppToken(ctx, rc, clients.GitHub, t.p, org.DeployerApp)
@@ -149,6 +157,22 @@ func PlanRun(ctx context.Context, clients *Clients, rc *RunClients, req *RunRequ
 	}
 
 	return postPlan(ctx, clients.GitHub(deployer), t.p, number, report.Comment(t.commit, t.p), org.DeployerApp.Title(), out)
+}
+
+// stoppedPlan ends a plan that stopped on err. What it had gathered goes to the log and,
+// in the same form with the error, into the plan's one comment on the pull request, in
+// place of an earlier plan's: a person reads the stop where the pull request is, and the
+// pull request never shows a finished plan of an earlier push as the answer to this one.
+// Where the comment cannot be posted (no token for it, or GitHub refuses the call) the
+// log says so and nothing is said of a comment. The answer is err either way: the run
+// fails as it did.
+func stoppedPlan(report *Report, err error, commit string, p *org.Placement, out io.Writer, post func(body string) error) error {
+	report.WriteStopped(out, Plan)
+	if perr := post(report.StoppedComment(commit, p, err)); perr != nil {
+		fmt.Fprintf(out, "The pull request's comment was not posted (%v): the plan's stop is in this log alone.\n", errors.Cause(perr))
+	}
+
+	return err
 }
 
 // postPlan keeps the plan's one comment on the pull request: the comment an earlier push's
@@ -181,11 +205,68 @@ func postPlan(ctx context.Context, gh *github.Client, p *org.Placement, number i
 // findings, each on a line.
 func (r *Report) Comment(commit string, p *org.Placement) string {
 	var b strings.Builder
-	b.WriteString(planMarker + "\n### what the merge changes in the " + p.Prefix + " root organization\n\nAt " + short(commit) + ":\n\n")
+	b.WriteString(commentHead(commit, p))
 	pending := r.pendingCreations(p)
 	if len(r.Changes) == 0 && len(pending) == 0 {
 		b.WriteString("Nothing: the root organization stands as placement.json says.\n")
 	}
+	r.commentGathered(&b, pending)
+
+	return b.String()
+}
+
+// StoppedComment is the comment of a plan that ended on err, in the place and under the
+// marker and heading of a finished plan's, so that each takes the other's place: first
+// that the plan stopped and that what follows is incomplete, then what it had gathered
+// before the stop, as a finished plan lists it and never as the whole of what the merge
+// changes, then the error as the run's log ends with it, set as code so that nothing in
+// it is read as formatting or as a mention.
+func (r *Report) StoppedComment(commit string, p *org.Placement, err error) string {
+	var b strings.Builder
+	b.WriteString(commentHead(commit, p))
+	b.WriteString("**The plan stopped before it finished, at the error below: what it had gathered before the stop follows, and it is incomplete.**\n\n")
+	if r == nil {
+		// Refused before its first section: it read nothing.
+		r = &Report{}
+	}
+	pending := r.pendingCreations(p)
+	if len(r.Changes) == 0 && len(pending) == 0 {
+		b.WriteString("It had found no change before the stop.\n")
+	}
+	r.commentGathered(&b, pending)
+	b.WriteString("\nThe error the plan stopped at:\n\n")
+	// Every line is indented, a carriage return counted as a line's end as GitHub counts
+	// it, so no part of the error leaves the code block. An error longer than the bound
+	// (an API's answer quoted whole) is cut, so that it cannot take the comment over the
+	// size GitHub accepts and leave an earlier plan's standing.
+	text := strings.TrimSpace(strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(errors.Cause(err).Error()))
+	cut := len(text) > commentErrorBytes
+	if cut {
+		text = strings.ToValidUTF8(text[:commentErrorBytes], "")
+	}
+	for _, line := range strings.Split(text, "\n") {
+		b.WriteString("    " + line + "\n")
+	}
+	if cut {
+		fmt.Fprintf(&b, "\nThe error is cut after %d bytes; the run's log ends with the whole of it.\n", commentErrorBytes)
+	}
+
+	return b.String()
+}
+
+// commentErrorBytes bounds the error a stopped plan's comment quotes: GitHub refuses a
+// comment longer than 65536 characters, and the comment carries the report too.
+const commentErrorBytes = 8000
+
+// commentHead opens the plan's comment: the marker a later plan finds it by, the heading
+// and the commit.
+func commentHead(commit string, p *org.Placement) string {
+	return planMarker + "\n### what the merge changes in the " + p.Prefix + " root organization\n\nAt " + short(commit) + ":\n\n"
+}
+
+// commentGathered lists what the plan found: the changes, the hosting organizations the
+// merge creates, the findings and the notes, each on a line.
+func (r *Report) commentGathered(b *strings.Builder, pending []string) {
 	for _, c := range r.Changes {
 		b.WriteString("- " + c.Section + ": " + c.What + "\n")
 	}
@@ -204,8 +285,6 @@ func (r *Report) Comment(commit string, p *org.Placement) string {
 			b.WriteString("- note: " + n + "\n")
 		}
 	}
-
-	return b.String()
 }
 
 // pendingCreations names the hosting organizations the apply would create.
@@ -262,20 +341,46 @@ func ApplyRun(ctx context.Context, clients *Clients, rc *RunClients, req *RunReq
 		return err
 	}
 	defer func() { _ = locks.Unlock(ctx, t.p.StateBucket, LockObject) }()
-	report, err := Run(ctx, clients, &Request{Placement: t.p, Dir: req.Dir, Mode: Apply, Commit: t.commit, GitHubToken: infra}, out)
+	report, err := runAndReport(ctx, clients, &Request{Placement: t.p, Dir: req.Dir, Mode: Apply, Commit: t.commit, GitHubToken: infra}, out)
+	// The hosting organizations an apply created before it stopped stand, and their
+	// hand-off pull requests wait: they are named as a finished apply names them. A
+	// stopped apply leaves no marker: the next push applies again.
+	report.writeCreated(out)
 	if err != nil {
 		return err
 	}
-	report.Write(out, Apply)
-	for _, c := range report.Created {
-		if c.Already {
-			fmt.Fprintf(out, "%s was created by an earlier run; its hand-off pull request: %s\n", c.Prefix, c.PullRequest)
-		} else {
-			fmt.Fprintf(out, "Created %s; its hand-off pull request: %s\n", c.Prefix, c.PullRequest)
-		}
-	}
 
 	return WriteMarker(ctx, clients, t.p, t.commit, report.Applied)
+}
+
+// runAndReport runs the engine and prints its report: a finished run's whole (Write), and
+// before the error of a run that stopped what it had gathered (WriteStopped). It answers
+// what Run answers.
+func runAndReport(ctx context.Context, clients *Clients, req *Request, out io.Writer) (*Report, error) {
+	report, err := Run(ctx, clients, req, out)
+	if err != nil {
+		report.WriteStopped(out, req.Mode)
+
+		return report, err
+	}
+	report.Write(out, req.Mode)
+
+	return report, nil
+}
+
+// writeCreated names the hosting organizations the apply created, or found created, each
+// with its hand-off pull request.
+func (r *Report) writeCreated(w io.Writer) {
+	if r == nil {
+		return
+	}
+	for _, c := range r.Created {
+		if c.Already {
+			fmt.Fprintf(w, "%s was created by an earlier run; its hand-off pull request: %s\n", c.Prefix, c.PullRequest)
+		} else {
+			fmt.Fprintf(w, "Created %s; its hand-off pull request: %s\n", c.Prefix, c.PullRequest)
+		}
+	}
 }
 
 // GitHubClient is the GitHub client over a token, the engine's default.

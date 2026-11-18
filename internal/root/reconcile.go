@@ -45,6 +45,8 @@ type Change struct {
 	Section string
 	What    string
 	apply   func(ctx context.Context) error
+	// failed marks the change an apply tried and could not finish: the run stopped at it.
+	failed bool
 }
 
 // Report is what a run found and did.
@@ -124,10 +126,18 @@ type engine struct {
 	// stand, by name, which an organization secret names its readers by.
 	actionsApp int64
 	libraryIDs map[string]int64
+	// secretsSettled says the run has looked at the release app's organization secrets
+	// to the end (releaseSecrets), so what its report says of the infrastructure app's
+	// permission on them is final.
+	secretsSettled bool
 }
 
 // Run runs the engine in the request's mode and answers the report. In Apply mode a
-// change that fails stops the run with the changes before it made.
+// change that fails stops the run with the changes before it made. A run that stops on an
+// error in one of its sections answers, beside the error, the report of what it had
+// gathered before the stop, which the caller prints with WriteStopped so that the
+// findings of the sections that finished are not lost with it. A run refused before its
+// first section has read nothing and made nothing, and answers no report.
 func Run(ctx context.Context, clients *Clients, req *Request, out io.Writer) (*Report, error) {
 	if !req.Placement.IsRoot() {
 		return nil, errors.Newf("the %s organization is a hosting organization: the engine runs a root organization", req.Placement.Prefix)
@@ -162,11 +172,31 @@ func Run(ctx context.Context, clients *Clients, req *Request, out io.Writer) (*R
 	}
 	for _, section := range sections {
 		if err := section(ctx); err != nil {
-			return e.report, err
+			return e.stopped(), err
 		}
 	}
 
 	return e.report, nil
+}
+
+// stopped is the report of a run that ends on a section's error: what it had gathered,
+// less what only a run that got further may say. The finding that tells a person to take
+// the infrastructure app's permission on the organization's secrets off is the apps
+// section's, and it stands only once the run has found nothing left for the permission
+// to do (releaseSecrets); a run that stopped before that, in whatever section, has not
+// found it, and its report is printed all the same.
+func (e *engine) stopped() *Report {
+	if !e.secretsSettled {
+		e.holdSecretsFinding()
+	}
+
+	return e.report
+}
+
+// stoppedAt records the change an apply tried and could not finish, where the change is
+// listed only once it is made: the run stops at it, and its report names it.
+func (e *engine) stoppedAt(section, what string) {
+	e.report.Changes = append(e.report.Changes, Change{Section: section, What: what, failed: true})
 }
 
 func (e *engine) open(ctx context.Context) error {
@@ -240,6 +270,8 @@ func (e *engine) change(ctx context.Context, section, what string, apply func(ct
 	}
 	fmt.Fprintf(e.out, "%s: %s\n", section, what)
 	if err := e.settled(ctx, func() error { return apply(ctx) }); err != nil {
+		e.report.Changes[len(e.report.Changes)-1].failed = true
+
 		return errors.Wrapf(err, "%s: %s", section, what)
 	}
 	e.report.Applied++
@@ -1011,6 +1043,8 @@ func (e *engine) makeZone(ctx context.Context, spec ZoneSpec, what string) (made
 		err = e.dns.CreateZone(ctx, e.d.Project(), spec.Zone)
 	}
 	if err != nil {
+		e.stoppedAt(sectionZones, what)
+
 		return false, errors.Wrapf(err, "%s: %s", sectionZones, what)
 	}
 	e.report.Changes = append(e.report.Changes, Change{Section: sectionZones, What: what})
@@ -1111,6 +1145,8 @@ func (e *engine) verifyAs(ctx context.Context, identity string, specs []ZoneSpec
 		fmt.Fprintf(e.out, "%s: %s\n", sectionVerification, what)
 		seen, err := v.Verify(ctx, spec.Domain)
 		if err != nil {
+			e.stoppedAt(sectionVerification, what)
+
 			return errors.Wrapf(err, "%s: %s", sectionVerification, what)
 		}
 		if !seen {
@@ -1382,6 +1418,10 @@ func (e *engine) creations(ctx context.Context) error {
 		}
 		res, err := create.Run(ctx, e.clients.Create, &create.Request{Root: e.p, RootDir: e.req.Dir, Record: record, Token: e.req.GitHubToken, Commit: e.req.Commit, Seeded: seeded}, e.out)
 		if err != nil {
+			// A creation that stops has made what its steps before the stop make (the
+			// folder, the boot project), and finishes on the next push.
+			e.stoppedAt(sectionCreations, "creates the hosting organization "+record.Prefix)
+
 			return errors.Wrapf(err, "the creation of %s", record.Prefix)
 		}
 		e.report.Changes = append(e.report.Changes, Change{Section: sectionCreations, What: "creates the hosting organization " + record.Prefix})
@@ -1428,6 +1468,20 @@ func WriteMarker(ctx context.Context, clients *Clients, p *org.Placement, commit
 // Write prints the report: each change the apply would make (an apply printed each as it
 // made it), each finding, each note, and the verdict.
 func (r *Report) Write(w io.Writer, mode Mode) {
+	r.writeGathered(w, mode)
+	switch {
+	case mode == Apply:
+		fmt.Fprintf(w, "Applied %d change(s); %d finding(s).\n", r.Applied, len(r.Findings))
+	case len(r.Changes) == 0 && len(r.Findings) == 0:
+		fmt.Fprintln(w, "The root organization stands as placement.json says: nothing to change.")
+	default:
+		fmt.Fprintf(w, "%d change(s) the apply would make; %d finding(s).\n", len(r.Changes), len(r.Findings))
+	}
+}
+
+// writeGathered prints each change the apply would make (an apply printed each as it
+// made it), each finding and each note.
+func (r *Report) writeGathered(w io.Writer, mode Mode) {
 	if mode != Apply {
 		for _, c := range r.Changes {
 			fmt.Fprintf(w, "%s: the apply %s\n", c.Section, c.What)
@@ -1439,12 +1493,53 @@ func (r *Report) Write(w io.Writer, mode Mode) {
 	for _, n := range r.Notes {
 		fmt.Fprintf(w, "note: %s\n", n)
 	}
-	switch {
-	case mode == Apply:
-		fmt.Fprintf(w, "Applied %d change(s); %d finding(s).\n", r.Applied, len(r.Findings))
-	case len(r.Changes) == 0 && len(r.Findings) == 0:
-		fmt.Fprintln(w, "The root organization stands as placement.json says: nothing to change.")
-	default:
-		fmt.Fprintf(w, "%d change(s) the apply would make; %d finding(s).\n", len(r.Changes), len(r.Findings))
+}
+
+// Gathered reports whether the run listed a change, a finding or a note: what a run that
+// stopped on an error has to show for the sections it finished.
+func (r *Report) Gathered() bool {
+	return r != nil && (len(r.Changes) > 0 || len(r.Findings) > 0 || len(r.Notes) > 0)
+}
+
+// WriteStopped prints the report of a run that ended on an error, in place of Write: one
+// sentence that the run stopped and that what follows is incomplete, then what it had
+// gathered before the stop (each change it had listed, each finding, each note) and how
+// far it got. The error is the caller's to return, and is printed after this as it is
+// printed alone when a plan or a check had gathered nothing, for which nothing is written
+// here. An apply always says how many changes it made before the stop, and where it
+// stopped at a change it names it as not counted, since a change that failed may stand
+// in part: it never counts a change it did not finish. A run refused before its first
+// section has no report (nil, as Run answers it): it read nothing and made nothing, its
+// error says so, and nothing is written for it.
+func (r *Report) WriteStopped(w io.Writer, mode Mode) {
+	if r == nil {
+		return
 	}
+	if !r.Gathered() {
+		if mode == Apply {
+			fmt.Fprintln(w, "The run stopped before it finished, at the error below: it had made no change and had no finding or note before the stop.")
+		}
+
+		return
+	}
+	fmt.Fprintln(w, "The run stopped before it finished, at the error below: what it had gathered before the stop follows, and it is incomplete.")
+	r.writeGathered(w, mode)
+	fmt.Fprintln(w, r.stoppedVerdict(mode))
+}
+
+// stoppedVerdict is the last line of a stopped run's report: what a plan or a check had
+// counted before the stop, and for an apply the changes it made, with the change it
+// stopped at named as not counted.
+func (r *Report) stoppedVerdict(mode Mode) string {
+	if mode != Apply {
+		return fmt.Sprintf("Before the stop: %d change(s) the apply would make; %d finding(s).", len(r.Changes), len(r.Findings))
+	}
+	verdict := fmt.Sprintf("Applied %d change(s) before the stop; %d finding(s).", r.Applied, len(r.Findings))
+	for _, c := range r.Changes {
+		if c.failed {
+			verdict += fmt.Sprintf(" The change the run stopped at is not counted, and may stand in part: %s: %s.", c.Section, c.What)
+		}
+	}
+
+	return verdict
 }

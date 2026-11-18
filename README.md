@@ -2602,7 +2602,11 @@ like every later one. The root organization is bedrock's own bookkeeping: its
 through the engine the bootstrap made it with (`org plan` on a pull request, which says
 what the merge would change; `org apply` on the merge, which makes it so and creates the
 hosting organizations recorded), where a hosting organization's triggers plan and apply
-OpenTofu layers.
+OpenTofu layers. A run of that engine that stops on an error (a plan, an apply, a check,
+the bootstrap) first says what it had gathered before the stop, as incomplete (the changes
+it had listed, the findings and the notes, and for an apply how many changes it had made),
+and then the error. A plan that stops puts the same, with the error, into its comment on
+the pull request, where a finished plan's would stand.
 
 `org bootstrap <dir>` makes the root organization, placement and files, in one run at a
 terminal with the break-glass account's Application Default Credentials (`gcloud auth

@@ -3,7 +3,9 @@ package root_test
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/go-playground/errors/v5"
@@ -659,5 +661,73 @@ func TestEngineReleaseSecretReadersAfterTheLastLibrary(t *testing.T) {
 	w.srv.OrgSecretsRefused[owner] = true
 	if clean, out := w.run(t, root.Check, false); !clean.Clean() {
 		t.Errorf("the check once the app holds nothing on the organization's secrets is not clean:\n%s\nchanges: %q\nfindings: %q", out, whats(clean), clean.Findings)
+	}
+}
+
+// TestEngineReleaseSecretsStopped: a run that stops before it has looked at the
+// organization secrets to the end has not found that nothing is left for the
+// infrastructure app's permission on them to do. The report it leaves beside its error,
+// which is printed with it, does not tell a person to take the permission off, whether it
+// stopped in the secrets or in what comes before them; what the other sections found
+// stays. A run that stops after the secrets says of the permission what a finished run
+// says.
+func TestEngineReleaseSecretsStopped(t *testing.T) {
+	t.Parallel()
+
+	const (
+		spareOrg    = "the infrastructure app holds the Secrets (organization) permission (write), which it does not need: take it off on the app's settings page"
+		spareChecks = "the infrastructure app holds the Checks permission (read), which it does not need: take it off on the app's settings page"
+		spareFlows  = "the release app holds the Workflows permission (write), which it does not need: take it off on the app's settings page"
+	)
+	tests := []struct {
+		name string
+		// failing is the call GitHub fails; refused the fake's call that is refused.
+		failing string
+		refused string
+		want    []string
+	}{
+		{name: "the read of the key's secret", failing: "GET /orgs/imp-example/actions/secrets/RELEASE_PLEASE_APP_PEM", want: []string{spareChecks, spareFlows}},
+		{name: "the listing of the organization's rulesets, before the secrets", failing: "GET /orgs/imp-example/rulesets", want: []string{spareChecks, spareFlows}},
+		{name: "the budgets, after the secrets", refused: "Budgets", want: []string{spareChecks, spareOrg, spareFlows}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newWorld(t)
+			withLibrary(t, w)
+			w.run(t, root.Apply, true)
+			w.p.Libraries = nil
+			if err := w.p.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			// The apply takes the key from the former library; the check after it finds
+			// nothing left for the permission to do, and names it with the others.
+			w.run(t, root.Apply, false)
+			report, _ := w.run(t, root.Check, false)
+			sameSentences(t, "the findings of the check that finished", report.Findings, []string{spareChecks, spareOrg, spareFlows})
+
+			want := "refused in this test"
+			if tt.failing != "" {
+				w.srv.Update(func() { w.srv.Failing[tt.failing] = http.StatusInternalServerError })
+				want = "GitHub " + tt.failing
+			} else {
+				w.fake.Refuse[tt.refused] = errors.New(want)
+			}
+			var out bytes.Buffer
+			report, err := root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Dir: w.dir, Mode: root.Check, Commit: "abc1234", GitHubToken: "test-token"}, &out)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Run() = %v, want the error of %q\n%s", err, want, out.String())
+			}
+			if report == nil {
+				t.Fatal("Run() answered no report beside the error of a section")
+			}
+			sameSentences(t, "the findings the stopped check leaves", report.Findings, tt.want)
+			out.Reset()
+			report.WriteStopped(&out, root.Check)
+			if held := !slices.Contains(tt.want, spareOrg); !strings.Contains(out.String(), "finding: "+spareChecks+"\n") || strings.Contains(out.String(), "Secrets (organization)") == held {
+				t.Errorf("the stopped check's report, the finding about the permission on the secrets held back %t:\n%s", held, out.String())
+			}
+		})
 	}
 }

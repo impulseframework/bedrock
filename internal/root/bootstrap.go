@@ -151,23 +151,21 @@ func Bootstrap(ctx context.Context, clients *Clients, req *BootstrapRequest, out
 	}
 	cloned := b.clone(ctx, commit, infraToken)
 	fmt.Fprintf(out, "=== making the root organization as placement.json says ===\n")
-	applied, err := Run(ctx, clients, &Request{Placement: b.p, Dir: req.Dir, Mode: Apply, Commit: commit, GitHubToken: infraToken, Bootstrap: true}, out)
-	if err != nil {
-		return nil, err
-	}
 	// What the run could not make true and what it did not compare (a zone Cloud DNS
 	// refused, with the applier's token to put where the domain's DNS is served; a
-	// verification that waits) is a person's to see here, as it is on an apply's build.
-	applied.Write(out, Apply)
+	// verification that waits) is a person's to see here, as it is on an apply's build,
+	// and so is what a run that stopped had gathered.
+	if _, err := runAndReport(ctx, clients, &Request{Placement: b.p, Dir: req.Dir, Mode: Apply, Commit: commit, GitHubToken: infraToken, Bootstrap: true}, out); err != nil {
+		return nil, err
+	}
 	if err := b.withdraw(ctx, folder); err != nil {
 		return nil, err
 	}
 	fmt.Fprintf(out, "=== checking ===\n")
-	report, err := Run(ctx, clients, &Request{Placement: b.p, Dir: req.Dir, Mode: Check, Commit: commit, GitHubToken: infraToken}, out)
+	report, err := runAndReport(ctx, clients, &Request{Placement: b.p, Dir: req.Dir, Mode: Check, Commit: commit, GitHubToken: infraToken}, out)
 	if err != nil {
 		return nil, err
 	}
-	report.Write(out, Check)
 	fmt.Fprintf(out, "Bootstrapped the %s root organization as %s: folder %s, project %s, repository %s/%s at %s. The Bot Account is %s; the apps are %s.\n",
 		b.p.Prefix, b.p.BreakGlassAccount, folder, b.p.Projects[org.RootProjectKey], b.p.GithubOrganization, b.p.SourceRepo, short(commit), bot, b.appIDs())
 
