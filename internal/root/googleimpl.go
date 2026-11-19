@@ -654,12 +654,26 @@ type iamClients struct {
 	services      *serviceusage.Service
 }
 
+// iamOptions are the options each client of the set opens with, client by client. NewIAM
+// gives none, so each client opens with the process's default credentials. A test gives
+// each client a connection of its own: that is how it makes one opening fail, and how it
+// reads which clients the failed opening closed.
+type iamOptions struct {
+	admin, projects, folders, organizations, billing, storage, services []option.ClientOption
+}
+
 // NewIAM opens IAM's role administration, Cloud Resource Manager, Cloud Billing, Cloud
 // Storage and Service Usage. When one of them cannot be opened, the ones opened before it
 // are closed: the caller is answered no client beside the error, and could close none.
 func NewIAM(ctx context.Context) (IAM, error) {
+	return newIAM(ctx, &iamOptions{})
+}
+
+// newIAM opens the clients, each with its own options, and closes the ones it had opened
+// when one of them cannot be opened.
+func newIAM(ctx context.Context, opts *iamOptions) (IAM, error) {
 	c := &iamClients{}
-	if err := c.open(ctx); err != nil {
+	if err := c.open(ctx, opts); err != nil {
 		_ = c.Close()
 
 		return nil, err
@@ -670,27 +684,27 @@ func NewIAM(ctx context.Context) (IAM, error) {
 
 // open opens the clients in turn and stops at the first that cannot be opened, which
 // leaves the ones before it open and the ones after it nil.
-func (c *iamClients) open(ctx context.Context) error {
+func (c *iamClients) open(ctx context.Context, opts *iamOptions) error {
 	var err error
-	if c.admin, err = admin.NewIamClient(ctx); err != nil {
+	if c.admin, err = admin.NewIamClient(ctx, opts.admin...); err != nil {
 		return errors.Wrap(err, "admin.NewIamClient()")
 	}
-	if c.projects, err = resourcemanager.NewProjectsClient(ctx); err != nil {
+	if c.projects, err = resourcemanager.NewProjectsClient(ctx, opts.projects...); err != nil {
 		return errors.Wrap(err, "resourcemanager.NewProjectsClient()")
 	}
-	if c.folders, err = resourcemanager.NewFoldersClient(ctx); err != nil {
+	if c.folders, err = resourcemanager.NewFoldersClient(ctx, opts.folders...); err != nil {
 		return errors.Wrap(err, "resourcemanager.NewFoldersClient()")
 	}
-	if c.organizations, err = resourcemanager.NewOrganizationsClient(ctx); err != nil {
+	if c.organizations, err = resourcemanager.NewOrganizationsClient(ctx, opts.organizations...); err != nil {
 		return errors.Wrap(err, "resourcemanager.NewOrganizationsClient()")
 	}
-	if c.billing, err = cloudbilling.NewService(ctx); err != nil {
+	if c.billing, err = cloudbilling.NewService(ctx, opts.billing...); err != nil {
 		return errors.Wrap(err, "cloudbilling.NewService()")
 	}
-	if c.storage, err = storage.NewClient(ctx); err != nil {
+	if c.storage, err = storage.NewClient(ctx, opts.storage...); err != nil {
 		return errors.Wrap(err, "storage.NewClient()")
 	}
-	if c.services, err = serviceusage.NewService(ctx); err != nil {
+	if c.services, err = serviceusage.NewService(ctx, opts.services...); err != nil {
 		return errors.Wrap(err, "serviceusage.NewService()")
 	}
 
