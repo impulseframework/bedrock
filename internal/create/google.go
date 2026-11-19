@@ -160,42 +160,57 @@ func NewGoogleBilledTo(ctx context.Context, quotaProject string) (Google, error)
 	return newGoogle(ctx, []option.ClientOption{option.WithQuotaProject(quotaProject)}, nil)
 }
 
-// newGoogle opens the clients, the storage client with its own options.
+// newGoogle opens the clients, the storage client with its own options. When one of them
+// cannot be opened, the ones opened before it are closed: the caller is answered no
+// client beside the error, and could close none.
 func newGoogle(ctx context.Context, opts, storageOpts []option.ClientOption) (Google, error) {
 	g := &google{opts: opts, regional: map[string]*secretmanager.Client{}}
-	var err error
-	if g.folders, err = resourcemanager.NewFoldersClient(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "resourcemanager.NewFoldersClient()")
-	}
-	if g.projects, err = resourcemanager.NewProjectsClient(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "resourcemanager.NewProjectsClient()")
-	}
-	if g.iam, err = admin.NewIamClient(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "admin.NewIamClient()")
-	}
-	if g.billing, err = cloudbilling.NewService(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "cloudbilling.NewService()")
-	}
-	if g.services, err = serviceusage.NewService(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "serviceusage.NewService()")
-	}
-	if g.servicesBeta, err = serviceusagebeta.NewService(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "serviceusagebeta.NewService()")
-	}
-	if g.storage, err = storage.NewClient(ctx, storageOpts...); err != nil {
-		return nil, errors.Wrap(err, "storage.NewClient()")
-	}
-	if g.secrets, err = secretmanager.NewClient(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "secretmanager.NewClient()")
-	}
-	if g.dns, err = dns.NewService(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "dns.NewService()")
-	}
-	if g.budgets, err = budgets.New(ctx, opts...); err != nil {
+	if err := g.open(ctx, opts, storageOpts); err != nil {
+		_ = g.Close()
+
 		return nil, err
 	}
 
 	return g, nil
+}
+
+// open opens the clients in turn, the storage client with its own options, and stops at
+// the first that cannot be opened, which leaves the ones before it open and the ones
+// after it nil.
+func (g *google) open(ctx context.Context, opts, storageOpts []option.ClientOption) error {
+	var err error
+	if g.folders, err = resourcemanager.NewFoldersClient(ctx, opts...); err != nil {
+		return errors.Wrap(err, "resourcemanager.NewFoldersClient()")
+	}
+	if g.projects, err = resourcemanager.NewProjectsClient(ctx, opts...); err != nil {
+		return errors.Wrap(err, "resourcemanager.NewProjectsClient()")
+	}
+	if g.iam, err = admin.NewIamClient(ctx, opts...); err != nil {
+		return errors.Wrap(err, "admin.NewIamClient()")
+	}
+	if g.billing, err = cloudbilling.NewService(ctx, opts...); err != nil {
+		return errors.Wrap(err, "cloudbilling.NewService()")
+	}
+	if g.services, err = serviceusage.NewService(ctx, opts...); err != nil {
+		return errors.Wrap(err, "serviceusage.NewService()")
+	}
+	if g.servicesBeta, err = serviceusagebeta.NewService(ctx, opts...); err != nil {
+		return errors.Wrap(err, "serviceusagebeta.NewService()")
+	}
+	if g.storage, err = storage.NewClient(ctx, storageOpts...); err != nil {
+		return errors.Wrap(err, "storage.NewClient()")
+	}
+	if g.secrets, err = secretmanager.NewClient(ctx, opts...); err != nil {
+		return errors.Wrap(err, "secretmanager.NewClient()")
+	}
+	if g.dns, err = dns.NewService(ctx, opts...); err != nil {
+		return errors.Wrap(err, "dns.NewService()")
+	}
+	if g.budgets, err = budgets.New(ctx, opts...); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Budgets lists the billing account's budgets.
@@ -631,14 +646,28 @@ func (g *google) secretClient(ctx context.Context, secret string) (*secretmanage
 	return client, nil
 }
 
+// Close closes the clients that hold a connection: the regional Secret Manager clients,
+// then the rest, the last opened first. A client that was never opened, in a set whose
+// opening failed before it, is nil and is passed over.
 func (g *google) Close() error {
 	for _, c := range g.regional {
 		_ = c.Close()
 	}
-	_ = g.secrets.Close()
-	_ = g.storage.Close()
-	_ = g.iam.Close()
-	_ = g.projects.Close()
+	if g.secrets != nil {
+		_ = g.secrets.Close()
+	}
+	if g.storage != nil {
+		_ = g.storage.Close()
+	}
+	if g.iam != nil {
+		_ = g.iam.Close()
+	}
+	if g.projects != nil {
+		_ = g.projects.Close()
+	}
+	if g.folders == nil {
+		return nil
+	}
 	if err := g.folders.Close(); err != nil {
 		return errors.Wrap(err, "resourcemanager.FoldersClient.Close()")
 	}
