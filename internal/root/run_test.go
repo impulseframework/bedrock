@@ -4,16 +4,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-playground/errors/v5"
 
+	"github.com/impulseframework/bedrock/internal/create"
 	"github.com/impulseframework/bedrock/internal/deploy"
+	"github.com/impulseframework/bedrock/internal/github"
 	"github.com/impulseframework/bedrock/internal/org"
 	"github.com/impulseframework/bedrock/internal/root"
 )
@@ -406,6 +412,164 @@ func TestApplyRunStopped(t *testing.T) {
 			}
 		})
 	}
+}
+
+// tofu stands in for OpenTofu in a creation: every program a creation runs succeeds, and
+// tofu output answers the outputs of the foundation of the hosting organization rgb, its
+// six projects and its four folders.
+type tofu struct{}
+
+func (tofu) Run(context.Context, deploy.Command, io.Writer) error {
+	return nil
+}
+
+func (tofu) Output(_ context.Context, c deploy.Command, _ io.Writer) ([]byte, error) {
+	if c.Args[0] != "output" {
+		return nil, nil
+	}
+	ids, numbers := map[string]string{}, map[string]string{}
+	for i, key := range []string{"shr", "net", "spn", "tst", "stg", "prd"} {
+		ids[key] = "rgb-" + key + "-gbl-core-e5f6"
+		numbers[key] = "10000000010" + strconv.Itoa(i+1)
+	}
+	keys, values := map[string]string{}, map[string]string{}
+	for i, env := range []string{"tst", "stg", "prd"} {
+		keys[env] = "tagKeys/28100000000" + strconv.Itoa(i+1)
+		values[env] = "tagValues/28200000000" + strconv.Itoa(i+1)
+	}
+	value := func(v any) map[string]any { return map[string]any{"value": v} }
+	data, err := json.Marshal(map[string]any{
+		"project_ids": value(ids), "project_numbers": value(numbers),
+		"folder_ids":             value(map[string]string{"shared": "900000000011", "tst": "900000000012", "stg": "900000000013", "prd": "900000000014"}),
+		"public_invoker_tag_key": value(keys), "public_invoker_tag_value": value(values),
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "json.Marshal()")
+	}
+
+	return data, nil
+}
+
+// creating is the applied world with a hosting organization to create: rgb is recorded
+// without a folder in the checkout's placement, its own record is in the checkout, the
+// root repository has the default branch the hand-off pull request starts from, and the
+// creation's seams are wired. The creation's Google and its state bucket are the world's
+// own stand-in, so the sections after the creation read what the creation made, and the
+// creation's marker lies in the bucket the next apply reads.
+func creating(t *testing.T) (*world, *root.RunClients, string) {
+	t.Helper()
+
+	w, rc, dir := applied(t)
+	fixture, err := org.ReadPlacement("../org/testdata/imr/placement.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.p.HostingOrganizations = fixture.HostingOrganizations // imp created, rgb to create
+	if err := w.p.Write(filepath.Join(dir, org.PlacementFile)); err != nil {
+		t.Fatal(err)
+	}
+	record := &org.Placement{
+		Prefix: "rgb", AppsDomain: "rgb.impapps.example", Spanner: org.Spanner{Config: "nam10"},
+		Regions:        []org.Region{{Name: "us-central1", Code: "uc1"}, {Name: "us-west3", Code: "uw3"}},
+		TeamGroups:     map[string]string{"tst": "team-tst@imp.example", "stg": "team-stg@imp.example", "prd": "team-prd@imp.example"},
+		ContactDomains: []string{"@imp.example"},
+		Projects:       map[string]string{"boot": "rgb-boot-gbl-core-e5f6"},
+		MonthlyBudget:  500,
+	}
+	if err := org.Fill(w.p, record); err != nil {
+		t.Fatal(err)
+	}
+	path := org.RecordPath(dir, "rgb")
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := record.Write(path); err != nil {
+		t.Fatal(err)
+	}
+	w.srv.Update(func() {
+		repo := w.srv.Repos[w.p.GithubOrganization+"/"+w.p.SourceRepo]
+		repo.Refs["refs/heads/"+w.p.GithubDefaultBranch] = github.Object{Type: "commit", SHA: "base1"}
+		repo.Ancestry = map[string][]string{"base1": {"base1"}}
+		repo.Trees = map[string]string{"base1": "tree0"}
+		repo.Files = map[string]string{"tree0:placement.json": "{}"}
+	})
+	w.clients.Create = &create.Clients{
+		Google: func(context.Context, string) (create.Google, error) { return w.fake, nil },
+		GitHub: w.clients.GitHub,
+		Exec:   tofu{},
+		Store:  w.fake,
+		Sleep:  func(context.Context, time.Duration) error { return nil },
+	}
+
+	return w, rc, dir
+}
+
+// TestApplyRunCreated: an apply that creates a hosting organization names it and its
+// hand-off pull request after its report, when it finishes and when a section after the
+// creation stops it: the organization stands either way, and its pull request waits. The
+// next push's apply finds the organization created and names the same pull request.
+func TestApplyRunCreated(t *testing.T) {
+	t.Parallel()
+
+	const (
+		created = "Created rgb; its hand-off pull request: https://github.com/imp-example/imr-root-infrastructure/pull/1\n"
+		found   = "rgb was created by an earlier run; its hand-off pull request: https://github.com/imp-example/imr-root-infrastructure/pull/1\n"
+	)
+	apply := func(w *world, rc *root.RunClients, dir string, out io.Writer) error {
+		rc.Builds = (&fakeBuilds{build: build(w.p, "")}).open
+		req := &root.RunRequest{BuildID: "b-1", Project: w.p.Projects[org.RootProjectKey], Location: "us-central1", Dir: dir}
+
+		return root.ApplyRun(context.Background(), w.clients, rc, req, out)
+	}
+
+	t.Run("an apply that finishes", func(t *testing.T) {
+		t.Parallel()
+
+		w, rc, dir := creating(t)
+		var out bytes.Buffer
+		if err := apply(w, rc, dir, &out); err != nil {
+			t.Fatalf("ApplyRun() error = %v\n%s", err, out.String())
+		}
+		if !strings.Contains(out.String(), "creations: creates the hosting organization rgb\n") {
+			t.Errorf("the apply does not say that it creates rgb:\n%s", out.String())
+		}
+		if want := " finding(s).\n" + created; !strings.HasSuffix(out.String(), want) {
+			t.Errorf("the finished apply's output does not end with its verdict and %q:\n%s", created, out.String())
+		}
+		if _, err := w.fake.Read(context.Background(), w.p.StateBucket, root.MarkerObject); err != nil {
+			t.Errorf("the finished apply left no marker: %v", err)
+		}
+	})
+
+	t.Run("an apply that stops after the creation", func(t *testing.T) {
+		t.Parallel()
+
+		w, rc, dir := creating(t)
+		// The billing export is read after the creations, and the creation never reads it.
+		stop := errors.New("refused in this test")
+		w.fake.Refuse["Dataset"] = stop
+		var out bytes.Buffer
+		if err := apply(w, rc, dir, &out); !errors.Is(err, stop) {
+			t.Fatalf("ApplyRun() of an apply that stops = %v, want the stop's error\n%s", err, out.String())
+		}
+		if !strings.Contains(out.String(), stoppedLine) || !strings.HasSuffix(out.String(), "\n"+created) {
+			t.Errorf("the stopped apply's output does not end with what it had gathered and %q:\n%s", created, out.String())
+		}
+		if marker, err := w.fake.Read(context.Background(), w.p.StateBucket, root.MarkerObject); err == nil {
+			t.Errorf("the stopped apply left a marker: %s", marker)
+		}
+
+		// The next push: the creation's own marker stands, so the apply finds rgb created
+		// and names the pull request the stopped apply opened.
+		delete(w.fake.Refuse, "Dataset")
+		out.Reset()
+		if err := apply(w, rc, dir, &out); err != nil {
+			t.Fatalf("ApplyRun() after the stop error = %v\n%s", err, out.String())
+		}
+		if want := " finding(s).\n" + found; !strings.HasSuffix(out.String(), want) || strings.Contains(out.String(), "Created rgb") {
+			t.Errorf("the apply after the stop does not end with its verdict and %q:\n%s", found, out.String())
+		}
+	})
 }
 
 // TestRunErrors: Run answers no report beside an error, whichever it is. The error of a
