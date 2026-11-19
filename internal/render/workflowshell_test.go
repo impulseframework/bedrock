@@ -133,6 +133,10 @@ func (s *workflowStep) run(t *testing.T, r *stepRun) *stepResult {
 	if r.bin != "" {
 		path = r.bin + string(os.PathListSeparator) + path
 	}
+	// The program is the bash found on the PATH, and the script is a step of the rendered
+	// workflow, written into the test's own temporary directory; no input but the test's
+	// reaches it.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(t.Context(), bash, "-e", script)
 	cmd.Dir = dir
 	cmd.Env = []string{"PATH=" + path, "HOME=" + dir, "GITHUB_OUTPUT=" + output, "GITHUB_STEP_SUMMARY=" + summary}
