@@ -157,14 +157,32 @@ linters:
             - google.golang.org/api/cloudbuild/v2
             - google.golang.org/genproto/googleapis/type/expr
             - google.golang.org/protobuf/types/known/fieldmaskpb
-            # The tests of a set of Google clients that cannot all be opened hand the
-            # clients a gRPC connection that is never dialed, made with TLS credentials as
-            # a connection to Google is, and read from its state whether the failed
-            # opening closed them. An entry that ends in $ admits that package alone, not
-            # the packages below it.
+            # For test files alone. The rule test-only below refuses these three to every
+            # other file; the reason the tests need them is there.
             - google.golang.org/grpc$
             - google.golang.org/grpc/connectivity
             - google.golang.org/grpc/credentials$
+        # The packages a test file may import and the module's own code may not. A file
+        # is held to every rule whose files patterns match it, and one rule cannot add
+        # to another's list, so main admits these packages to every file and this rule
+        # refuses them to every file that is not a test. A package for tests alone is
+        # entered in both.
+        #
+        # The tests of a set of Google clients that cannot all be opened hand the
+        # clients a gRPC connection that is never dialed, made with TLS credentials as
+        # a connection to Google is, and read from its state whether the failed
+        # opening closed them. The module's own code needs none of the three. An entry
+        # that ends in $ names that package alone, not the packages below it.
+        test-only:
+          files:
+            - '!$test'
+          deny:
+            - pkg: google.golang.org/grpc$
+              desc: only a test file may import it
+            - pkg: google.golang.org/grpc/connectivity
+              desc: only a test file may import it
+            - pkg: google.golang.org/grpc/credentials$
+              desc: only a test file may import it
     exhaustive:
       default-signifies-exhaustive: true
     funlen:
