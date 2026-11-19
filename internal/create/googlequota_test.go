@@ -2,6 +2,7 @@ package create
 
 import (
 	"context"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -76,6 +77,33 @@ func TestBilledToOptionsKeepTheQuotaProjectOffStorage(t *testing.T) {
 				t.Errorf("billedToOptions(%q) hands a client other options than NewGoogleBilledTo is to open it with (-want +got):\n%s", tt.quotaProject, diff)
 			}
 		})
+	}
+}
+
+// TestNewGoogleHandsEveryClientTheOptionsItIsGiven: NewGoogle opens every client, the
+// storage client too, with the options it is given. NewGoogleAs gives it the creating
+// identity's token source, and a client opened without it would act as the process's own
+// identity, which shows at that client's first call alone. Here the option given is the
+// one that asks for no credentials, and the process's default credentials are named by a
+// file that is not there: a client handed the option opens, and a client handed nothing
+// looks for the credentials and cannot be opened.
+func TestNewGoogleHandsEveryClientTheOptionsItIsGiven(t *testing.T) {
+	// The variable is the process's, so the test runs alone: t.Setenv forbids t.Parallel.
+	missing := filepath.Join(t.TempDir(), "no-credentials.json")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", missing)
+
+	ctx := context.Background()
+	// The reading rests on this: with nothing handed to it, a client looks for the
+	// credentials and is refused for want of the file.
+	if _, err := NewGoogle(ctx); err == nil || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("NewGoogle() with no option = %v, want the refusal for want of %s: without it this test cannot tell a client that was handed nothing", err, missing)
+	}
+	g, err := NewGoogle(ctx, option.WithoutAuthentication())
+	if err != nil {
+		t.Fatalf("NewGoogle() with the option that asks for no credentials = %v: a client was opened without the option and looked for credentials", err)
+	}
+	if err := g.Close(); err != nil {
+		t.Errorf("Close() = %v", err)
 	}
 }
 
