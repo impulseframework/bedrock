@@ -71,10 +71,12 @@ RUN go mod download
 # bun installs the workspace from web/bun.lock; Angular's CLI itself runs under Node, so the
 # installer and the builders are a node image with bun's pinned binary copied in from bun's
 # own image. Nothing else of that image is used. --frozen-lockfile installs exactly what
-# bun.lock records or fails: the lockfile is the build's input, never its output.
-FROM docker.io/oven/bun@sha256:296a79bbc988bb0a91ef11099af70a78a8cba98b73fd53f7b2a7715b7c86ced2 AS bun-binary
+# bun.lock records or fails: the lockfile is the build's input, never its output. The two
+# images are docker.io/oven/bun:1 and docker.io/library/node:24, at the digests bedrock
+# carried when it seeded this file.
+FROM docker.io/oven/bun@sha256:3f23864d3e8c923975c61971cabe67ee3d5a728f1e25a559256b95af719a3478 AS bun-binary
 
-FROM docker.io/library/node@sha256:392e1e23f34da768d8d1f4e502b64f200d3be3465934d4b7930f57d7e2fc1989 AS web-packages
+FROM docker.io/library/node@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496 AS web-packages
 COPY --from=bun-binary /usr/local/bin/bun /usr/local/bin/bun
 WORKDIR /src/web
 COPY web/package.json web/bun.lock ./
@@ -132,7 +134,7 @@ RUN mkdir -p /programs && for program in $PROGRAMS; do \
 
 # ---- Browser: the Angular bundles, built fresh in every environment ----------------------
 
-FROM docker.io/library/node@sha256:392e1e23f34da768d8d1f4e502b64f200d3be3465934d4b7930f57d7e2fc1989 AS web-build-env
+FROM docker.io/library/node@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496 AS web-build-env
 
 COPY --from=bun-binary /usr/local/bin/bun /usr/local/bin/bun
 
@@ -154,7 +156,11 @@ COPY web/ ./
 RUN bun run build
 
 # ---- Runtime: a static image with the two binaries, the bundles, the shipped programs and the schema -----------
-FROM cgr.dev/chainguard/static@sha256:1fe35025bd06652914560fd01af12a705c645c5566a8d40766b2a4769f33a824
+# cgr.dev/chainguard/static:latest, at the digest bedrock carried when it seeded this file.
+# Of the base images this is the one that is in the image: a scan of the image reads its
+# packages, and a finding in one of them is fixed by the tag's digest of the day, written
+# here, found the way the header says.
+FROM cgr.dev/chainguard/static@sha256:939754fefdbdb198356dc3187310417777d4dd8561be000885e224d49a4ce727
 
 ARG VERSION
 ARG COMMIT

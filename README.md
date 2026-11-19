@@ -3550,3 +3550,25 @@ command surface. `welcome` is the welcome image's program, a second command of t
 module that imports the standard library alone (The welcome image, above). Every rendered file carries a comment naming what it comes from; a
 change to a template is a change to the goldens, and the render test reads every golden
 file, comments included.
+
+The seeded Dockerfile names its base images by digest
+(`internal/render/templates/root/Dockerfile.tmpl`), and nothing moves a digest but a
+change to that file: `cgr.dev/chainguard/go:latest` (also the image a commit pin is built
+in, `goImage`, one digest for both), `docker.io/oven/bun:1`, `docker.io/library/node:24`
+and `cgr.dev/chainguard/static:latest`. The last is what the application's image is built
+on, so its packages are in the image, and an application's CI fails its image check at a
+finding of severity high or above: a base gone stale here fails every new application's
+first pull request, on the seed alone. The `seed image` workflow
+(`.github/workflows/seed-image.yml`) scans that base with Grype at the same cutoff on
+every pull request, on a push to master, every day and on demand. The fix for a finding is
+the digest the tag has that day, written in the template, then
+`go test ./internal/render -update` for the goldens and the same digest in the fixture
+applications' Dockerfiles (`internal/derive/testdata`), which a test holds to the
+template's. The Go, bun and static pins are the digest of the tag's linux/amd64 image, and
+the node pin is the tag's own, an index: `skopeo inspect --raw
+docker://cgr.dev/chainguard/static:latest` lists the tag's images with no credentials, and
+the same command piped to `sha256sum` gives the tag's own digest. The workflow does not see
+the Go stage's toolchain, which reaches the image as the standard library inside the
+binaries: a Go release that fixes a finding of severity high is taken up by a new digest of
+the Go image, in the template and in `goImage`. An application seeded earlier keeps its
+Dockerfile, which is its own, and moves a digest there by hand.
