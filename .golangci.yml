@@ -157,6 +157,14 @@ linters:
             - google.golang.org/api/cloudbuild/v2
             - google.golang.org/genproto/googleapis/type/expr
             - google.golang.org/protobuf/types/known/fieldmaskpb
+            # The tests of a set of Google clients that cannot all be opened hand the
+            # clients a gRPC connection that is never dialed, made with TLS credentials as
+            # a connection to Google is, and read from its state whether the failed
+            # opening closed them. An entry that ends in $ admits that package alone, not
+            # the packages below it.
+            - google.golang.org/grpc$
+            - google.golang.org/grpc/connectivity
+            - google.golang.org/grpc/credentials$
     exhaustive:
       default-signifies-exhaustive: true
     funlen:

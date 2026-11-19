@@ -655,33 +655,46 @@ type iamClients struct {
 }
 
 // NewIAM opens IAM's role administration, Cloud Resource Manager, Cloud Billing, Cloud
-// Storage and Service Usage.
+// Storage and Service Usage. When one of them cannot be opened, the ones opened before it
+// are closed: the caller is answered no client beside the error, and could close none.
 func NewIAM(ctx context.Context) (IAM, error) {
 	c := &iamClients{}
-	var err error
-	if c.admin, err = admin.NewIamClient(ctx); err != nil {
-		return nil, errors.Wrap(err, "admin.NewIamClient()")
-	}
-	if c.projects, err = resourcemanager.NewProjectsClient(ctx); err != nil {
-		return nil, errors.Wrap(err, "resourcemanager.NewProjectsClient()")
-	}
-	if c.folders, err = resourcemanager.NewFoldersClient(ctx); err != nil {
-		return nil, errors.Wrap(err, "resourcemanager.NewFoldersClient()")
-	}
-	if c.organizations, err = resourcemanager.NewOrganizationsClient(ctx); err != nil {
-		return nil, errors.Wrap(err, "resourcemanager.NewOrganizationsClient()")
-	}
-	if c.billing, err = cloudbilling.NewService(ctx); err != nil {
-		return nil, errors.Wrap(err, "cloudbilling.NewService()")
-	}
-	if c.storage, err = storage.NewClient(ctx); err != nil {
-		return nil, errors.Wrap(err, "storage.NewClient()")
-	}
-	if c.services, err = serviceusage.NewService(ctx); err != nil {
-		return nil, errors.Wrap(err, "serviceusage.NewService()")
+	if err := c.open(ctx); err != nil {
+		_ = c.Close()
+
+		return nil, err
 	}
 
 	return c, nil
+}
+
+// open opens the clients in turn and stops at the first that cannot be opened, which
+// leaves the ones before it open and the ones after it nil.
+func (c *iamClients) open(ctx context.Context) error {
+	var err error
+	if c.admin, err = admin.NewIamClient(ctx); err != nil {
+		return errors.Wrap(err, "admin.NewIamClient()")
+	}
+	if c.projects, err = resourcemanager.NewProjectsClient(ctx); err != nil {
+		return errors.Wrap(err, "resourcemanager.NewProjectsClient()")
+	}
+	if c.folders, err = resourcemanager.NewFoldersClient(ctx); err != nil {
+		return errors.Wrap(err, "resourcemanager.NewFoldersClient()")
+	}
+	if c.organizations, err = resourcemanager.NewOrganizationsClient(ctx); err != nil {
+		return errors.Wrap(err, "resourcemanager.NewOrganizationsClient()")
+	}
+	if c.billing, err = cloudbilling.NewService(ctx); err != nil {
+		return errors.Wrap(err, "cloudbilling.NewService()")
+	}
+	if c.storage, err = storage.NewClient(ctx); err != nil {
+		return errors.Wrap(err, "storage.NewClient()")
+	}
+	if c.services, err = serviceusage.NewService(ctx); err != nil {
+		return errors.Wrap(err, "serviceusage.NewService()")
+	}
+
+	return nil
 }
 
 func (c *iamClients) Role(ctx context.Context, project, id string) (*Role, error) {
@@ -1088,11 +1101,24 @@ func (c *iamClients) DeleteFolder(ctx context.Context, folder string) error {
 	return nil
 }
 
+// Close closes the clients that hold a connection, the last opened first. A client that
+// was never opened, in a set whose opening failed before it, is nil and is passed over.
 func (c *iamClients) Close() error {
-	_ = c.storage.Close()
-	_ = c.organizations.Close()
-	_ = c.folders.Close()
-	_ = c.projects.Close()
+	if c.storage != nil {
+		_ = c.storage.Close()
+	}
+	if c.organizations != nil {
+		_ = c.organizations.Close()
+	}
+	if c.folders != nil {
+		_ = c.folders.Close()
+	}
+	if c.projects != nil {
+		_ = c.projects.Close()
+	}
+	if c.admin == nil {
+		return nil
+	}
 	if err := c.admin.Close(); err != nil {
 		return errors.Wrap(err, "admin.IamClient.Close()")
 	}
