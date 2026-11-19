@@ -589,9 +589,19 @@ func (p *Placement) Validate() error {
 	if !githubLoginRE.MatchString(p.GithubOrganization) {
 		return errors.Newf("githubOrganization %q is not a GitHub organization's login", p.GithubOrganization)
 	}
-	for _, r := range p.Regions {
+	// The branch is written as it is into the root organization's workflow, the triggers
+	// and every application's placement (register), whose operations workflow writes it too.
+	if err := derive.ValidateBranch("githubDefaultBranch", p.GithubDefaultBranch); err != nil {
+		return err
+	}
+	for i, r := range p.Regions {
 		if r.Name == "" || !regionCodeRE.MatchString(r.Code) {
 			return errors.Newf("region %q needs a name and a three-character code", r.Name)
+		}
+		// An application's placement takes the organization's regions (register), and
+		// its operations workflow writes the primary's name as it is.
+		if err := derive.ValidateRegionName(fmt.Sprintf("regions[%d].name", i), r.Name); err != nil {
+			return err
 		}
 	}
 	for _, validate := range validators {

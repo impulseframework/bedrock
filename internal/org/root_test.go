@@ -56,6 +56,7 @@ func TestRootPlacementValidate(t *testing.T) {
 		{name: "no Bot Account", mutate: func(p *Placement) { p.GithubBotAccount = "" }, wantErr: "githubBotAccount is empty"},
 		{name: "no organization domain", mutate: func(p *Placement) { p.OrganizationDomain = "" }, wantErr: "organizationDomain is empty"},
 		{name: "no default branch", mutate: func(p *Placement) { p.GithubDefaultBranch = "" }, wantErr: "githubDefaultBranch is empty"},
+		{name: "a default branch that is not a name", mutate: func(p *Placement) { p.GithubDefaultBranch = "main: x" }, wantErr: `githubDefaultBranch "main: x" is not a branch name bedrock can write into a workflow and a trigger`},
 		{name: "an apps domain", mutate: func(p *Placement) { p.AppsDomain = "apps.imp.example" }, wantErr: "appsDomain is set, and a root organization has no use for it: it holds no application and no environment"},
 		{name: "a Spanner configuration", mutate: func(p *Placement) { p.Spanner.Config = "nam6" }, wantErr: "spanner.config is set, and a root organization has no use for it"},
 		{name: "the release app, its slug and its key's version", mutate: func(p *Placement) {
@@ -232,5 +233,34 @@ func TestRootRender(t *testing.T) {
 				t.Errorf("the hosting organization's %s carries %q, which is the root kind's", f.Path, absent)
 			}
 		}
+	}
+}
+
+// TestValidateDraftNames: the placement the bootstrap drafts is held to a default branch
+// and a region's name that are names, as a finished placement is, before anything is
+// made: the bootstrap writes the branch into the root organization's workflow, and the
+// region is where it makes the project's first resources.
+func TestValidateDraftNames(t *testing.T) {
+	t.Parallel()
+
+	draft := func(branch, region string) *Placement {
+		return &Placement{
+			Kind: RootKind, Prefix: "imr", OrganizationDomain: "imp.example", OrganizationID: "123456789012", BillingAccount: "000000-AAAAAA-BBBBBB",
+			GithubOrganization: "imp-example", SourceRepo: "imr-root-infrastructure", GithubDefaultBranch: branch, BreakGlassAccount: "break-glass@imp.example",
+			Regions: []Region{{Name: region, Code: "uc1"}},
+		}
+	}
+	const (
+		branchRefusal = "is not a branch name bedrock can write into a workflow and a trigger"
+		regionRefusal = "is not a region's name"
+	)
+	if err := draft(`main" # x`, "us-central1").ValidateDraft(); err == nil || !strings.Contains(err.Error(), `githubDefaultBranch "main\" # x" `+branchRefusal) {
+		t.Errorf("ValidateDraft() with a branch that is not a name = %v, want %q", err, branchRefusal)
+	}
+	if err := draft("main", "us-central1: x").ValidateDraft(); err == nil || !strings.Contains(err.Error(), `regions[0].name "us-central1: x" `+regionRefusal) {
+		t.Errorf("ValidateDraft() with a region's name that is not a name = %v, want %q", err, regionRefusal)
+	}
+	if err := draft("main", "us-central1").ValidateDraft(); err != nil && (strings.Contains(err.Error(), branchRefusal) || strings.Contains(err.Error(), regionRefusal)) {
+		t.Errorf("ValidateDraft() with the branch main in us-central1 = %v, want no word about either", err)
 	}
 }

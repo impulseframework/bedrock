@@ -175,6 +175,8 @@ func TestPlacementValidate(t *testing.T) {
 		{name: "no release app", mutate: func(p *Placement) { p.GithubReleaseAppID = "" }, wantErr: "githubReleaseAppId is empty"},
 		{name: "a release app named by slug", mutate: func(p *Placement) { p.GithubReleaseAppID = "imp-release" }, wantErr: "githubReleaseAppId \"imp-release\" is not an App ID"},
 		{name: "no default branch", mutate: func(p *Placement) { p.GithubDefaultBranch = " " }, wantErr: "githubDefaultBranch is empty"},
+		{name: "a default branch that is not a name", mutate: func(p *Placement) { p.GithubDefaultBranch = `main" # x` }, wantErr: `githubDefaultBranch "main\" # x" is not a branch name bedrock can write into a workflow and a trigger`},
+		{name: "a region's name that is not a name", mutate: func(p *Placement) { p.Regions[0].Name = "us-central1: x" }, wantErr: `regions[0].name "us-central1: x" is not a region's name`},
 		{name: "no release app slug", mutate: func(p *Placement) { p.GithubReleaseAppSlug = "" }, wantErr: `githubReleaseAppSlug "" is not a GitHub App's slug (lowercase letters, digits and single hyphens, as in github.com/apps/<slug>)`},
 		{name: "a release app slug in capitals", mutate: func(p *Placement) { p.GithubReleaseAppSlug = "Imp-Release" }, wantErr: `githubReleaseAppSlug "Imp-Release" is not a GitHub App's slug`},
 		{name: "a release app slug with its bot suffix", mutate: func(p *Placement) { p.GithubReleaseAppSlug = "imp-release[bot]" }, wantErr: `githubReleaseAppSlug "imp-release[bot]" is not a GitHub App's slug`},

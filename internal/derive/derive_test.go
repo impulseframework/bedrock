@@ -953,6 +953,13 @@ func TestPlacementValidate(t *testing.T) {
 		{name: "a long region code", mutate: func(p *Placement) { p.Regions[0].Code = "central" }, wantErr: "code"},
 		{name: "no apps domain", mutate: func(p *Placement) { p.AppsDomain = " " }, wantErr: "appsDomain is empty"},
 		{name: "no default branch", mutate: func(p *Placement) { p.DefaultBranch = "" }, wantErr: "defaultBranch is empty"},
+		{name: "a default branch with a slash and a dot", mutate: func(p *Placement) { p.DefaultBranch = "release/1.x" }},
+		{name: "a default branch that ends a quoted word", mutate: func(p *Placement) { p.DefaultBranch = `main" # x` }, wantErr: `defaultBranch "main\" # x" is not a branch name bedrock can write into a workflow and a trigger: letters, digits, dots, dashes, underscores and slashes`},
+		{name: "a default branch with a colon and a space", mutate: func(p *Placement) { p.DefaultBranch = "main: x" }, wantErr: `defaultBranch "main: x" is not a branch name bedrock can write`},
+		{name: "a default branch with a line break", mutate: func(p *Placement) { p.DefaultBranch = "main\nrun: x" }, wantErr: `defaultBranch "main\nrun: x" is not a branch name bedrock can write`},
+		{name: "a region's name that is not a name", mutate: func(p *Placement) { p.Regions[0].Name = "us-central1: x" }, wantErr: `regions[0].name "us-central1: x" is not a region's name: lowercase letters, digits and dashes`},
+		{name: "a region's name that ends in a dash", mutate: func(p *Placement) { p.Regions[0].Name = "us-central1-" }, wantErr: `regions[0].name "us-central1-" is not a region's name: lowercase letters, digits and dashes, starting with a letter and ending in a letter or a digit`},
+		{name: "a region's name in capitals", mutate: func(p *Placement) { p.Regions[0].Name = "US-CENTRAL1" }, wantErr: `regions[0].name "US-CENTRAL1" is not a region's name`},
 		{name: "approvals in an unknown environment", mutate: func(p *Placement) { p.Approvals = []string{"stg"} }, wantErr: `approvals names "stg", which is not one of the environments (tst, prd)`},
 		{name: "approvals in a known environment", mutate: func(p *Placement) { p.Approvals = []string{"prd"} }},
 		{name: "no approvals at all", mutate: func(p *Placement) { p.Approvals = []string{} }},
@@ -989,6 +996,7 @@ func TestPlacementValidate(t *testing.T) {
 		}},
 		{name: "projects in an unknown environment", mutate: func(p *Placement) { p.Projects = map[string]Project{"qa": {ID: "p", Number: "1"}} }, wantErr: `projects names "qa", which is not one of the environments (tst, prd)`},
 		{name: "a project without an id", mutate: func(p *Placement) { p.Projects = map[string]Project{"tst": {Number: "1"}} }, wantErr: "projects.tst.id is empty"},
+		{name: "a project's id that is not a name", mutate: func(p *Placement) { p.Projects = map[string]Project{"tst": {ID: `imp-tst" # x`, Number: "1"}} }, wantErr: `projects.tst.id "imp-tst\" # x" is not a project's id: lowercase letters, digits and dashes`},
 		{name: "a project number that is not a number", mutate: func(p *Placement) { p.Projects = map[string]Project{"tst": {ID: "p", Number: "p-123"}} }, wantErr: `projects.tst.number "p-123" is not a project number (digits)`},
 		{name: "a build argument of each value of the catalog", mutate: func(p *Placement) {
 			p.BuildArguments = map[string]string{"FIREBASE_API_KEY": "firebaseApiKey", "FIRESTORE_DATABASE": "firestoreDatabase", "PROJECT_ID": "projectId", "ENV_NAME": "environment", "HOST2": "hostname"}

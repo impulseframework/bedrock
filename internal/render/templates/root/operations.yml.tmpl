@@ -312,7 +312,7 @@ on:
         default: ""
   push:
     branches:
-      - {{.P.DefaultBranch}}
+      - "{{.P.DefaultBranch}}"
     paths:
       - .github/workflows/operations.yml
 
@@ -673,7 +673,7 @@ jobs:
     env:
       ENVIRONMENT: {{.ReleaseOperation.Env}}
       CHOSEN: ${{"{{"}} inputs.environment {{"}}"}}
-      BRANCH: {{.P.DefaultBranch}}
+      BRANCH: "{{.P.DefaultBranch}}"
       REQUESTER: ${{"{{"}} github.actor {{"}}"}}
       REGION: {{.PrimaryRegion}}
 {{- if .ReleaseOperation.Wired}}
@@ -737,7 +737,7 @@ jobs:
       ENVIRONMENT: ${{"{{"}} inputs.environment {{"}}"}}
       REQUESTER: ${{"{{"}} github.actor {{"}}"}}
       REGION: {{.PrimaryRegion}}
-      BRANCH: {{.P.DefaultBranch}}
+      BRANCH: "{{.P.DefaultBranch}}"
 {{- range .Operations}}
 {{- if .Wired}}
       PROJECT_{{.Env}}: {{.Project}}
@@ -805,7 +805,7 @@ jobs:
       CONFIRM: ${{"{{"}} inputs.confirm {{"}}"}}
       REQUESTER: ${{"{{"}} github.actor {{"}}"}}
       REGION: {{.PrimaryRegion}}
-      BRANCH: {{.P.DefaultBranch}}
+      BRANCH: "{{.P.DefaultBranch}}"
       APP: {{.App}}
 {{- range .Operations}}
 {{- if .Wired}}

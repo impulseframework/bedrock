@@ -203,7 +203,10 @@ and what its absence means:
   restores them from production's backups. From the organization's promotion order. Absent,
   the last of `environments`.
 - `regions`: the Cloud Run regions, each a `name` and the `code` regional resources are
-  named by; the first is the primary. From the organization's `regions`. Required.
+  named by; the first is the primary. From the organization's `regions`. Required. A
+  `name` is a region's name (lowercase letters, digits and dashes, a letter first, a
+  letter or a digit last): the operations workflow writes the primary's as it is, and an
+  organization's `regions` are held to the same.
 - `appsDomain`: the domain the application's hostnames are under: `<label>-<env>.<domain>`,
   and `<label>.<domain>` in production, the label being the site's (`hostnames`, below; the
   code by default). From the organization's `appsDomain`. Required.
@@ -252,7 +255,10 @@ and what its absence means:
   below); a placement written before that image names Cloud Run's public sample,
   `us-docker.pkg.dev/cloudrun/container/hello`, and keeps it. Required.
 - `defaultBranch`: the branch pull requests target and releases are cut on. From the
-  organization's `githubDefaultBranch`. Required.
+  organization's `githubDefaultBranch`. Required, and a name the workflows hold between
+  quotes and in a command line as it is: letters, digits, dots, dashes, underscores and
+  slashes, a letter or a digit first. A placement whose branch is anything else is refused
+  when it is read, as an organization's `githubDefaultBranch` is.
 - `repository`: the application repository's name, the `source_repo` label every
   resource carries: the last segment of the application's module path (a module under
   `github.com/<organization>` is its repository), the name `1-org` creates the repository
@@ -282,7 +288,9 @@ and what its absence means:
   `bedrock rollback`, `bedrock backups`, `bedrock maintenance`),
   names the environment's identity provider and operations identity. From the organization's
   `projects` and `projectNumbers`, 1-org's outputs. An environment without an entry
-  cannot be operated from GitHub.
+  cannot be operated from GitHub. An `id` is a project's id (lowercase letters, digits and
+  dashes, a letter first, a letter or a digit last) and a `number` is digits: the workflow
+  writes both as they are.
 - `approvals`: the environments whose release waits for a person's approval in Cloud
   Build. Not written. Absent, every environment but the first.
 - `maintenance`: each environment's maintenance window, the time it may take a release
@@ -455,7 +463,14 @@ Words that come from the code or from the placement (a field's doc comment, whic
 secret's purpose; a label; a reason) are written into the `.tf` and `.tfvars` files as the
 place they land in takes them. In a string they are an OpenTofu string literal's text
 whatever they hold: a double quote, a backslash, a line break, `${` and `%{` each arrive
-as text. In a comment they stay in the comment, a line break written as a space. Every
+as text. In a comment they stay in the comment: in a line comment a line break is written
+as a space, and in a block comment nothing they hold closes it. In a heredoc they are its
+text, and one that would leave a line that is the heredoc's end word is refused. A word
+the stack writes as a name is held to being one before any file is rendered: a variable's
+name, and the names an auth and its sign-in registrations give their variables (a letter
+or an underscore first, then letters, digits, underscores and dashes). An outlet's prefix
+or a route in a Cloud Armor expression holds no single quote, backslash or control
+character. Every
 such file is then parsed as OpenTofu parses it, before anything is written: a file that
 does not parse is refused with its name, the line and the parser's own sentence, by
 `render` and by `check` alike, since `check` renders the same files, and by `org render`

@@ -229,7 +229,7 @@ on:
         default: ""
   push:
     branches:
-      - master
+      - "master"
     paths:
       - .github/workflows/operations.yml
 
@@ -688,7 +688,7 @@ jobs:
     env:
       ENVIRONMENT: tst
       CHOSEN: ${{ inputs.environment }}
-      BRANCH: master
+      BRANCH: "master"
       REQUESTER: ${{ github.actor }}
       REGION: us-central1
       PROJECT: imp-tst-gbl-core-b241
@@ -750,7 +750,7 @@ jobs:
       ENVIRONMENT: ${{ inputs.environment }}
       REQUESTER: ${{ github.actor }}
       REGION: us-central1
-      BRANCH: master
+      BRANCH: "master"
       PROJECT_tst: imp-tst-gbl-core-b241
       PROVIDER_tst: projects/123456789012/locations/global/workloadIdentityPools/imp-tst-github/providers/github
       IDENTITY_tst: imp-tst-gbl-harbor-ops@imp-tst-gbl-core-b241.iam.gserviceaccount.com
@@ -827,7 +827,7 @@ jobs:
       CONFIRM: ${{ inputs.confirm }}
       REQUESTER: ${{ github.actor }}
       REGION: us-central1
-      BRANCH: master
+      BRANCH: "master"
       APP: harbor
       PROJECT_tst: imp-tst-gbl-core-b241
       PROVIDER_tst: projects/123456789012/locations/global/workloadIdentityPools/imp-tst-github/providers/github

@@ -8,7 +8,8 @@
 // rendered text through HCL's own scanner to see where each value landed, and writes it
 // as that place takes it: inside a quoted string as the string's text (a double quote, a
 // backslash, a line break, ${ and %{ each written so that HCL reads them as text); inside
-// a heredoc with ${ and %{ written as text, and never with a line that ends the heredoc;
+// a heredoc with ${ and %{ written as text, and never so that a line it stands on, alone
+// or with the text beside it, is the heredoc's end;
 // inside a comment so that it stays in the comment (a line comment's value on its line);
 // and anywhere else as it is, since there the value is HCL the render wrote (a number, a
 // reference, a list). A string the render builds in Go is written with Quote. The file is
@@ -203,12 +204,23 @@ func placeValues(name string, marked []byte, m marks) ([]byte, error) {
 	landings := valueLandings(name, src, len(values))
 	texts := make([]string, len(values))
 	for i, value := range values {
-		text, err := placedText(value, landings[i])
-		if err != nil {
-			return nil, errors.Wrapf(err, "%s", name)
-		}
-		texts[i] = text
+		texts[i] = placedText(value, landings[i])
 	}
+
+	return assembled(name, src, texts, landings)
+}
+
+// span is where a value stands in the assembled text.
+type span struct {
+	start, end int
+}
+
+// assembled is the scanned text with each value's word replaced by the value's text, kept
+// apart from what stands against it. A value in a heredoc is then read on the lines it
+// stands on as they came out, the text and the values beside it included: a line that is
+// the heredoc's end would close it there, whichever of them wrote which part of it.
+func assembled(name string, src []byte, texts []string, landings []landing) ([]byte, error) {
+	spans := make([]span, len(texts))
 	var out bytes.Buffer
 	for rest := src; ; {
 		at := bytes.Index(rest, []byte(valueWord))
@@ -219,7 +231,7 @@ func placeValues(name string, marked []byte, m marks) ([]byte, error) {
 		}
 		end := at + len(valueWord) + valueDigit
 		index, err := strconv.Atoi(string(rest[at+len(valueWord) : end]))
-		if err != nil || index >= len(values) {
+		if err != nil || index >= len(texts) {
 			return nil, errors.Newf("%s: a value's word is not whole", name)
 		}
 		out.Write(rest[:at])
@@ -228,10 +240,38 @@ func placeValues(name string, marked []byte, m marks) ([]byte, error) {
 		if err != nil {
 			return nil, errors.Wrapf(err, "%s", name)
 		}
+		spans[index] = span{start: out.Len(), end: out.Len() + len(text)}
 		out.WriteString(text)
 	}
+	placed := out.Bytes()
+	for i, at := range landings {
+		if at.in != placeHeredoc || at.end == "" || spans[i].start == spans[i].end {
+			continue
+		}
+		if line, closes := heredocEnd(placed, spans[i], at.end); closes {
+			return nil, errors.Newf("%s: a value written into a heredoc leaves a line that is the heredoc's own end (%s), which would close it there: the value as it is written %.*q, the line %.*q", name, at.end, lineShown, texts[i], lineShown, line)
+		}
+	}
 
-	return out.Bytes(), nil
+	return placed, nil
+}
+
+// heredocEnd finds, among the lines of the assembled text the value stands on, one that is
+// the heredoc's end word, as HCL's scanner judges a line: the word alone, whatever space
+// is around it.
+func heredocEnd(placed []byte, at span, end string) (string, bool) {
+	from := bytes.LastIndexByte(placed[:at.start], '\n') + 1
+	to := len(placed)
+	if next := bytes.IndexByte(placed[at.end:], '\n'); next >= 0 {
+		to = at.end + next
+	}
+	for _, line := range bytes.Split(placed[from:to], []byte("\n")) {
+		if string(bytes.TrimSpace(line)) == end {
+			return string(line), true
+		}
+	}
+
+	return "", false
 }
 
 // word is the word the value of the number stands as while the text is scanned.
@@ -305,26 +345,21 @@ func valueLandings(name string, src []byte, count int) []landing {
 
 // placedText writes the value as its place takes it, before it is kept apart from what
 // stands against it (apart).
-func placedText(value string, at landing) (string, error) {
+func placedText(value string, at landing) string {
 	switch at.in {
 	case placeQuoted:
-		return quotedText(value), nil
+		return quotedText(value)
 	case placeHeredoc:
 		// A heredoc is text as it comes, line breaks and all, which is how the render's
-		// own scripts stand in one; a line that is the heredoc's end would close it.
-		for _, line := range strings.FieldsFunc(value, func(r rune) bool { return r == '\n' || r == '\r' }) {
-			if at.end != "" && strings.TrimSpace(line) == at.end {
-				return "", errors.Newf("a value written into a heredoc holds a line that is the heredoc's own end (%s), which would close it: %.*q", at.end, lineShown, value)
-			}
-		}
-
-		return strings.NewReplacer("${", "$${", "%{", "%%{").Replace(value), nil
+		// own scripts stand in one; whether a line of it is the heredoc's end is judged
+		// once the text is assembled (assembled), on the lines as they came out.
+		return strings.NewReplacer("${", "$${", "%{", "%%{").Replace(value)
 	case placeLineComment:
-		return strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(value), nil
+		return OneLine(value)
 	case placeBlockComment:
-		return strings.ReplaceAll(value, "*/", "* /"), nil
+		return strings.ReplaceAll(value, "*/", "* /")
 	default:
-		return value, nil
+		return value
 	}
 }
 
@@ -337,8 +372,9 @@ func placedText(value string, at landing) (string, error) {
 // reads as the character and the brace. Where the value ends in the character and a
 // sequence of the template's own follows (${ after $, %{ after %), doubling would turn
 // that sequence into text, so the characters the value ends in are written as a string
-// of their own (${"$"}), which cannot stand directly after such a character either: a
-// value of nothing but those characters, between one and a sequence, is refused.
+// of their own (${"$"}). That form opens with a $, which directly after a $ would read
+// as the escape again, so a value of nothing but those characters, between a $ and a
+// sequence, is refused; after a % it stands as written.
 //
 // In a block comment an asterisk and a slash that meet across the value's edge would
 // close the comment, and a space keeps them apart.
@@ -359,9 +395,8 @@ func apart(text string, in place, before, after []byte) (string, error) {
 	if in != placeQuoted && in != placeHeredoc {
 		return text, nil
 	}
-	opens := func(b []byte) bool { return len(b) > 0 && (b[len(b)-1] == '$' || b[len(b)-1] == '%') }
-	if text[0] == '{' && opens(before) {
-		text = string(before[len(before)-1]) + text
+	if n := len(before); text[0] == '{' && n > 0 && (before[n-1] == '$' || before[n-1] == '%') {
+		text = string(before[n-1]) + text
 	}
 	last := text[len(text)-1]
 	if last != '$' && last != '%' {
@@ -372,8 +407,8 @@ func apart(text string, in place, before, after []byte) (string, error) {
 		text += string(last)
 	case bytes.HasPrefix(after, []byte{last, '{'}):
 		kept := strings.TrimRight(text, "$%")
-		if kept == "" && opens(before) {
-			return "", errors.Newf("the value %q stands between a %c and a template sequence, and cannot be written as text there", text, before[len(before)-1])
+		if kept == "" && bytes.HasSuffix(before, []byte("$")) {
+			return "", errors.Newf("the value %q stands between a $ and a template sequence, and cannot be written as text there", text)
 		}
 		text = kept + `${"` + text[len(kept):] + `"}`
 	}

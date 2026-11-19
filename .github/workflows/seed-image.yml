@@ -20,7 +20,8 @@
 # and are not in its image, so they are not scanned. The Go stage's toolchain does reach
 # the image, as the standard library inside the binaries, which an application's scan
 # reads by its Go version: a Go release that fixes a finding of severity high is taken up
-# by a new digest of the Go image in the template, and nothing here says when.
+# by a new digest of the Go image, in the template and in goImage (README.md,
+# "Development"), and nothing here says when.
 name: seed image
 
 on:

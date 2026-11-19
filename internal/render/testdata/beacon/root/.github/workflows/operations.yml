@@ -229,7 +229,7 @@ on:
         default: ""
   push:
     branches:
-      - master
+      - "master"
     paths:
       - .github/workflows/operations.yml
 
@@ -661,7 +661,7 @@ jobs:
     env:
       ENVIRONMENT: tst
       CHOSEN: ${{ inputs.environment }}
-      BRANCH: master
+      BRANCH: "master"
       REQUESTER: ${{ github.actor }}
       REGION: us-central1
     steps:
@@ -719,7 +719,7 @@ jobs:
       ENVIRONMENT: ${{ inputs.environment }}
       REQUESTER: ${{ github.actor }}
       REGION: us-central1
-      BRANCH: master
+      BRANCH: "master"
     steps:
       # The environment's values, from the placement's projects: an environment the
       # placement records no project for is not wired, and the run stops before touching
@@ -784,7 +784,7 @@ jobs:
       CONFIRM: ${{ inputs.confirm }}
       REQUESTER: ${{ github.actor }}
       REGION: us-central1
-      BRANCH: master
+      BRANCH: "master"
       APP: beacon
     steps:
       # The environment's name typed back, in place of the prompt the hand command asks;

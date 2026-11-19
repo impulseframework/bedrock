@@ -951,9 +951,11 @@ const (
 // pull request. The workflow reads the image off the template's last FROM with awk: the
 // line names an image by digest and nothing else, and every golden's seeded Dockerfile
 // and every fixture application's own ends on it. The workflow pulls that image, scans it
-// under a local name, and its scan is the framework's image check's: the same action
-// with the same inputs, nothing added that would quiet it, on a pull request, a push to
-// master, a schedule and on demand.
+// under a local name, and its scan step is the framework's image check's: the same action
+// and the same inputs, with no key of its own. The workflow names a pull request, a push,
+// a schedule and a dispatch. What the test does not hold: the job around the step (a
+// condition, continue-on-error, an environment variable Grype reads), a Grype
+// configuration file at the repository root, and what each trigger is narrowed to.
 func TestSeedImageScan(t *testing.T) {
 	t.Parallel()
 
@@ -2546,4 +2548,47 @@ func dockerLines(dockerfile []byte, prefix, word string) []string {
 	}
 
 	return lines
+}
+
+// TestBranchIsAStringInTheWorkflow: the operations workflow writes the default branch
+// between double quotes wherever it is a value, so a branch YAML would otherwise read as a
+// number, a boolean or null stays the branch's name; the placement holds the branch to
+// characters that stand for themselves between the quotes.
+func TestBranchIsAStringInTheWorkflow(t *testing.T) {
+	t.Parallel()
+
+	for _, branch := range []string{"1.0", "true", "null", "release/2.x"} {
+		t.Run(branch, func(t *testing.T) {
+			t.Parallel()
+
+			m := deriveFixture(t, "harbor", "placement.json")
+			m.Placement.DefaultBranch = branch
+			if err := m.Placement.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			files, err := Render(m)
+			if err != nil {
+				t.Fatalf("Render() error = %v", err)
+			}
+			listed, set := 0, 0
+			for _, f := range files {
+				if !f.Root || f.Path != ".github/workflows/operations.yml" {
+					continue
+				}
+				for _, line := range strings.Split(string(f.Content), "\n") {
+					switch strings.TrimSpace(line) {
+					case "- " + branch, "BRANCH: " + branch:
+						t.Errorf("the workflow writes the branch as a plain word, which YAML reads by its own rules: %q", line)
+					case `- "` + branch + `"`:
+						listed++
+					case `BRANCH: "` + branch + `"`:
+						set++
+					}
+				}
+			}
+			if listed != 1 || set != 3 {
+				t.Errorf("the workflow names the branch between quotes in %d list item(s) and %d BRANCH value(s), want 1 and 3", listed, set)
+			}
+		})
+	}
 }

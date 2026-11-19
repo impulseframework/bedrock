@@ -989,6 +989,9 @@ func newView(m *derive.Model) (*view, error) {
 	v.vanity()
 	v.regions()
 	v.secrets()
+	if err := armorWords(m); err != nil {
+		return nil, err
+	}
 	v.Armor = newArmorView(m)
 	v.blocks()
 	v.operations()
@@ -1005,15 +1008,48 @@ func newView(m *derive.Model) (*view, error) {
 	return v, nil
 }
 
+// administratorVar is the stack's variable for an auth's first administrator.
+func administratorVar(auth string) string {
+	return strings.ReplaceAll(auth, "-", "_") + "_administrator"
+}
+
+// nameRule is what a name is where the stack writes one bare, as OpenTofu reads an
+// identifier.
+const nameRule = "a name starts with a letter or an underscore and holds letters, digits, underscores and dashes"
+
+// names holds the code's own words the stack writes as names to being names. A variable's
+// name is the struct tag's, and the stack writes it as a map's key and a part of a
+// resource's address. A sign-in method's stem is its auth's name and its registration's,
+// and the stack writes it as the name of the method's variables, locals and outputs; an
+// auth's name is also the name of its first administrator's variable. The code's
+// variables carry the same words behind APP_ (APP_<AUTH>_<REGISTRATION>_...), which makes
+// a name of a word that is not one by its first character alone: an auth in a directory
+// named 2fa has variables that are names and a stem that is not, and is refused here.
+func (v *view) names() error {
+	for i := range v.Variables {
+		if name := v.Variables[i].Name; !hclsyntax.ValidIdentifier(name) {
+			return errors.Newf("the variable name %q (%s) is not a name the stack can write: %s", name, v.Variables[i].Declaration(), nameRule)
+		}
+	}
+	for _, m := range append(v.DirectoryMethods(), v.Model.Personas()...) {
+		if stem := m.Stem(); !hclsyntax.ValidIdentifier(stem) {
+			return errors.Newf("the %s auth's %s registration names its variables %q in the stack, which is not a name the stack can write: %s", m.Auth, m.Name, stem, nameRule)
+		}
+	}
+	for i := range v.Auths {
+		if a := &v.Auths[i]; a.Administrator != nil && !hclsyntax.ValidIdentifier(administratorVar(a.Name)) {
+			return errors.Newf("the %s auth names its first administrator's variable %q in the stack, which is not a name the stack can write: %s", a.Name, administratorVar(a.Name), nameRule)
+		}
+	}
+
+	return nil
+}
+
 // roles finds the variables and levels the templates name: the well-known ones always,
 // the job process's template only with a job process.
 func (v *view) roles() error {
-	// A variable's name is the code's own word (the struct tag's), and the stack writes
-	// it as a name: a map's key, a part of a resource's address.
-	for i := range v.Variables {
-		if name := v.Variables[i].Name; !hclsyntax.ValidIdentifier(name) {
-			return errors.Newf("the variable name %q (%s) is not a name the stack can write: letters, digits and underscores, starting with a letter", name, v.Variables[i].Declaration())
-		}
+	if err := v.names(); err != nil {
+		return err
 	}
 	roles := []struct {
 		role derive.Role
@@ -1399,7 +1435,7 @@ func (v *view) administrators() {
 		if a.Administrator == nil {
 			continue
 		}
-		av := &authView{Name: a.Name, Var: strings.ReplaceAll(a.Name, "-", "_") + "_administrator", Label: "the " + a.Name + " auth", Variable: a.Administrator, Step: len(v.Methods) + len(v.Administrators) + 1}
+		av := &authView{Name: a.Name, Var: administratorVar(a.Name), Label: "the " + a.Name + " auth", Variable: a.Administrator, Step: len(v.Methods) + len(v.Administrators) + 1}
 		v.Administrators = append(v.Administrators, av)
 		env = append(env, [2]string{a.Administrator.Name, "var." + av.Var + "[var.environment]"})
 	}

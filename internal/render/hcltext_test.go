@@ -333,8 +333,11 @@ func TestPortDefaultIsANumber(t *testing.T) {
 // keeps the ones beside it apart from the template's braces; a value of dollars alone
 // stands before an interpolation; a value that ends in a percent stands before a
 // directive; an asterisk and a slash do not close a block comment across a value's edge.
-// A value that holds a NUL, the marks of another render, or a line that is its heredoc's
-// end is refused, and the render writes nothing.
+// A dollar after a percent stands before an interpolation, a heredoc's end word inside a
+// line is text, and a value that ends in a line break on a heredoc's last line leaves the
+// heredoc open to its own end. A value that holds a NUL or the marks of another render is
+// refused, and so is one that leaves a line that is its heredoc's end, alone, with the
+// value beside it or with the template's own text; the render writes nothing.
 func TestExecuteAtTheEdges(t *testing.T) {
 	t.Parallel()
 
@@ -351,6 +354,9 @@ func TestExecuteAtTheEdges(t *testing.T) {
 		{name: "a percent before a directive", src: `a = "{{.A}}%{ if true }yes%{ endif }"`, data: map[string]string{"A": "50%"}, want: "50%yes"},
 		{name: "a dollar, then a value that starts with a brace", src: `a = "{{.A}}{{.B}}"`, data: map[string]string{"A": "x$", "B": "{y}"}, want: "x${y}"},
 		{name: "a block comment's end across the edge", src: "/* {{.A}}/ and *{{.B}} */\na = \"{{.A}}\"", data: map[string]string{"A": "x*", "B": "/y"}, want: "x*"},
+		{name: "a dollar after a percent, before an interpolation", src: `a = "{{.B}}{{.A}}${local.s}"`, data: map[string]string{"A": "$", "B": "%"}, want: "%$>"},
+		{name: "the heredoc's end word inside a line", src: "a = <<EOT\nsee {{.A}} here\nEOT", data: map[string]string{"A": "EOT"}, want: "see EOT here\n"},
+		{name: "a value that ends in a line break, on the heredoc's last line", src: "a = <<EOT\n{{.A}}\nEOT", data: map[string]string{"A": "x\n"}, want: "x\n\n"},
 	}
 	for _, tt := range reads {
 		t.Run(tt.name, func(t *testing.T) {
@@ -372,19 +378,22 @@ func TestExecuteAtTheEdges(t *testing.T) {
 		name    string
 		src     string
 		value   string
+		beside  string
 		wantErr string
 	}{
 		{name: "a NUL", src: `a = "{{.A}}"`, value: "x\x00y", wantErr: "holds a NUL character"},
 		{name: "what looks like a mark", src: "# {{.A}}", value: "ok\x00)\nresource \"x\" \"y\" {}\n#\x00(", wantErr: "holds a NUL character"},
 		{name: "the render's own word", src: `a = "{{.A}}"`, value: "x7Qbedrockvalue000000", wantErr: "which the render keeps for itself"},
-		{name: "the heredoc's end", src: "a = <<EOT\n{{.A}}\nEOT", value: "x\nEOT\nb = <<EOT\ny", wantErr: "holds a line that is the heredoc's own end (EOT)"},
-		{name: "a dollar between a dollar and an interpolation", src: `a = "{{.B}}{{.A}}${local.s}"`, value: "$", wantErr: "cannot be written as text there"},
+		{name: "the heredoc's end", src: "a = <<EOT\n{{.A}}\nEOT", value: "x\nEOT\nb = <<EOT\ny", wantErr: "leaves a line that is the heredoc's own end (EOT)"},
+		{name: "the heredoc's end across two values", src: "a = <<EOT\n{{.A}}{{.B}}\nEOT", value: "x\nEO", beside: "T\nb = <<EOT\ny", wantErr: "leaves a line that is the heredoc's own end (EOT)"},
+		{name: "the heredoc's end with the template's text", src: "a = <<EOT\nEO{{.A}}\nEOT", value: "T\nb = <<EOT\ny", wantErr: "leaves a line that is the heredoc's own end (EOT)"},
+		{name: "a dollar between a dollar and an interpolation", src: `a = "{{.B}}{{.A}}${local.s}"`, value: "$", beside: "$", wantErr: "stands between a $ and a template sequence"},
 	}
 	for _, tt := range refusals {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			content, err := Execute("edges.tf", []byte(tt.src+"\n"), map[string]string{"A": tt.value, "B": "$"})
+			content, err := Execute("edges.tf", []byte(tt.src+"\n"), map[string]string{"A": tt.value, "B": tt.beside})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("Execute() = %v, want %q; it rendered:\n%s", err, tt.wantErr, content)
 			}
@@ -423,14 +432,176 @@ func TestCommentBlocksStayComments(t *testing.T) {
 }
 
 // TestVariableNameIsAName: a variable's name is the code's own word, and the stack
-// writes it as a name, so one that is not a name is refused before any file is rendered.
+// writes it as a name, so one that is not a name is refused before any file is rendered,
+// with the rule a name follows as the check applies it.
 func TestVariableNameIsAName(t *testing.T) {
 	t.Parallel()
 
 	m := deriveFixture(t, "beacon", "placement-beacon.json")
 	m.Variables[0].Name = `APP_X" = 1, "Y`
 	_, err := Render(m)
-	if want := "is not a name the stack can write"; err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("Render() with a variable name that is not a name = %v, want %q", err, want)
+	for _, want := range []string{"is not a name the stack can write", "a name starts with a letter or an underscore and holds letters, digits, underscores and dashes"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("Render() with a variable name that is not a name = %v, want %q", err, want)
+		}
+	}
+	if !hclsyntax.ValidIdentifier("_APP-X1") || hclsyntax.ValidIdentifier("1APP") || hclsyntax.ValidIdentifier("APP X") {
+		t.Error("the rule the refusal states is not the one the check applies: an underscore first and a dash are a name's, a digit first and a space are not")
+	}
+}
+
+// TestMethodNameIsAName: a sign-in method's stem, its auth's name and its registration's,
+// names the method's variables, locals and outputs in the stack, so a registration whose
+// name is not a name is refused before any file is rendered, a directory method's and a
+// persona's alike; so is an auth whose name is not one, by its first administrator's
+// variable, and an auth in a directory that starts with a digit, whose own variables
+// (APP_2FA_...) are names while the stem they give the stack (2fa_...) is not.
+func TestMethodNameIsAName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		fixture   string
+		placement string
+	}{
+		{name: "a directory method", fixture: "harbor", placement: "placement.json"},
+		{name: "a persona", fixture: "beacon", placement: "placement-beacon.json"},
+	}
+	t.Run("an auth in a directory that starts with a digit", func(t *testing.T) {
+		t.Parallel()
+
+		m := deriveFixture(t, "harbor", "placement.json")
+		renamed := 0
+		for i := range m.Auths {
+			m.Auths[i].Name = "2fa"
+			for j := range m.Auths[i].Methods {
+				if method := &m.Auths[i].Methods[j]; method.Directory() {
+					method.Auth = "2fa"
+					renamed++
+				}
+			}
+		}
+		if renamed == 0 {
+			t.Fatal("the fixture has no directory method")
+		}
+		_, err := Render(m)
+		if want := `registration names its variables "2fa_`; err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("Render() with an auth named 2fa = %v, want %q", err, want)
+		}
+	})
+	t.Run("an auth's administrator", func(t *testing.T) {
+		t.Parallel()
+
+		m := deriveFixture(t, "harbor", "placement.json")
+		renamed := 0
+		for i := range m.Auths {
+			if m.Auths[i].Administrator != nil {
+				m.Auths[i].Name = `members" = 1, "x`
+				renamed++
+			}
+		}
+		if renamed == 0 {
+			t.Fatal("the fixture has no auth with a first administrator")
+		}
+		_, err := Render(m)
+		for _, want := range []string{"auth names its first administrator's variable", "which is not a name the stack can write"} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("Render() with an auth name that is not a name = %v, want %q", err, want)
+			}
+		}
+	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := deriveFixture(t, tt.fixture, tt.placement)
+			renamed := 0
+			for i := range m.Auths {
+				for j := range m.Auths[i].Methods {
+					if method := &m.Auths[i].Methods[j]; method.Directory() || method.Persona() {
+						method.Name = `sso" = 1, "x`
+						renamed++
+					}
+				}
+			}
+			if renamed == 0 {
+				t.Fatal("the fixture has no registration to rename")
+			}
+			_, err := Render(m)
+			for _, want := range []string{`registration names its variables`, "which is not a name the stack can write", "a name starts with a letter or an underscore"} {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("Render() with a registration name that is not a name = %v, want %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestArmorWords: a word the policy writes between single quotes in a Cloud Armor
+// expression stands there as itself, so an outlet's prefix or a route that holds a single
+// quote, a backslash or a line break is refused before any file is rendered, with where it
+// comes from; the fixture as it is holds none.
+func TestArmorWords(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		change  func(t *testing.T, m *derive.Model)
+		wantErr string
+	}{
+		{
+			name: "a single quote in an outlet's prefix",
+			change: func(t *testing.T, m *derive.Model) {
+				t.Helper()
+				for i := range m.Outlets {
+					if m.Outlets[i].Prefix != "" {
+						m.Outlets[i].Prefix = "api') || true || ('"
+
+						return
+					}
+				}
+				t.Fatal("the fixture has no outlet with a prefix")
+			},
+			wantErr: "outlet's prefix, \"api') || true || ('\", holds a single quote",
+		},
+		{
+			name: "a backslash in a sign-in route",
+			change: func(t *testing.T, m *derive.Model) {
+				t.Helper()
+				if len(m.SignInRoutes) == 0 {
+					t.Fatal("the fixture has no sign-in route")
+				}
+				m.SignInRoutes[0].Path = `/api/user\d/login`
+			},
+			wantErr: "the route of the ",
+		},
+		{
+			name: "a line break in a file route",
+			change: func(t *testing.T, m *derive.Model) {
+				t.Helper()
+				if len(m.FileRoutes) == 0 {
+					t.Fatal("the fixture has no file route")
+				}
+				m.FileRoutes[0].Path = "/api/photos\n/file"
+			},
+			wantErr: "the route of the @",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := deriveFixture(t, "lantern", "placement-lantern.json")
+			if err := armorWords(m); err != nil {
+				t.Fatalf("armorWords() of the fixture as it is = %v", err)
+			}
+			tt.change(t, m)
+			_, err := Render(m)
+			for _, want := range []string{tt.wantErr, "which a Cloud Armor expression's string does not hold as itself"} {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("Render() = %v, want %q", err, want)
+				}
+			}
+		})
 	}
 }
