@@ -168,11 +168,12 @@ linters:
         # refuses them to every file that is not a test. A package for tests alone is
         # entered in both.
         #
-        # The tests of a set of Google clients that cannot all be opened hand the
-        # clients a gRPC connection that is never dialed, made with TLS credentials as
-        # a connection to Google is, and read from its state whether the failed
-        # opening closed them. The module's own code needs none of the three. An entry
-        # that ends in $ names that package alone, not the packages below it.
+        # The tests of a set of Google clients that cannot all be opened hand each
+        # client a gRPC connection of its own that is never dialed, made with TLS
+        # credentials as a connection to Google is, and read from each connection's
+        # state whether the failed opening closed that client. The module's own code
+        # needs none of the three. An entry that ends in $ names that package alone,
+        # not the packages below it.
         test-only:
           files:
             - '!$test'
