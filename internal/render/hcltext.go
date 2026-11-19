@@ -26,6 +26,10 @@ import (
 	"path"
 	"strconv"
 	"strings"
+
+	// The templates executed here are OpenTofu files, never HTML: html/template's
+	// escaping would corrupt them, and Execute writes each value as HCL takes it.
+	// nosemgrep: go.lang.security.audit.xss.import-text-template.import-text-template
 	"text/template"
 	"text/template/parse"
 

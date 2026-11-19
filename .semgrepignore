@@ -1,16 +1,13 @@
-# Semgrep path exclusions for the bedrock module scan: each path is left out of the scan,
-# for the reason given above it.
+# Semgrep path exclusions for the bedrock module scan. A path listed here is left out of
+# the scan whole: no rule reads the file, so a finding of any rule in it is never
+# reported, not only a finding of the audit its reason names. The reason above each path
+# says which audit found something in the file and why that audit does not apply. A
+# finding that belongs to one line is marked on that line instead, with a nosemgrep
+# comment that names the one rule, and every other rule still reads the file: the two
+# files that execute text/template are marked that way, at the import.
 #
-# bedrock renders Terraform, YAML and Markdown from text/template: html/template's contextual
-# escaping would corrupt that output, so the two files that execute those templates are
-# excluded from the text-template audit rather than marked inline: hcltext.go, which executes
-# the templates of the application's stack and of the organization's foundation and writes
-# each value into an OpenTofu file as HCL takes it, and rootgithub.go, which renders the
-# workflow of a root organization without a cloud. The GitHub test fake answers JSON to the
-# client under test, so the direct-write audit (an HTML page writing user data) does not
-# apply to it.
-internal/render/hcltext.go
-internal/org/rootgithub.go
+# The GitHub test fake answers JSON to the client under test, so the direct-write audit
+# (an HTML page writing user data) does not apply to it.
 internal/github/githubtest/server.go
 # The migration renumber runs git with the repository's own paths (the default branch's
 # tree, the tracked files, git mv), which is its purpose; the dangerous-exec audit does
