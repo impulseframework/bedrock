@@ -482,6 +482,10 @@ func TestStandInIsWrittenBeforeTheTests(t *testing.T) {
 	if target, _ := os.Readlink(link); info.Mode()&os.ModeSymlink == 0 || target != gcloudProgram {
 		t.Fatalf("%s is %v to %q, want a link to %s: a program a test writes can be busy when its step starts it", link, info.Mode(), target, gcloudProgram)
 	}
+	// The program is the stand-in TestMain wrote, started through the link this test made
+	// in its own temporary directory, with arguments the test names; no input but the
+	// test's reaches it.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	out, err := exec.CommandContext(t.Context(), link, "builds", "describe", "b-1").CombinedOutput()
 	if err != nil || string(out) != "SUCCESS\n" {
 		t.Errorf("the stand-in started through its link printed %q (%v), want the status beside the link", out, err)
