@@ -20,8 +20,9 @@ import (
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 )
 
-// TestRenderedStackParsesAsHCL parses every rendered .tf file under testdata, so a template whose rendering
-// is not valid HCL (a stray escape, an unbalanced quote) fails here and not in a pipeline's plan step.
+// TestRenderedStackParsesAsHCL parses every rendered .tf and .tfvars file under testdata, so a template
+// whose rendering is not valid HCL (a stray escape, an unbalanced quote) fails here and not in a pipeline's
+// plan step.
 func TestRenderedStackParsesAsHCL(t *testing.T) {
 	t.Parallel()
 
@@ -101,7 +102,7 @@ func tfFiles(t *testing.T, dir string) []string {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() && strings.HasSuffix(path, ".tf") {
+		if !d.IsDir() && IsHCL(path) {
 			files = append(files, path)
 		}
 

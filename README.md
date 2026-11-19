@@ -451,6 +451,16 @@ application repository's `infrastructure` directory, or the one application laye
 repository root when the stack is in its infrastructure directory, else from the working
 directory; `--app` overrides.
 
+Words that come from the code or from the placement (a field's doc comment, which is a
+secret's purpose; a label; a reason) are written into the `.tf` and `.tfvars` files as the
+place they land in takes them. In a string they are an OpenTofu string literal's text
+whatever they hold: a double quote, a backslash, a line break, `${` and `%{` each arrive
+as text. In a comment they stay in the comment, a line break written as a space. Every
+such file is then parsed as OpenTofu parses it, before anything is written: a file that
+does not parse is refused with its name, the line and the parser's own sentence, by
+`render` and by `check` alike, since `check` renders the same files, and by `org render`
+and `org check` for an organization's layers.
+
 The render ends by reading the schema migrations, and the seed directory beside them, by
 the sequence rule the migrate command needs (`bedrock migration check`, below). The stack
 is written first; a problem is then listed as `bedrock check` lists it and the render exits

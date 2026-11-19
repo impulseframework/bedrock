@@ -8,7 +8,6 @@ package render
 import (
 	"fmt"
 	"path"
-	"strconv"
 	"strings"
 
 	"github.com/impulseframework/bedrock/internal/derive"
@@ -183,8 +182,8 @@ func (v *armorView) add(priority int, action, what, source, expression string, e
 		What:        what,
 		Source:      source,
 		Text:        text,
-		Description: hclQuote(fitDescription(text)),
-		Expression:  hclQuote(expression),
+		Description: Quote(fitDescription(text)),
+		Expression:  Quote(expression),
 		Exclusions:  exclusions,
 	})
 }
@@ -254,7 +253,7 @@ func (v *armorView) exclusionsOf(set string) []armorExclusion {
 func newArmorExclusion(e *derive.FieldExclusion) armorExclusion {
 	out := armorExclusion{FieldExclusion: *e, Operator: e.OperatorName(), Block: e.Block()}
 	if e.Value != "" {
-		out.Value = hclQuote(e.Value)
+		out.Value = Quote(e.Value)
 	}
 	kind := map[string]string{derive.FieldHeader: "header", derive.FieldCookie: "cookie", derive.FieldQueryParam: "query parameter", derive.FieldURI: "path"}[e.Field]
 	switch e.OperatorName() {
@@ -270,7 +269,7 @@ func newArmorExclusion(e *derive.FieldExclusion) armorExclusion {
 		quoted := make([]string, 0, len(e.Rules))
 		ticked := make([]string, 0, len(e.Rules))
 		for _, id := range e.Rules {
-			quoted = append(quoted, strconv.Quote(id))
+			quoted = append(quoted, Quote(id))
 			ticked = append(ticked, "`"+id+"`")
 		}
 		out.RuleIDList = "[" + strings.Join(quoted, ", ") + "]"
@@ -311,10 +310,4 @@ func fileRouteReason(r *derive.FileRoute) string {
 	}
 
 	return "its answer is the stored object"
-}
-
-// hclQuote writes s as an HCL string literal: backslashes, quotes and newlines escaped,
-// and the template sequences ${ and %{ written so HCL reads them as text.
-func hclQuote(s string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "${", "$${", "%{", "%%{").Replace(s) + `"`
 }

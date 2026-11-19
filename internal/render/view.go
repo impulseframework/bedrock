@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/go-playground/errors/v5"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 
 	"github.com/impulseframework/bedrock/internal/derive"
 	"github.com/impulseframework/bedrock/internal/hook"
@@ -862,7 +863,7 @@ func (v *view) BedrockRepository() string {
 func (v *view) GoInstallEnvList() string {
 	items := make([]string, 0, len(goInstallEnv)+1)
 	for _, e := range append([]string{"GOBIN=/builder/home"}, goInstallEnv...) {
-		items = append(items, strconv.Quote(e))
+		items = append(items, Quote(e))
 	}
 
 	return strings.Join(items, ", ")
@@ -972,7 +973,7 @@ func newView(m *derive.Model) (*view, error) {
 	v.SchedulerVariable, v.ScheduledPrefix, v.ReleaseFileName = derive.SchedulerInvokerVariable, derive.ScheduledPrefix, derive.ReleaseFileName
 	v.JobsTemplateVariable = derive.JobsTemplateVariable
 	if m.RequestLog != nil {
-		v.RequestLogClause = hclQuote(m.RequestLog.Clause)
+		v.RequestLogClause = Quote(m.RequestLog.Clause)
 	}
 	v.ServerPackage = derive.ServerPackage
 	if err := v.roles(); err != nil {
@@ -1007,6 +1008,13 @@ func newView(m *derive.Model) (*view, error) {
 // roles finds the variables and levels the templates name: the well-known ones always,
 // the job process's template only with a job process.
 func (v *view) roles() error {
+	// A variable's name is the code's own word (the struct tag's), and the stack writes
+	// it as a name: a map's key, a part of a resource's address.
+	for i := range v.Variables {
+		if name := v.Variables[i].Name; !hclsyntax.ValidIdentifier(name) {
+			return errors.Newf("the variable name %q (%s) is not a name the stack can write: letters, digits and underscores, starting with a letter", name, v.Variables[i].Declaration())
+		}
+	}
 	roles := []struct {
 		role derive.Role
 		dst  **derive.Variable
@@ -1021,6 +1029,11 @@ func (v *view) roles() error {
 		if *r.dst == nil {
 			return errors.Newf("no variable in the %s role: the stack needs one", r.role)
 		}
+	}
+	// The port's default is written into the stack as a number, not as a string: the
+	// container's port, which Cloud Run takes as one.
+	if _, err := strconv.ParseUint(v.Port.Default, 10, 16); err != nil {
+		return errors.Newf("%s (%s) has the default %q, which is not a port number: the stack gives it to Cloud Run as the container's port", v.Port.Name, v.Port.Declaration(), v.Port.Default)
 	}
 	v.TraceSampling = v.byRole(derive.RoleTraceSampling)
 	v.PublicURL = v.byRole(derive.RolePublicURL)
@@ -1094,14 +1107,14 @@ func (v *view) sites() {
 			sv.BundlePath = ImageHome + "/" + s.BundleDir
 		}
 		if s.RequestLog != nil {
-			sv.RequestLogClause = hclQuote(s.RequestLog.Clause)
+			sv.RequestLogClause = Quote(s.RequestLog.Clause)
 			if v.MultiSite() {
 				v.RequestLogAny = true
 			}
 		}
 		hosts := make([][2]string, 0, len(s.Environments))
 		for _, e := range s.Environments {
-			hosts = append(hosts, [2]string{e.Name, `["` + strings.Join(e.Hostnames, `", "`) + `"]`})
+			hosts = append(hosts, [2]string{e.Name, QuoteList(e.Hostnames)})
 		}
 		sv.HostnameDefaults = aligned("      ", hosts)
 		sv.IntegrationHost = s.Environments[0].Hostnames[0]
@@ -1346,12 +1359,14 @@ func (v *view) personas() {
 		pv := &personaView{Method: m, Stem: m.Stem(), Label: "the " + m.Auth + " auth's " + m.Name + " registration", Issuer: block.Issuer, ClientIDRoot: block.ClientID}
 		hostnames := "hostnames"
 		if v.MultiSite() {
-			hostnames = `site_hostnames["` + m.Site + `"]`
+			hostnames = "site_hostnames[" + Quote(m.Site) + "]"
 		}
+		// The placement's and the code's own words (the issuer, the client id, the
+		// callback's path) are written as string literals, beside the references.
 		pv.Locals = aligned("  ", [][2]string{
-			{pv.Var("ISSUER"), fmt.Sprintf(`local.is_pr || var.environment == "%s" ? "%s" : ""`, v.Integration, block.Issuer)},
-			{pv.Var("CLIENT_ID"), fmt.Sprintf(`local.is_pr ? "%s-pr${var.pull_request}" : var.environment == "%s" ? "%s-%s" : ""`, block.ClientID, v.Integration, block.ClientID, v.Integration)},
-			{pv.Var("REDIRECT_URL"), fmt.Sprintf(`"https://${local.%s[0]}%s"`, hostnames, m.Callback.Path)},
+			{pv.Var("ISSUER"), fmt.Sprintf(`local.is_pr || var.environment == %s ? %s : ""`, Quote(v.Integration), Quote(block.Issuer))},
+			{pv.Var("CLIENT_ID"), fmt.Sprintf(`local.is_pr ? "%s-pr${var.pull_request}" : var.environment == %s ? %s : ""`, quotedText(block.ClientID), Quote(v.Integration), Quote(block.ClientID+"-"+v.Integration))},
+			{pv.Var("REDIRECT_URL"), fmt.Sprintf(`"https://${local.%s[0]}%s"`, hostnames, quotedText(m.Callback.Path))},
 		})
 		pv.SiteEnv = aligned("    ", [][2]string{
 			{m.Variable(derive.FieldIssuer).Name, "local." + pv.Var("ISSUER")},
@@ -1438,7 +1453,7 @@ func (v *view) environments() {
 	for _, e := range v.Environments {
 		strs = append(strs, [2]string{e.Name, emptyString})
 		maps = append(maps, [2]string{e.Name, "{}"})
-		hosts = append(hosts, [2]string{e.Name, `["` + strings.Join(e.Hostnames, `", "`) + `"]`})
+		hosts = append(hosts, [2]string{e.Name, QuoteList(e.Hostnames)})
 		host := e.Hostnames[0]
 		if e.Name != v.Production {
 			summary = append(summary, strings.TrimSuffix(host, v.P.AppsDomain))
@@ -1533,7 +1548,7 @@ func (v *view) siteHostnameDefaults() string {
 	for i, e := range v.Environments {
 		sites := make([][2]string, 0, len(v.Sites))
 		for _, s := range v.Sites {
-			sites = append(sites, [2]string{s.Name, `["` + strings.Join(s.Environments[i].Hostnames, `", "`) + `"]`})
+			sites = append(sites, [2]string{s.Name, QuoteList(s.Environments[i].Hostnames)})
 		}
 		lines = append(lines, "    "+e.Name+" = {"+"\n"+aligned("      ", sites)+"\n"+"    }")
 	}
@@ -1753,11 +1768,11 @@ func (v *view) blocks() {
 	}
 	if v.Jobs != nil {
 		v.JobsLevels = joinAnd(v.Jobs.Levels)
-		v.JobsLevelList = `["` + strings.Join(v.Jobs.Levels, `", "`) + `"]`
+		v.JobsLevelList = QuoteList(v.Jobs.Levels)
 		v.JobsReadsData = v.Jobs.Reads(v.DataLevel.Name)
 		identities = append(identities, [2]string{stem + v.Jobs.Name, v.Jobs.Dir + ", the job process (Cloud Run job)"})
 	}
-	v.IdentityLines = aligned("#   ", identities, "  ")
+	v.IdentityLines = aligned("#   ", oneLined(identities), "  ")
 	v.declarations()
 
 	keys := make([]string, 0, len(v.P.Labels))
@@ -1769,7 +1784,7 @@ func (v *view) blocks() {
 	sort.Strings(keys)
 	labels := make([]string, 0, len(keys))
 	for _, k := range keys {
-		labels = append(labels, fmt.Sprintf("    %-*s = %q", width, k, v.P.Labels[k]))
+		labels = append(labels, fmt.Sprintf("    %-*s = %s", width, Key(k), Quote(v.P.Labels[k])))
 	}
 	v.LabelLines = strings.Join(labels, "\n")
 
@@ -1803,7 +1818,7 @@ func (v *view) blocks() {
 			[2]string{SignInIntervalVariable, v.Armor.SignInInterval},
 		)
 	}
-	v.RestatedDefaults = aligned("#   ", restated, " = ")
+	v.RestatedDefaults = aligned("#   ", oneLined(restated), " = ")
 }
 
 // constructionEnv is the aligned block of the registrations' settings the session
@@ -1831,13 +1846,13 @@ func (v *view) registrationDefaults() [][2]string {
 	var restated [][2]string
 	for _, m := range v.Methods {
 		if m.Variable(derive.FieldGroupLookup) != nil {
-			restated = append(restated, [2]string{m.Var("GROUP_LOOKUP"), `"` + m.GroupLookupDefault + `"`})
+			restated = append(restated, [2]string{m.Var("GROUP_LOOKUP"), Quote(m.GroupLookupDefault)})
 		}
 		if m.Variable(derive.FieldGroupPrefix) != nil {
-			restated = append(restated, [2]string{m.Var("GROUP_PREFIX"), `"` + m.GroupPrefixDefault + `"`})
+			restated = append(restated, [2]string{m.Var("GROUP_PREFIX"), Quote(m.GroupPrefixDefault)})
 		}
 		if m.Variable(derive.FieldHostedDomain) != nil {
-			restated = append(restated, [2]string{m.Var("HOSTED_DOMAIN"), `"` + v.P.HostedDomain + `"`})
+			restated = append(restated, [2]string{m.Var("HOSTED_DOMAIN"), Quote(v.P.HostedDomain)})
 		}
 	}
 
@@ -1944,6 +1959,17 @@ func (v *view) Purpose(s *derive.Secret) string {
 	}
 }
 
+// oneLined is the pairs with each part on one line, for a block of line comments the
+// view builds: a line break in a value would end the comment and start HCL of its own.
+func oneLined(pairs [][2]string) [][2]string {
+	lined := make([][2]string, 0, len(pairs))
+	for _, p := range pairs {
+		lined = append(lined, [2]string{OneLine(p[0]), OneLine(p[1])})
+	}
+
+	return lined
+}
+
 // aligned writes key = value lines with the values in one column. The separator
 // defaults to " = ".
 func aligned(indent string, pairs [][2]string, separator ...string) string {
@@ -2036,23 +2062,23 @@ func firstSentence(doc string) string {
 func (v *view) order(envs []string) {
 	approvals := make([]string, 0, len(v.P.ApprovalEnvironments()))
 	for _, env := range v.P.ApprovalEnvironments() {
-		approvals = append(approvals, strconv.Quote(env))
+		approvals = append(approvals, Quote(env))
 	}
 	v.ApprovalList = "[" + strings.Join(approvals, ", ") + "]"
 	seeds := make([]string, 0, len(v.P.SeedEnvironments()))
 	for _, env := range v.P.SeedEnvironments() {
-		seeds = append(seeds, strconv.Quote(env))
+		seeds = append(seeds, Quote(env))
 	}
 	v.SeedList = "[" + strings.Join(seeds, ", ") + "]"
 	backups := make([]string, 0, len(v.P.ReleaseBackupEnvironments()))
 	for _, env := range v.P.ReleaseBackupEnvironments() {
-		backups = append(backups, strconv.Quote(env))
+		backups = append(backups, Quote(env))
 	}
 	v.ReleaseBackupList = "[" + strings.Join(backups, ", ") + "]"
 	v.ReleaseBackupsProse = joinAnd(v.P.ReleaseBackupEnvironments())
 	retention := make([]string, 0, len(envs))
 	for _, env := range envs {
-		retention = append(retention, env+" = "+strconv.Quote(v.P.Retention(env)))
+		retention = append(retention, env+" = "+Quote(v.P.Retention(env)))
 	}
 	v.RetentionMap = "{ " + strings.Join(retention, ", ") + " }"
 	v.Image = newImageView(v.Model, v.SiteLevel.Name)
@@ -2067,7 +2093,7 @@ func (v *view) order(envs []string) {
 	v.MaxInstancesMap, v.InstancesProse = maxInstances(v.P)
 	previous := make([]string, 0, len(envs))
 	for _, env := range envs {
-		previous = append(previous, env+" = "+strconv.Quote(v.P.Previous(env)))
+		previous = append(previous, env+" = "+Quote(v.P.Previous(env)))
 	}
 	v.PreviousEnvMap = "{ " + strings.Join(previous, ", ") + " }"
 }

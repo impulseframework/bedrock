@@ -15,7 +15,6 @@
 package render
 
 import (
-	"bytes"
 	"embed"
 	"io/fs"
 	"os"
@@ -23,7 +22,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"text/template"
 
 	"github.com/go-playground/errors/v5"
 	"github.com/hashicorp/hcl/v2/hclwrite"
@@ -216,7 +214,7 @@ func renderDir(dir string, root bool, v *view) ([]File, error) {
 		if seeded[name] {
 			tier = Seeded
 		}
-		files = append(files, File{Path: name, Tier: tier, Root: root, Content: Formatted(name, content)})
+		files = append(files, File{Path: name, Tier: tier, Root: root, Content: content})
 	}
 
 	return files, nil
@@ -228,29 +226,21 @@ func renderDir(dir string, root bool, v *view) ([]File, error) {
 // varying width (an environment list, a release actor) moves.
 // Any other file is returned as it is.
 func Formatted(name string, content []byte) []byte {
-	if ext := path.Ext(name); ext != ".tf" && ext != ".tfvars" {
+	if !IsHCL(name) {
 		return content
 	}
 
 	return hclwrite.Format(content)
 }
 
-// renderOne executes one embedded template.
+// renderOne executes one embedded template as the file it renders (Execute).
 func renderOne(dir, name string, v *view) ([]byte, error) {
 	src, err := templates.ReadFile(dir + "/" + name)
 	if err != nil {
 		return nil, errors.Wrapf(err, "embed.FS.ReadFile(): %s", name)
 	}
-	t, err := template.New(name).Option("missingkey=error").Parse(string(src))
-	if err != nil {
-		return nil, errors.Wrapf(err, "template.Parse(): %s", name)
-	}
-	var buf bytes.Buffer
-	if err := t.Execute(&buf, v); err != nil {
-		return nil, errors.Wrapf(err, "template.Execute(): %s", name)
-	}
 
-	return buf.Bytes(), nil
+	return Execute(strings.TrimSuffix(name, templateExt), src, v)
 }
 
 // Written reports what a write did.
