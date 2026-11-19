@@ -171,10 +171,12 @@ func Run(ctx context.Context, clients *Clients, req *Request, out io.Writer) (*R
 		return nil, errors.New("placement.json records no root project (projects.root): bedrock org bootstrap records it")
 	}
 	e := &engine{clients: clients, req: req, p: req.Placement, d: NewDesired(req.Placement), out: out, report: &Report{}}
+	// The clients are closed however the run ends: an opening that fails partway leaves the
+	// clients before it open, and they are closed as a finished run's are.
+	defer e.close()
 	if err := e.open(ctx); err != nil {
 		return nil, err
 	}
-	defer e.close()
 	if e.d.ProjectNumber == "" {
 		number, err := e.google.ProjectNumber(ctx, e.d.Project())
 		if err != nil {
@@ -277,6 +279,8 @@ func (e *engine) open(ctx context.Context) error {
 	return nil
 }
 
+// close closes the clients open opened, the last one first. A client that was never
+// opened, in a run whose opening failed before it, is nil and is passed over.
 func (e *engine) close() {
 	for _, c := range []io.Closer{e.datasets, e.budgets, e.iam, e.builds, e.dns, e.secrets, e.policies, e.google} {
 		if c != nil {

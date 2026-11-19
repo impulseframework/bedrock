@@ -362,6 +362,56 @@ func TestEngineRefusals(t *testing.T) {
 	}
 }
 
+// TestEngineClosesWhatItOpened: a run refused while it opens its clients closes the ones
+// it had opened before the refusal, each once, and passes over the ones it never opened.
+func TestEngineClosesWhatItOpened(t *testing.T) {
+	t.Parallel()
+
+	refusal := errors.New("refused in this test")
+	tests := []struct {
+		name    string
+		arrange func(c *root.Clients)
+		// want is how many clients the run had opened when it was refused.
+		want int
+	}{
+		{
+			name: "the first client cannot be opened",
+			arrange: func(c *root.Clients) {
+				c.Google = func(context.Context, string) (create.Google, error) { return nil, refusal }
+			},
+			want: 0,
+		},
+		{
+			name:    "the second client is not wired",
+			arrange: func(c *root.Clients) { c.OrgPolicies = nil },
+			want:    1,
+		},
+		{
+			// Google Cloud, the organization policies, the secrets, Cloud DNS, Cloud Build,
+			// IAM and the budgets are open by then.
+			name: "the last client cannot be opened",
+			arrange: func(c *root.Clients) {
+				c.Datasets = func(context.Context) (root.Datasets, error) { return nil, refusal }
+			},
+			want: 7,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newWorld(t)
+			tt.arrange(w.clients)
+			if _, err := root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Dir: w.dir, Mode: root.Check, Commit: "abc1234", GitHubToken: "test-token"}, &bytes.Buffer{}); err == nil {
+				t.Fatal("Run() error = nil, want the refusal of a run that cannot open its clients")
+			}
+			if w.fake.Closed != tt.want {
+				t.Errorf("the refused run closed %d client(s), want the %d it had opened", w.fake.Closed, tt.want)
+			}
+		})
+	}
+}
+
 // TestReportComment: the plan's comment says Nothing only when the merge changes nothing
 // and creates nothing; a pending creation is listed on its own.
 func TestReportComment(t *testing.T) {
