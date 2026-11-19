@@ -412,6 +412,50 @@ func TestEngineClosesWhatItOpened(t *testing.T) {
 	}
 }
 
+// TestEngineClosesWhenTheRunEnds: a run that opened all of its clients closes the eight of
+// them (Google Cloud, the organization policies, the secrets, Cloud DNS, Cloud Build, IAM,
+// the budgets and BigQuery), each once, whether it finishes or stops in a section. The
+// count is exact for a check alone: the stand-in counts every seam it is closed as, and a
+// check closes it as nothing but the engine's eight clients. Its verifier is a stand-in of
+// its own, and it takes no lock, writes no marker and creates nothing.
+func TestEngineClosesWhenTheRunEnds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		arrange func(w *world)
+		// stops is whether the run ends on a section's error.
+		stops bool
+	}{
+		{
+			name:    "a check that finishes",
+			arrange: func(*world) {},
+		},
+		{
+			// The billing export is the last section: every section before it has run.
+			name:    "a check that stops in its last section",
+			arrange: func(w *world) { w.fake.Refuse["Dataset"] = errors.New("refused in this test") },
+			stops:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newWorld(t)
+			tt.arrange(w)
+			_, err := root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Dir: w.dir, Mode: root.Check, Commit: "abc1234", GitHubToken: "test-token"}, &bytes.Buffer{})
+			var stopped *root.StoppedError
+			if stops := errors.As(err, &stopped); stops != tt.stops || (err != nil) != tt.stops {
+				t.Fatalf("Run() error = %v, want a run that stops in a section: %t", err, tt.stops)
+			}
+			if w.fake.Closed != 8 {
+				t.Errorf("the run closed %d client(s), want the 8 it had opened", w.fake.Closed)
+			}
+		})
+	}
+}
+
 // TestReportComment: the plan's comment says Nothing only when the merge changes nothing
 // and creates nothing; a pending creation is listed on its own.
 func TestReportComment(t *testing.T) {
