@@ -715,13 +715,11 @@ func TestEngineReleaseSecretsStopped(t *testing.T) {
 				w.fake.Refuse[tt.refused] = errors.New(want)
 			}
 			var out bytes.Buffer
-			report, err := root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Dir: w.dir, Mode: root.Check, Commit: "abc1234", GitHubToken: "test-token"}, &out)
+			_, err := root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Dir: w.dir, Mode: root.Check, Commit: "abc1234", GitHubToken: "test-token"}, &out)
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("Run() = %v, want the error of %q\n%s", err, want, out.String())
 			}
-			if report == nil {
-				t.Fatal("Run() answered no report beside the error of a section")
-			}
+			report = stoppedReport(t, err)
 			sameSentences(t, "the findings the stopped check leaves", report.Findings, tt.want)
 			out.Reset()
 			report.WriteStopped(&out, root.Check)

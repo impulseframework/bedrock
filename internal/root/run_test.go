@@ -195,8 +195,9 @@ var finishedVerdict = regexp.MustCompile(`(?m)^([0-9]+ change\(s\) the apply wou
 // in the log what it had gathered before the stop, as incomplete, and puts the same with
 // the error into the plan's one comment on the pull request, in the place of an earlier
 // plan's; the answer is the run's error. A plan that had gathered nothing posts the stop
-// and the error alone. Where the comment cannot be posted the log says so and claims no
-// comment. The next plan that finishes takes the comment's place again.
+// and the error alone, and so does a plan refused before its first section, which has no
+// report. Where the comment cannot be posted the log says so and claims no comment. The
+// next plan that finishes takes the comment's place again.
 func TestPlanRunStopped(t *testing.T) {
 	t.Parallel()
 
@@ -277,8 +278,25 @@ func TestPlanRunStopped(t *testing.T) {
 		t.Errorf("the comment of a plan that had gathered nothing:\n%s", body)
 	}
 
-	// The next plan finishes, and its comment takes the place.
+	// A client cannot be opened: the run is refused before its first section and has no
+	// report, and the comment says the same of it with its own error.
 	delete(w.fake.Refuse, "EnabledServices")
+	refusal := errors.New("the Org Policy client could not be opened in this test")
+	policies := w.clients.OrgPolicies
+	w.clients.OrgPolicies = func(context.Context, string) (root.OrgPolicies, error) { return nil, refusal }
+	out.Reset()
+	if err := root.PlanRun(context.Background(), w.clients, rc, req, &out); !errors.Is(err, refusal) {
+		t.Fatalf("PlanRun() of a plan refused before its first section = %v, want the refusal\n%s", err, out.String())
+	}
+	if got, want := out.String(), "Updated the report on pull request #7 as the deployer app.\n"; !strings.HasSuffix(got, want) || strings.Contains(got, "stopped") {
+		t.Errorf("the output of a plan refused before its first section, want no report and %q:\n%s", want, got)
+	}
+	if body := repo.Comments[7][0].Body; !strings.Contains(body, stoppedComment+"It had found no change before the stop.\n\nThe error the plan stopped at:\n\n    the Org Policy client could not be opened in this test\n") || strings.Contains(body, zone) {
+		t.Errorf("the comment of a plan refused before its first section:\n%s", body)
+	}
+	w.clients.OrgPolicies = policies
+
+	// The next plan finishes, and its comment takes the place.
 	out.Reset()
 	if err := root.PlanRun(context.Background(), w.clients, rc, req, &out); err != nil {
 		t.Fatalf("PlanRun() after the stops error = %v\n%s", err, out.String())
@@ -291,8 +309,9 @@ func TestPlanRunStopped(t *testing.T) {
 // TestApplyRunStopped: an apply that stops on an error says what it had gathered and how
 // many changes it made before the stop, never as a finished apply counts them; the change
 // it stopped at is named as not among them; an apply that stops before it lists anything
-// says it made none. It leaves no marker and frees the lock, and the answer is the run's
-// error.
+// says it made none, and one refused before its first section, which has no report, says
+// nothing: its error is all there is. It leaves no marker and frees the lock, and the
+// answer is the run's error.
 func TestApplyRunStopped(t *testing.T) {
 	t.Parallel()
 
@@ -345,6 +364,13 @@ func TestApplyRunStopped(t *testing.T) {
 			want:    []string{"The run stopped before it finished, at the error below: it had made no change and had no finding or note before the stop.\n"},
 			wantNot: "what it had gathered",
 		},
+		{
+			name: "a client that cannot be opened, before the first section",
+			arrange: func(w *world) {
+				w.clients.OrgPolicies = func(context.Context, string) (root.OrgPolicies, error) { return nil, stop }
+			},
+			wantNot: "The run stopped",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -382,27 +408,177 @@ func TestApplyRunStopped(t *testing.T) {
 	}
 }
 
-// TestReportWithoutARun: a run refused before its first section answers no report, and
-// nothing is written for it: its error says all there is. The comment of a plan refused
-// so says that it found no change before the stop, and the error, every line of it set
-// as code; an error too long for a comment is cut, and the comment says so.
-func TestReportWithoutARun(t *testing.T) {
+// TestRunErrors: Run answers no report beside an error, whichever it is. The error of a
+// run that stopped in one of its sections is a StoppedError: it reads as the section's
+// error and has its cause, and it carries the report of what the run had gathered before
+// the stop, an empty one when the first read stopped it. The error of a run refused
+// before its first section is the refusal alone, and carries no report.
+func TestRunErrors(t *testing.T) {
 	t.Parallel()
 
-	var none *root.Report
-	var out bytes.Buffer
-	for _, mode := range []root.Mode{root.Check, root.Plan, root.Apply} {
-		none.WriteStopped(&out, mode)
+	stop := errors.New("refused in this test")
+	check := func(w *world, p *org.Placement) (*root.Report, error) {
+		return root.Run(context.Background(), w.clients, &root.Request{Placement: p, Dir: w.dir, Mode: root.Check, Commit: "abc1234", GitHubToken: "test-token"}, &bytes.Buffer{})
 	}
-	if out.Len() != 0 || none.Gathered() {
-		t.Errorf("a run without a report wrote %q, gathered %t", out.String(), none.Gathered())
+	tests := []struct {
+		name string
+		run  func(t *testing.T) (*root.Report, error)
+		// want is the cause a person reads, and is the error errors.Is finds in the
+		// run's, where the case refuses with one. stopped says that a section stopped the
+		// run, and gathered that the sections before it had listed something.
+		want              string
+		is                error
+		stopped, gathered bool
+	}{
+		{
+			name: "refused: a hosting organization's placement",
+			run: func(t *testing.T) (*root.Report, error) {
+				t.Helper()
+
+				hosting, err := org.ReadPlacement("../org/testdata/imp/placement.json")
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				return check(newWorld(t), hosting)
+			},
+			want: "the imp organization is a hosting organization: the engine runs a root organization",
+		},
+		{
+			name: "refused: no root project recorded",
+			run: func(t *testing.T) (*root.Report, error) {
+				t.Helper()
+
+				w := newWorld(t)
+				unrecorded := *w.p
+				unrecorded.Projects = map[string]string{}
+
+				return check(w, &unrecorded)
+			},
+			want: "placement.json records no root project (projects.root): bedrock org bootstrap records it",
+		},
+		{
+			name: "refused: a client that is not wired",
+			run: func(t *testing.T) (*root.Report, error) {
+				t.Helper()
+
+				w := newWorld(t)
+				w.clients.OrgPolicies = nil
+
+				return check(w, w.p)
+			},
+			want: "no Org Policy client is wired: the root organization sets the organization policies of its hosting organizations",
+		},
+		{
+			name: "refused: the root project's number cannot be read",
+			run: func(t *testing.T) (*root.Report, error) {
+				t.Helper()
+
+				w := newWorld(t)
+				unnumbered := *w.p
+				unnumbered.ProjectNumbers = map[string]string{}
+				w.fake.Refuse["ProjectNumber"] = stop
+
+				return check(w, &unnumbered)
+			},
+			want: "refused in this test", is: stop,
+		},
+		{
+			name: "refused: no GitHub token, without a cloud",
+			run: func(t *testing.T) (*root.Report, error) {
+				t.Helper()
+
+				w := newGitHubWorld(t, libraryPlacement(t))
+
+				return root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Mode: root.Check}, &bytes.Buffer{})
+			},
+			want: "no GitHub token: the imf organization has no cloud and is kept on GitHub alone",
+		},
+		{
+			name: "stopped: the first read of the first section",
+			run: func(t *testing.T) (*root.Report, error) {
+				t.Helper()
+
+				w := newWorld(t)
+				w.fake.Refuse["EnabledServices"] = stop
+
+				return check(w, w.p)
+			},
+			want: "refused in this test", is: stop, stopped: true,
+		},
+		{
+			name: "stopped: a read after sections that listed changes",
+			run: func(t *testing.T) (*root.Report, error) {
+				t.Helper()
+
+				w := newWorld(t)
+				w.fake.Refuse["Budgets"] = stop
+
+				return check(w, w.p)
+			},
+			want: "refused in this test", is: stop, stopped: true, gathered: true,
+		},
+		{
+			name: "stopped: a read GitHub refuses, without a cloud",
+			run: func(t *testing.T) (*root.Report, error) {
+				t.Helper()
+
+				w := newGitHubWorld(t, libraryPlacement(t))
+				clients := w.refusing(t, map[string]int{"GET /orgs/imf-example/rulesets": http.StatusForbidden})
+
+				return root.Run(context.Background(), clients, &root.Request{Placement: w.p, Mode: root.Check, GitHubToken: "test-token"}, &bytes.Buffer{})
+			},
+			want: "answered 403: Resource not accessible by integration", stopped: true, gathered: true,
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			report, err := tt.run(t)
+			if err == nil || !strings.Contains(errors.Cause(err).Error(), tt.want) {
+				t.Fatalf("Run() error = %v, want the cause %q", err, tt.want)
+			}
+			if report != nil {
+				t.Errorf("Run() answered a report beside the error: %+v", report)
+			}
+			if tt.is != nil && !errors.Is(err, tt.is) {
+				t.Errorf("errors.Is does not find the refusing call's error in %v", err)
+			}
+			var stopped *root.StoppedError
+			if carries := errors.As(err, &stopped); carries != tt.stopped {
+				t.Fatalf("Run() error carries a report: %t, want %t (the error: %v)", carries, tt.stopped, err)
+			}
+			if !tt.stopped {
+				return
+			}
+			if stopped.Report == nil {
+				t.Fatal("the stopped run's error carries no report")
+			}
+			if got := stopped.Report.Gathered(); got != tt.gathered {
+				t.Errorf("the stopped run had gathered something: %t, want %t (changes %q, findings %q, notes %q)", got, tt.gathered, whats(stopped.Report), stopped.Report.Findings, stopped.Report.Notes)
+			}
+			section := stopped.Unwrap()
+			if section == nil || err.Error() != section.Error() {
+				t.Errorf("the stopped run's error reads %q, want it to read as the section's error %v", err.Error(), section)
+			}
+		})
+	}
+}
+
+// TestStoppedCommentError: the comment of a plan that had gathered nothing says that it
+// found no change before the stop, and the error, every line of it set as code; an error
+// too long for a comment is cut, and the comment says so.
+func TestStoppedCommentError(t *testing.T) {
+	t.Parallel()
+
 	w := newWorld(t)
-	body := none.StoppedComment("0123456789abcdef", w.p, errors.New("no client in this test\nand a second line\rand a third, @someone"))
+	nothing := &root.Report{}
+	body := nothing.StoppedComment("0123456789abcdef", w.p, errors.New("no client in this test\nand a second line\rand a third, @someone"))
 	if want := stoppedComment + "It had found no change before the stop.\n\nThe error the plan stopped at:\n\n    no client in this test\n    and a second line\n    and a third, @someone\n"; !strings.HasSuffix(body, want) {
-		t.Errorf("StoppedComment() without a report = %q, want it to end %q", body, want)
+		t.Errorf("StoppedComment() of a plan that had gathered nothing = %q, want it to end %q", body, want)
 	}
-	long := none.StoppedComment("0123456789abcdef", w.p, errors.New(strings.Repeat("x", 9000)))
+	long := nothing.StoppedComment("0123456789abcdef", w.p, errors.New(strings.Repeat("x", 9000)))
 	if want := "\n\n    " + strings.Repeat("x", 8000) + "\n\nThe error is cut after 8000 bytes; the run's log ends with the whole of it.\n"; !strings.HasSuffix(long, want) {
 		t.Errorf("StoppedComment() with an error of 9000 bytes is %d bytes and ends %q, want the error cut at 8000 and the sentence that says so", len(long), long[max(0, len(long)-120):])
 	}

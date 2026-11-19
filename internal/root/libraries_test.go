@@ -848,7 +848,7 @@ func TestEngineWithoutCloudApplyStopsAndFinishes(t *testing.T) {
 	w := newGitHubWorld(t, libraryPlacement(t))
 	clients := w.refusing(t, map[string]int{"POST /orgs/imf-example/rulesets": http.StatusUnprocessableEntity})
 	var out bytes.Buffer
-	report, err := root.Run(context.Background(), clients, &root.Request{Placement: w.p, Mode: root.Apply, GitHubToken: "test-token", SealKeys: w.keys}, &out)
+	_, err := root.Run(context.Background(), clients, &root.Request{Placement: w.p, Mode: root.Apply, GitHubToken: "test-token", SealKeys: w.keys}, &out)
 	// Of the apply's changes in order, the sealing of the infrastructure app's key is the
 	// sixth and the rule on version tags the sixteenth.
 	const sealsRootKey, rulesTags = 5, 15
@@ -860,9 +860,8 @@ func TestEngineWithoutCloudApplyStopsAndFinishes(t *testing.T) {
 	if answer := "GitHub POST /orgs/imf-example/rulesets answered 422: Resource not accessible by integration"; err == nil || !strings.Contains(err.Error(), refused) || !strings.Contains(err.Error(), answer) {
 		t.Fatalf("Run() error = %v, want it to name the change %q and GitHub's answer %q\n%s", err, refused, answer, out.String())
 	}
-	if report == nil {
-		t.Fatal("Run() answered no report beside the error, and the changes made before it are lost")
-	}
+	// The changes made before the refusal are in the report the error carries.
+	report := stoppedReport(t, err)
 	sameSentences(t, "the changes up to the one refused", whats(report), all[:rulesTags+1])
 	if report.Applied != rulesTags {
 		t.Errorf("the apply made %d change(s) before the one refused, want %d", report.Applied, rulesTags)

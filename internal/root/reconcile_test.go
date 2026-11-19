@@ -94,6 +94,23 @@ func whats(r *root.Report) []string {
 	return out
 }
 
+// stoppedReport is the report of what a run had gathered before it stopped in one of its
+// sections, which the run's error carries; it fails the test on an error that carries
+// none.
+func stoppedReport(t *testing.T, err error) *root.Report {
+	t.Helper()
+
+	var stopped *root.StoppedError
+	if !errors.As(err, &stopped) {
+		t.Fatalf("Run() error = %v, want the error of a run that stopped in a section, which carries its report", err)
+	}
+	if stopped.Report == nil {
+		t.Fatal("the stopped run's error carries no report, and what the run had gathered is lost")
+	}
+
+	return stopped.Report
+}
+
 func containsAll(t *testing.T, got []string, wants ...string) {
 	t.Helper()
 

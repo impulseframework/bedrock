@@ -139,7 +139,7 @@ func PlanRun(ctx context.Context, clients *Clients, rc *RunClients, req *RunRequ
 	}
 	report, err := Run(ctx, clients, &Request{Placement: t.p, Dir: req.Dir, Mode: Plan, Commit: t.commit, GitHubToken: infra}, out)
 	if err != nil {
-		return stoppedPlan(report, err, t.commit, t.p, out, func(body string) error {
+		return stoppedPlan(err, t.commit, t.p, out, func(body string) error {
 			deployer, terr := AppToken(ctx, rc, clients.GitHub, t.p, org.DeployerApp)
 			if terr != nil {
 				return terr
@@ -159,16 +159,24 @@ func PlanRun(ctx context.Context, clients *Clients, rc *RunClients, req *RunRequ
 	return postPlan(ctx, clients.GitHub(deployer), t.p, number, report.Comment(t.commit, t.p), org.DeployerApp.Title(), out)
 }
 
-// stoppedPlan ends a plan that stopped on err. What it had gathered goes to the log and,
-// in the same form with the error, into the plan's one comment on the pull request, in
-// place of an earlier plan's: a person reads the stop where the pull request is, and the
-// pull request never shows a finished plan of an earlier push as the answer to this one.
-// Where the comment cannot be posted (no token for it, or GitHub refuses the call) the
-// log says so and nothing is said of a comment. The answer is err either way: the run
-// fails as it did.
-func stoppedPlan(report *Report, err error, commit string, p *org.Placement, out io.Writer, post func(body string) error) error {
-	report.WriteStopped(out, Plan)
-	if perr := post(report.StoppedComment(commit, p, err)); perr != nil {
+// stoppedPlan ends a plan whose run answered err. What a plan that stopped in a section
+// had gathered, which its error carries, goes to the log and, in the same form with the
+// error, into the plan's one comment on the pull request, in place of an earlier plan's:
+// a person reads the stop where the pull request is, and the pull request never shows a
+// finished plan of an earlier push as the answer to this one. A plan refused before its
+// first section read nothing: the log has its error alone, and its comment is that of a
+// plan that had found no change. Where the comment cannot be posted (no token for it, or
+// GitHub refuses the call) the log says so and nothing is said of a comment. The answer
+// is err either way: the run fails as it did.
+func stoppedPlan(err error, commit string, p *org.Placement, out io.Writer, post func(body string) error) error {
+	// Refused before its first section: it read nothing.
+	gathered := &Report{}
+	var stopped *StoppedError
+	if errors.As(err, &stopped) {
+		gathered = stopped.Report
+		gathered.WriteStopped(out, Plan)
+	}
+	if perr := post(gathered.StoppedComment(commit, p, err)); perr != nil {
 		fmt.Fprintf(out, "The pull request's comment was not posted (%v): the plan's stop is in this log alone.\n", errors.Cause(perr))
 	}
 
@@ -225,10 +233,6 @@ func (r *Report) StoppedComment(commit string, p *org.Placement, err error) stri
 	var b strings.Builder
 	b.WriteString(commentHead(commit, p))
 	b.WriteString("**The plan stopped before it finished, at the error below: what it had gathered before the stop follows, and it is incomplete.**\n\n")
-	if r == nil {
-		// Refused before its first section: it read nothing.
-		r = &Report{}
-	}
 	pending := r.pendingCreations(p)
 	if len(r.Changes) == 0 && len(pending) == 0 {
 		b.WriteString("It had found no change before the stop.\n")
@@ -342,26 +346,34 @@ func ApplyRun(ctx context.Context, clients *Clients, rc *RunClients, req *RunReq
 	}
 	defer func() { _ = locks.Unlock(ctx, t.p.StateBucket, LockObject) }()
 	report, err := runAndReport(ctx, clients, &Request{Placement: t.p, Dir: req.Dir, Mode: Apply, Commit: t.commit, GitHubToken: infra}, out)
-	// The hosting organizations an apply created before it stopped stand, and their
-	// hand-off pull requests wait: they are named as a finished apply names them. A
-	// stopped apply leaves no marker: the next push applies again.
-	report.writeCreated(out)
 	if err != nil {
+		// The hosting organizations an apply created before it stopped stand, and their
+		// hand-off pull requests wait: they are named as a finished apply names them. A
+		// stopped apply leaves no marker: the next push applies again.
+		var stopped *StoppedError
+		if errors.As(err, &stopped) {
+			stopped.Report.writeCreated(out)
+		}
+
 		return err
 	}
+	report.writeCreated(out)
 
 	return WriteMarker(ctx, clients, t.p, t.commit, report.Applied)
 }
 
 // runAndReport runs the engine and prints its report: a finished run's whole (Write), and
-// before the error of a run that stopped what it had gathered (WriteStopped). It answers
-// what Run answers.
+// before the error of a run that stopped in a section what it had gathered, which the
+// error carries (WriteStopped). It answers what Run answers.
 func runAndReport(ctx context.Context, clients *Clients, req *Request, out io.Writer) (*Report, error) {
 	report, err := Run(ctx, clients, req, out)
 	if err != nil {
-		report.WriteStopped(out, req.Mode)
+		var stopped *StoppedError
+		if errors.As(err, &stopped) {
+			stopped.Report.WriteStopped(out, req.Mode)
+		}
 
-		return report, err
+		return nil, err
 	}
 	report.Write(out, req.Mode)
 
@@ -371,9 +383,6 @@ func runAndReport(ctx context.Context, clients *Clients, req *Request, out io.Wr
 // writeCreated names the hosting organizations the apply created, or found created, each
 // with its hand-off pull request.
 func (r *Report) writeCreated(w io.Writer) {
-	if r == nil {
-		return
-	}
 	for _, c := range r.Created {
 		if c.Already {
 			fmt.Fprintf(w, "%s was created by an earlier run; its hand-off pull request: %s\n", c.Prefix, c.PullRequest)

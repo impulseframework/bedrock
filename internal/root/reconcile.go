@@ -132,12 +132,34 @@ type engine struct {
 	secretsSettled bool
 }
 
-// Run runs the engine in the request's mode and answers the report. In Apply mode a
-// change that fails stops the run with the changes before it made. A run that stops on an
-// error in one of its sections answers, beside the error, the report of what it had
-// gathered before the stop, which the caller prints with WriteStopped so that the
-// findings of the sections that finished are not lost with it. A run refused before its
-// first section has read nothing and made nothing, and answers no report.
+// StoppedError is the error of a run that stopped in one of its sections: the section's
+// error, and with it the report of what the run had gathered before the stop. Its text,
+// its cause and what errors.Is and errors.As find in it are the section's error's, so it
+// is handled and printed as that error is; a caller that prints a report takes the
+// stopped run's from it with errors.As.
+type StoppedError struct {
+	// Report is what the run had gathered before the stop: the changes it had listed or
+	// made, and the findings and notes of the sections that finished. It is never nil.
+	Report *Report
+	err    error
+}
+
+func (s *StoppedError) Error() string {
+	return s.err.Error()
+}
+
+// Unwrap answers the section's error the run stopped at.
+func (s *StoppedError) Unwrap() error {
+	return s.err
+}
+
+// Run runs the engine in the request's mode and answers the report, or an error and no
+// report. In Apply mode a change that fails stops the run with the changes before it
+// made. A run that stops on an error in one of its sections answers a *StoppedError,
+// which carries the report of what it had gathered before the stop: the caller takes it
+// from the error and prints it with WriteStopped, so that the findings of the sections
+// that finished are not lost with it. A run refused before its first section has read
+// nothing and made nothing: its error is the refusal alone, and no report of it exists.
 func Run(ctx context.Context, clients *Clients, req *Request, out io.Writer) (*Report, error) {
 	if !req.Placement.IsRoot() {
 		return nil, errors.Newf("the %s organization is a hosting organization: the engine runs a root organization", req.Placement.Prefix)
@@ -172,25 +194,26 @@ func Run(ctx context.Context, clients *Clients, req *Request, out io.Writer) (*R
 	}
 	for _, section := range sections {
 		if err := section(ctx); err != nil {
-			return e.stopped(), err
+			return nil, e.stopped(err)
 		}
 	}
 
 	return e.report, nil
 }
 
-// stopped is the report of a run that ends on a section's error: what it had gathered,
-// less what only a run that got further may say. The finding that tells a person to take
-// the infrastructure app's permission on the organization's secrets off is the apps
-// section's, and it stands only once the run has found nothing left for the permission
-// to do (releaseSecrets); a run that stopped before that, in whatever section, has not
-// found it, and its report is printed all the same.
-func (e *engine) stopped() *Report {
+// stopped is the error of a run that ends on a section's error: the error, carrying the
+// report of what the run had gathered, less what only a run that got further may say.
+// The finding that tells a person to take the infrastructure app's permission on the
+// organization's secrets off is the apps section's, and it stands only once the run has
+// found nothing left for the permission to do (releaseSecrets); a run that stopped
+// before that, in whatever section, has not found it, and its report is printed all the
+// same.
+func (e *engine) stopped(err error) error {
 	if !e.secretsSettled {
 		e.holdSecretsFinding()
 	}
 
-	return e.report
+	return &StoppedError{Report: e.report, err: err}
 }
 
 // stoppedAt records the change an apply tried and could not finish, where the change is
@@ -1498,23 +1521,20 @@ func (r *Report) writeGathered(w io.Writer, mode Mode) {
 // Gathered reports whether the run listed a change, a finding or a note: what a run that
 // stopped on an error has to show for the sections it finished.
 func (r *Report) Gathered() bool {
-	return r != nil && (len(r.Changes) > 0 || len(r.Findings) > 0 || len(r.Notes) > 0)
+	return len(r.Changes) > 0 || len(r.Findings) > 0 || len(r.Notes) > 0
 }
 
-// WriteStopped prints the report of a run that ended on an error, in place of Write: one
-// sentence that the run stopped and that what follows is incomplete, then what it had
-// gathered before the stop (each change it had listed, each finding, each note) and how
-// far it got. The error is the caller's to return, and is printed after this as it is
-// printed alone when a plan or a check had gathered nothing, for which nothing is written
-// here. An apply always says how many changes it made before the stop, and where it
-// stopped at a change it names it as not counted, since a change that failed may stand
-// in part: it never counts a change it did not finish. A run refused before its first
-// section has no report (nil, as Run answers it): it read nothing and made nothing, its
-// error says so, and nothing is written for it.
+// WriteStopped prints the report of a run that stopped in one of its sections (the
+// report its StoppedError carries), in place of Write: one sentence that the run stopped
+// and that what follows is incomplete, then what it had gathered before the stop (each
+// change it had listed, each finding, each note) and how far it got. The error is the
+// caller's to return, and is printed after this as it is printed alone when a plan or a
+// check had gathered nothing, for which nothing is written here. An apply always says
+// how many changes it made before the stop, and where it stopped at a change it names it
+// as not counted, since a change that failed may stand in part: it never counts a change
+// it did not finish. A run refused before its first section has no report to print: it
+// read nothing and made nothing, its error says so, and nothing is written for it.
 func (r *Report) WriteStopped(w io.Writer, mode Mode) {
-	if r == nil {
-		return
-	}
 	if !r.Gathered() {
 		if mode == Apply {
 			fmt.Fprintln(w, "The run stopped before it finished, at the error below: it had made no change and had no finding or note before the stop.")

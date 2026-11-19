@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-playground/errors/v5"
+
 	"github.com/impulseframework/bedrock/internal/deploy"
 	"github.com/impulseframework/bedrock/internal/domain"
 	"github.com/impulseframework/bedrock/internal/github"
@@ -220,6 +222,68 @@ func TestRootOrgCheckEngine(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("printed:\n%s\nwant it to contain %q", out, want)
 		}
+	}
+}
+
+// TestRootOrgCheckEngineStopped: when the engine's comparison ends on an error, org check
+// says so and goes on to its verdict on the render, which is all it gates on. A
+// comparison that stopped after sections that had listed something prints them as
+// incomplete and says the organization was compared in part; one that stopped at its
+// first read, and one refused before its first section, which has no report, say that
+// the organization was not compared, with the error alone.
+func TestRootOrgCheckEngineStopped(t *testing.T) {
+	t.Parallel()
+
+	stop := errors.New("refused in this test")
+	tests := []struct {
+		name    string
+		arrange func(d deps, fake *roottest.Fake)
+		want    []string
+		wantNot string
+	}{
+		{
+			name:    "a read after sections that listed changes",
+			arrange: func(_ deps, fake *roottest.Fake) { fake.Refuse["Budgets"] = stop },
+			want: []string{
+				"The run stopped before it finished, at the error below: what it had gathered before the stop follows, and it is incomplete.\n",
+				"identities: the apply creates the identity imr-root-gbl-planner@imr-root-gbl-core-c3d4.iam.gserviceaccount.com\n",
+				"\nBefore the stop: ",
+				"\nThe root organization was compared with Google Cloud only in part: refused in this test\n",
+			},
+			wantNot: "was not compared with Google Cloud",
+		},
+		{
+			name:    "the first read of the first section",
+			arrange: func(_ deps, fake *roottest.Fake) { fake.Refuse["EnabledServices"] = stop },
+			want:    []string{"The root organization was not compared with Google Cloud: refused in this test\n"},
+			wantNot: "stopped",
+		},
+		{
+			name:    "a client that is not wired, before the first section",
+			arrange: func(d deps, _ *roottest.Fake) { d.org.root.OrgPolicies = nil },
+			want:    []string{"The root organization was not compared with Google Cloud: no Org Policy client is wired: the root organization sets the organization policies of its hosting organizations\n"},
+			wantNot: "stopped",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			d, fake, _, dir := rootWorld(t)
+			tt.arrange(d, fake)
+			out, err := execute(d, "", "org", "check", "--dir", dir)
+			if err != nil {
+				t.Fatalf("org check = %v; printed:\n%s", err, out)
+			}
+			for _, want := range append(tt.want, "owned file(s) match the placement") {
+				if !strings.Contains(out, want) {
+					t.Errorf("printed:\n%s\nwant it to contain %q", out, want)
+				}
+			}
+			if strings.Contains(out, tt.wantNot) {
+				t.Errorf("printed:\n%s\nwant nothing of %q", out, tt.wantNot)
+			}
+		})
 	}
 }
 

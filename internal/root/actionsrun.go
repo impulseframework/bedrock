@@ -88,7 +88,7 @@ func ActionsPlan(ctx context.Context, clients *Clients, req *ActionsRequest, out
 	}
 	report, err := Run(ctx, clients, &Request{Placement: p, Dir: req.Dir, Mode: Plan, Commit: req.Commit, GitHubToken: token}, out)
 	if err != nil {
-		return stoppedPlan(report, err, req.Commit, p, out, func(body string) error {
+		return stoppedPlan(err, req.Commit, p, out, func(body string) error {
 			return postPlan(ctx, clients.GitHub(token), p, number, body, org.InfrastructureApp.Title(), out)
 		})
 	}

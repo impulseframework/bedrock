@@ -592,8 +592,11 @@ func rootEngineReport(ctx context.Context, d deps, p *org.Placement, dir string,
 	}
 	report, err := rootorg.Run(ctx, clients, &rootorg.Request{Placement: p, Dir: dir, Mode: rootorg.Check, GitHubToken: token}, out)
 	if err != nil {
-		report.WriteStopped(out, rootorg.Check)
-		if report.Gathered() {
+		// A comparison that stopped in one of the engine's sections carries in its error
+		// what it had gathered; one refused before the first section read nothing.
+		var stopped *rootorg.StoppedError
+		if errors.As(err, &stopped) && stopped.Report.Gathered() {
+			stopped.Report.WriteStopped(out, rootorg.Check)
 			fmt.Fprintf(out, "The root organization was compared with %s only in part: %v\n", with, errors.Cause(err))
 		} else {
 			fmt.Fprintf(out, "The root organization was not compared with %s: %v\n", with, errors.Cause(err))
