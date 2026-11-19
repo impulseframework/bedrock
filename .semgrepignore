@@ -2,9 +2,9 @@
 # the scan whole: no rule reads the file, so a finding of any rule in it is never
 # reported, not only a finding of the audit its reason names. The reason above each path
 # says which audit found something in the file and why that audit does not apply. A
-# finding that belongs to one line is marked on that line instead, with a nosemgrep
-# comment that names the one rule, and every other rule still reads the file: the two
-# files that execute text/template are marked that way, at the import.
+# finding that belongs to one line is marked instead, with a nosemgrep comment on the line
+# above it that names the one rule, and every other rule still reads the file: the two
+# files that execute text/template are marked that way, above the import.
 #
 # The GitHub test fake answers JSON to the client under test, so the direct-write audit
 # (an HTML page writing user data) does not apply to it.

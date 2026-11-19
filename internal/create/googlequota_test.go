@@ -107,10 +107,12 @@ func TestNewGoogleHandsEveryClientTheOptionsItIsGiven(t *testing.T) {
 	}
 }
 
-// TestOptionsForAllLeavesNoClientOut: every client of the set is given the options the
-// constructors pass, and the storage client its own. A client added to the set and left
-// out of optionsForAll would open with no options at all: with the process's own
+// TestOptionsForAllLeavesNoClientOut: optionsForAll fills every list of googleOptions,
+// the storage client's with the storage options and each other with the shared ones. A
+// list it left empty would open its client with no options at all: with the process's own
 // credentials where the others open as the creating identity, and with no quota project.
+// The test reads the lists of googleOptions and nothing else: that every client of the
+// set has a list, and opens with it, is TestEveryClientOpensWithItsOwnOptions.
 func TestOptionsForAllLeavesNoClientOut(t *testing.T) {
 	t.Parallel()
 
@@ -124,6 +126,143 @@ func TestOptionsForAllLeavesNoClientOut(t *testing.T) {
 		}
 		if n := got.Field(i).Len(); n != want {
 			t.Errorf("optionsForAll() gives the %s client %d option(s), want %d", name, n, want)
+		}
+	}
+}
+
+// TestEveryClientOpensWithItsOwnOptions: every client of the set has a list of options of
+// its own in googleOptions, and opens with that list and no other. A client added to the
+// set with no list, or opened with nothing, would open with the process's own credentials
+// where the others open as the creating identity, and with no quota project; a client
+// opened with another client's list leaves its own unread. Three things are read. Every
+// client of the set has a list by its name. The whole set opens with lists that need no
+// credentials while the process's default credentials are named by a file that is not
+// there, so a client opened with nothing looks for them and the set cannot open. And each
+// list in turn is replaced with options Google's transport refuses, and the opening must
+// then fail at the client the list belongs to: a list no client opens with fails nothing,
+// and a list another client opens with fails there.
+func TestEveryClientOpensWithItsOwnOptions(t *testing.T) {
+	// The variable is the process's, so the test runs alone: t.Setenv forbids t.Parallel.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
+
+	// refusals are, by the name of each list of googleOptions, how that list is replaced
+	// with the refused options, and the constructor the failed opening then names.
+	refusals := map[string]struct {
+		refuse  func(opts *googleOptions)
+		wantErr string
+	}{
+		"folders": {
+			refuse: func(opts *googleOptions) {
+				opts.folders = refused()
+			},
+			wantErr: "resourcemanager.NewFoldersClient()",
+		},
+		"projects": {
+			refuse: func(opts *googleOptions) {
+				opts.projects = refused()
+			},
+			wantErr: "resourcemanager.NewProjectsClient()",
+		},
+		"iam": {
+			refuse: func(opts *googleOptions) {
+				opts.iam = refused()
+			},
+			wantErr: "admin.NewIamClient()",
+		},
+		"billing": {
+			refuse: func(opts *googleOptions) {
+				opts.billing = refused()
+			},
+			wantErr: "cloudbilling.NewService()",
+		},
+		"services": {
+			refuse: func(opts *googleOptions) {
+				opts.services = refused()
+			},
+			wantErr: "serviceusage.NewService()",
+		},
+		"servicesBeta": {
+			refuse: func(opts *googleOptions) {
+				opts.servicesBeta = refused()
+			},
+			wantErr: "serviceusagebeta.NewService()",
+		},
+		"storage": {
+			refuse: func(opts *googleOptions) {
+				opts.storage = refused()
+			},
+			wantErr: "storage.NewClient()",
+		},
+		"secrets": {
+			refuse: func(opts *googleOptions) {
+				opts.secrets = refused()
+			},
+			wantErr: "secretmanager.NewClient()",
+		},
+		"dns": {
+			refuse: func(opts *googleOptions) {
+				opts.dns = refused()
+			},
+			wantErr: "dns.NewService()",
+		},
+		"budgets": {
+			refuse: func(opts *googleOptions) {
+				opts.budgets = refused()
+			},
+			wantErr: "billingbudgets.NewService()",
+		},
+	}
+
+	// Every field of the set is a client, but for the two named here, and a client has a
+	// list by its own name.
+	notClients := map[string]bool{"secretOpts": true, "regional": true}
+	lists, set := reflect.TypeFor[googleOptions](), reflect.TypeFor[google]()
+	listed := map[string]bool{}
+	for i := range lists.NumField() {
+		listed[lists.Field(i).Name] = true
+	}
+	for i := range set.NumField() {
+		name := set.Field(i).Name
+		if !listed[name] && !notClients[name] {
+			t.Errorf("the set's %s has no list of options by its name in googleOptions: a client opens with a list of its own, which optionsForAll fills, and a field that is not a client is named in this test", name)
+		}
+	}
+
+	ctx := context.Background()
+	opts, _ := watchedGoogleOptions(t)
+	whole, err := newGoogle(ctx, opts)
+	if err != nil {
+		t.Fatalf("newGoogle() with every list filled = %v: with the process's credentials missing, a client that opens with nothing, or with a list that was not filled, cannot be opened", err)
+	}
+	if err := whole.Close(); err != nil {
+		t.Errorf("Close() = %v", err)
+	}
+
+	for i := range lists.NumField() {
+		name := lists.Field(i).Name
+		tt, ok := refusals[name]
+		if !ok {
+			t.Errorf("googleOptions has the list %s, and this test does not refuse it: enter it with the constructor its client opens with", name)
+
+			continue
+		}
+		opts, _ := watchedGoogleOptions(t)
+		tt.refuse(opts)
+		// The entry refuses the list it is entered under, and that list alone.
+		for j, got := 0, reflect.ValueOf(opts).Elem(); j < got.NumField(); j++ {
+			if other := got.Type().Field(j).Name; (got.Field(j).Len() == len(refused())) != (other == name) {
+				t.Fatalf("the entry for %s leaves the list %s with %d option(s): it is to refuse %s and no other list", name, other, got.Field(j).Len(), name)
+			}
+		}
+		g, err := newGoogle(ctx, opts)
+		if err == nil {
+			_ = g.Close()
+			t.Errorf("newGoogle() opened every client with the list %s refused: no client opens with that list", name)
+
+			continue
+		}
+		if !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("newGoogle() with the list %s refused = %v, want the refusal of %s: another client opens with that list", name, err, tt.wantErr)
 		}
 	}
 }

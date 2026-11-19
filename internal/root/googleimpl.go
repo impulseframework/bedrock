@@ -656,8 +656,11 @@ type iamClients struct {
 
 // iamOptions are the options each client of the set opens with, client by client. NewIAM
 // gives none, so each client opens with the process's default credentials. A test gives
-// each client a connection of its own: that is how it makes one opening fail, and how it
-// reads which clients the failed opening closed.
+// each client that holds a connection one of its own, and reads from it whether the
+// client was closed: each gRPC client a gRPC connection, the storage client an HTTP
+// client. The two REST clients, Cloud Billing's and Service Usage's, hold no connection
+// and are given none. A test makes one opening fail by giving that client options
+// Google's transport refuses.
 type iamOptions struct {
 	admin, projects, folders, organizations, billing, storage, services []option.ClientOption
 }
@@ -666,7 +669,15 @@ type iamOptions struct {
 // Storage and Service Usage. When one of them cannot be opened, the ones opened before it
 // are closed: the caller is answered no client beside the error, and could close none.
 func NewIAM(ctx context.Context) (IAM, error) {
-	return newIAM(ctx, &iamOptions{})
+	return newIAM(ctx, ownCredentials())
+}
+
+// ownCredentials are the options NewIAM opens each client with: none for any of them, so
+// every client opens with the process's default credentials and bills its calls where
+// those say. An option entered here would change the identity or the project a client
+// calls as, which shows at that client's first call alone, so a test reads the lists.
+func ownCredentials() *iamOptions {
+	return &iamOptions{}
 }
 
 // newIAM opens the clients, each with its own options, and closes the ones it had opened

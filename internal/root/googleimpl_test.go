@@ -5,16 +5,55 @@ import (
 	"crypto/tls"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	admin "cloud.google.com/go/iam/admin/apiv1"
 	resourcemanager "cloud.google.com/go/resourcemanager/apiv3"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 )
+
+// TestNewIAMGivesNoClientAnOption: NewIAM opens every client of the set with no option,
+// so each opens with the process's default credentials and bills its calls where those
+// say. The lists are read as ownCredentials answers them, which is what NewIAM hands the
+// opening. An option entered there would change the identity or the project one client
+// calls as, and only that client's first call would show it.
+func TestNewIAMGivesNoClientAnOption(t *testing.T) {
+	t.Parallel()
+
+	if diff := cmp.Diff(&iamOptions{}, ownCredentials(), cmp.AllowUnexported(iamOptions{}), cmpopts.EquateEmpty()); diff != "" {
+		t.Errorf("ownCredentials() hands a client an option, and NewIAM is to open every client with none (-want +got):\n%s", diff)
+	}
+}
+
+// TestNewIAMOpensWithTheProcessCredentials: NewIAM hands the opening the lists
+// ownCredentials answers, so the first client of the set, IAM's, looks for the process's
+// default credentials. Those are named by a file that is not there: the refusal is that
+// client's, and names the file it looked for. The opening stops there, so this test reads
+// the first client's list alone; the lists of all seven are read as ownCredentials
+// answers them (TestNewIAMGivesNoClientAnOption).
+func TestNewIAMOpensWithTheProcessCredentials(t *testing.T) {
+	// The variable is the process's, so the test runs alone: t.Setenv forbids t.Parallel.
+	missing := filepath.Join(t.TempDir(), "no-credentials.json")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", missing)
+
+	clients, err := NewIAM(context.Background())
+	if err == nil {
+		_ = clients.Close()
+		t.Fatalf("NewIAM() opened the clients with the process's credentials missing: they do not open with them")
+	}
+	for _, want := range []string{"admin.NewIamClient()", missing} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("NewIAM() = %v, want it to name %s", err, want)
+		}
+	}
+}
 
 // TestNewIAMClosesWhatItOpened: an opening that fails partway answers the failure, closes
 // each client it had opened before it, and touches no client it never reached. Every

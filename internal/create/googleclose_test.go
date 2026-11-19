@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -131,6 +132,52 @@ func TestGoogleCloseClosesEachClientItHolds(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestARegionalSecretClientOpensWithTheSecretManagerClientsOptions: the client for a
+// regional secret opens with the options the set's Secret Manager client opened with, at
+// the region's endpoint. Under NewGoogleAs those options are the creating identity's
+// token source, and under NewGoogleBilledTo the quota project: a regional client opened
+// without them would act as the process's own identity, or bill no project, and only a
+// regional secret's first policy read would show it. Here the Secret Manager client's
+// option is a connection of its own, so a regional client opened with that option is
+// built on the same connection, and closing the regional client alone closes it. The
+// process's default credentials are named by a file that is not there, so a regional
+// client handed nothing looks for them and cannot be opened.
+func TestARegionalSecretClientOpensWithTheSecretManagerClientsOptions(t *testing.T) {
+	// The variable is the process's, so the test runs alone: t.Setenv forbids t.Parallel.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
+
+	ctx := context.Background()
+	opts, holders := watchedGoogleOptions(t)
+	opened, err := newGoogle(ctx, opts)
+	if err != nil {
+		t.Fatalf("newGoogle() = %v", err)
+	}
+	g, ok := opened.(*google)
+	if !ok {
+		t.Fatalf("newGoogle() answered a %T, want the set of clients", opened)
+	}
+	t.Cleanup(func() { _ = g.Close() })
+
+	regional, err := g.secretClient(ctx, "projects/imr-root-gbl-core-f2a4/locations/us-central1/secrets/github-app-key")
+	if err != nil {
+		t.Fatalf("secretClient() for a regional secret = %v: the regional client was opened without the Secret Manager client's options, and looked for credentials", err)
+	}
+	if regional == g.secrets {
+		t.Fatal("secretClient() answered the global client for a regional secret")
+	}
+	if err := regional.Close(); err != nil {
+		t.Errorf("Close() of the regional client = %v", err)
+	}
+	for _, h := range holders {
+		switch own, closed := h.name == "Secret Manager", h.closed(); {
+		case own && !closed:
+			t.Errorf("closing the regional client left the Secret Manager client's connection open: the regional client did not open with that client's options")
+		case !own && closed:
+			t.Errorf("closing the regional client closed the %s client's connection: the regional client opened with that client's options", h.name)
+		}
+	}
 }
 
 // holder is a client that holds a connection, and how a test reads whether that

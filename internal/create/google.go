@@ -134,8 +134,11 @@ type google struct {
 
 // googleOptions are the options each client opens with, client by client. The exported
 // constructors give every client the same ones, the storage client apart
-// (NewGoogleBilledTo says why). A test gives each client a connection of its own: that is
-// how it makes one opening fail, and how it reads which clients the failed opening closed.
+// (NewGoogleBilledTo says why). A test gives each client that holds a connection one of
+// its own, and reads from it whether the client was closed: each gRPC client a gRPC
+// connection, the storage client an HTTP client. The REST clients hold no connection and
+// are given none. A test makes one opening fail by giving that client options Google's
+// transport refuses.
 type googleOptions struct {
 	folders, projects, iam, billing, services, servicesBeta, storage, secrets, dns, budgets []option.ClientOption
 }
