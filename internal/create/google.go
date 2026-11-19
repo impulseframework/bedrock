@@ -155,7 +155,16 @@ func optionsForAll(opts, storageOpts []option.ClientOption) *googleOptions {
 
 // NewGoogleAs opens the Google clients as the identity.
 func NewGoogleAs(ctx context.Context, identity string) (Google, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
+	return newGoogleAs(ctx, identity)
+}
+
+// newGoogleAs is NewGoogleAs with the options the impersonation itself opens with.
+// NewGoogleAs gives none, so the identity is impersonated with the process's default
+// credentials. A test gives an HTTP client that stands in for the IAM Credentials API,
+// where the identity's token is asked for, and reads from a call's refusal whose token the
+// clients call with.
+func newGoogleAs(ctx context.Context, identity string, impersonation ...option.ClientOption) (Google, error) {
+	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}}, impersonation...)
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
@@ -181,8 +190,9 @@ func NewGoogleBilledTo(ctx context.Context, quotaProject string) (Google, error)
 
 // billedToOptions are the options NewGoogleBilledTo opens each client with: the quota
 // project for every client but the storage client, which is handed nothing, and nothing
-// for any client when there is no quota project. NewGoogleBilledTo opens with the
-// process's own credentials, so no test can run it: a test reads these options instead.
+// for any client when there is no quota project. A test reads these options, and reads
+// that NewGoogleBilledTo opens with them from the one list the set keeps, the Secret
+// Manager client's.
 func billedToOptions(quotaProject string) *googleOptions {
 	if quotaProject == "" {
 		return optionsForAll(nil, nil)

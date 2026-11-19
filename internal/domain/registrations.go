@@ -19,7 +19,6 @@ import (
 	domains "cloud.google.com/go/domains/apiv1beta1"
 	"cloud.google.com/go/domains/apiv1beta1/domainspb"
 	"github.com/go-playground/errors/v5"
-	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -112,7 +111,7 @@ type registrations struct {
 // Credentials, billing its calls to the project (the quota project): the network project,
 // where the registrations are and the layer enables the API.
 func NewRegistrationReader(ctx context.Context, project string) (RegistrationReader, error) {
-	client, err := domains.NewClient(ctx, option.WithQuotaProject(project))
+	client, err := domains.NewClient(ctx, billedTo(project)...)
 	if err != nil {
 		return nil, errors.Wrap(err, "domains.NewClient()")
 	}

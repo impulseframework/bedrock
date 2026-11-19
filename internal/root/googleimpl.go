@@ -230,7 +230,16 @@ func NewDNS(ctx context.Context) (DNS, error) {
 // NewDNSAs opens Cloud DNS as the identity, impersonated by the process's credentials:
 // the bootstrap makes the zones as the applier.
 func NewDNSAs(ctx context.Context, identity string) (DNS, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
+	return newDNSAs(ctx, identity)
+}
+
+// newDNSAs is NewDNSAs with the options the impersonation itself opens with. NewDNSAs
+// gives none, so the identity is impersonated with the process's default credentials. A
+// test gives an HTTP client that stands in for the IAM Credentials API, where the
+// identity's token is asked for, and reads from a call's refusal whose token the client
+// calls with. NewVerifierAs and NewBudgetsAs are split the same way, for the same test.
+func newDNSAs(ctx context.Context, identity string, impersonation ...option.ClientOption) (DNS, error) {
+	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}}, impersonation...)
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
@@ -247,7 +256,13 @@ func NewDNSAs(ctx context.Context, identity string) (DNS, error) {
 // creating identity, and itself, since a token for a Google API outside Cloud Platform's
 // scope comes from IAM Credentials and not from the build's own credentials.
 func NewVerifierAs(ctx context.Context, identity string) (Verifier, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope, siteverification.SiteverificationScope}})
+	return newVerifierAs(ctx, identity)
+}
+
+// newVerifierAs is NewVerifierAs with the options the impersonation itself opens with:
+// none from NewVerifierAs, a stand-in for the IAM Credentials API from a test.
+func newVerifierAs(ctx context.Context, identity string, impersonation ...option.ClientOption) (Verifier, error) {
+	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope, siteverification.SiteverificationScope}}, impersonation...)
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
@@ -1244,7 +1259,7 @@ func wrapf(err error, format string, args ...any) error {
 
 // NewOrgPolicies opens the Org Policy client with the application default credentials.
 func NewOrgPolicies(ctx context.Context, quotaProject string) (OrgPolicies, error) {
-	c, err := orgpolicy.NewClient(ctx, option.WithQuotaProject(quotaProject))
+	c, err := orgpolicy.NewClient(ctx, billedTo(quotaProject)...)
 	if err != nil {
 		return nil, errors.Wrap(err, "orgpolicy.NewClient()")
 	}
@@ -1351,13 +1366,27 @@ func policyFromProto(p *orgpolicypb.Policy) *Policy {
 // NewBudgets opens the Budgets API with the run's credentials, billing its calls to the
 // root project: a person's application default credentials name no project of their own.
 func NewBudgets(ctx context.Context, quotaProject string) (budgets.Client, error) {
-	return budgets.New(ctx, option.WithQuotaProject(quotaProject))
+	return budgets.New(ctx, billedTo(quotaProject)...)
+}
+
+// billedTo are the options NewOrgPolicies and NewBudgets open their client with: the
+// quota project, which is the project the client's calls are billed to, and nothing
+// else, so the client opens with the process's default credentials. A test reads these
+// options, since a call that would show the project needs credentials a test has none of.
+func billedTo(quotaProject string) []option.ClientOption {
+	return []option.ClientOption{option.WithQuotaProject(quotaProject)}
 }
 
 // NewBudgetsAs opens the Budgets API as the identity the credentials impersonate: the
 // applier as the creating identity, which holds Billing Account Administrator.
 func NewBudgetsAs(ctx context.Context, identity string) (budgets.Client, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
+	return newBudgetsAs(ctx, identity)
+}
+
+// newBudgetsAs is NewBudgetsAs with the options the impersonation itself opens with:
+// none from NewBudgetsAs, a stand-in for the IAM Credentials API from a test.
+func newBudgetsAs(ctx context.Context, identity string, impersonation ...option.ClientOption) (budgets.Client, error) {
+	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}}, impersonation...)
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}

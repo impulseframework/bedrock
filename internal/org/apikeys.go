@@ -158,7 +158,16 @@ func NewKeyLister(ctx context.Context) (KeyLister, error) {
 // process's default credentials: bedrock org apply restricts Firebase's browser key as
 // the environment's layer identity.
 func NewKeyClientAs(ctx context.Context, identity string) (KeyClient, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
+	return newKeyClientAs(ctx, identity)
+}
+
+// newKeyClientAs is NewKeyClientAs with the options the impersonation itself opens with.
+// NewKeyClientAs gives none, so the identity is impersonated with the process's default
+// credentials. A test gives an HTTP client that stands in for the IAM Credentials API,
+// where the identity's token is asked for, and reads from a call's refusal whose token the
+// client calls with.
+func newKeyClientAs(ctx context.Context, identity string, impersonation ...option.ClientOption) (KeyClient, error) {
+	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}}, impersonation...)
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}

@@ -67,19 +67,41 @@ func NewSecretManager(ctx context.Context) (Secrets, error) {
 // default credentials: the plan's tests read a version's state as the identity the plan
 // ran as, which may read what the deploy identity may not.
 func NewSecretManagerAs(ctx context.Context, identity string) (Secrets, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
-		TargetPrincipal: identity,
-		Scopes:          []string{"https://www.googleapis.com/auth/cloud-platform"},
-	})
+	return newSecretManagerAs(ctx, identity)
+}
+
+// newSecretManagerAs is NewSecretManagerAs with the options the impersonation itself
+// opens with. NewSecretManagerAs gives none, so the identity is impersonated with the
+// process's default credentials; a test gives an HTTP client that stands in for the IAM
+// Credentials API, where the identity's token is asked for.
+func newSecretManagerAs(ctx context.Context, identity string, impersonation ...option.ClientOption) (Secrets, error) {
+	opts, err := secretManagerAsOptions(ctx, identity, impersonation...)
 	if err != nil {
-		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
+		return nil, err
 	}
-	client, err := secretmanager.NewClient(ctx, option.WithTokenSource(source))
+	client, err := secretmanager.NewClient(ctx, opts...)
 	if err != nil {
 		return nil, errors.Wrap(err, "secretmanager.NewClient()")
 	}
 
 	return &secretManager{client: client}, nil
+}
+
+// secretManagerAsOptions are the options the Secret Manager client opens with as the
+// identity: the source of the identity's token, asked for with Cloud Platform's scope.
+// The client is a gRPC client, which asks for its token only once it holds a connection
+// to Google, so a test cannot read the token from a call of the client itself: it reads
+// these options with a client that asks before it sends anything.
+func secretManagerAsOptions(ctx context.Context, identity string, impersonation ...option.ClientOption) ([]option.ClientOption, error) {
+	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
+		TargetPrincipal: identity,
+		Scopes:          []string{"https://www.googleapis.com/auth/cloud-platform"},
+	}, impersonation...)
+	if err != nil {
+		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
+	}
+
+	return []option.ClientOption{option.WithTokenSource(source)}, nil
 }
 
 type secretManager struct {

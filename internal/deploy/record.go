@@ -516,21 +516,40 @@ type StoreAsFunc func(ctx context.Context, identity string) (Store, error)
 // deployment records as that environment's plan identity, which may read what the
 // deploy identity may not.
 func NewStorageAs(ctx context.Context, identity string) (Store, error) {
-	return storageAs(ctx, identity, "https://www.googleapis.com/auth/devstorage.read_only")
+	return newStorageAs(ctx, identity)
+}
+
+// newStorageAs is NewStorageAs with the options the impersonation itself opens with:
+// none from NewStorageAs, a stand-in for the IAM Credentials API from a test (storageAs).
+func newStorageAs(ctx context.Context, identity string, impersonation ...option.ClientOption) (Store, error) {
+	return storageAs(ctx, identity, "https://www.googleapis.com/auth/devstorage.read_only", impersonation...)
 }
 
 // NewStorageAsWriter opens Cloud Storage as the identity for writing: the stack
 // trigger's teardown, run as the deploy identity, writes its record under the prefix
 // the apply identity alone writes (<app>/stacks/).
 func NewStorageAsWriter(ctx context.Context, identity string) (Store, error) {
-	return storageAs(ctx, identity, "https://www.googleapis.com/auth/devstorage.read_write")
+	return newStorageAsWriter(ctx, identity)
 }
 
-func storageAs(ctx context.Context, identity, scope string) (Store, error) {
+// newStorageAsWriter is NewStorageAsWriter with the options the impersonation itself
+// opens with: none from NewStorageAsWriter, a stand-in for the IAM Credentials API from a
+// test (storageAs).
+func newStorageAsWriter(ctx context.Context, identity string, impersonation ...option.ClientOption) (Store, error) {
+	return storageAs(ctx, identity, "https://www.googleapis.com/auth/devstorage.read_write", impersonation...)
+}
+
+// storageAs opens Cloud Storage as the identity, whose token is asked for with the scope.
+// The impersonation itself opens with the options given: none in the module's own code,
+// so the identity is impersonated with the process's default credentials. A test gives
+// an HTTP client that stands in for the IAM Credentials API, where the identity's token
+// is asked for, and reads from a call's refusal whose token the client calls with, and
+// with which scope.
+func storageAs(ctx context.Context, identity, scope string, impersonation ...option.ClientOption) (Store, error) {
 	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
 		TargetPrincipal: identity,
 		Scopes:          []string{scope},
-	})
+	}, impersonation...)
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
