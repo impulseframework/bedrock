@@ -173,11 +173,19 @@ func NewGoogle(ctx context.Context, opts ...option.ClientOption) (Google, error)
 // it appends an HTTP client of its own to the options, which Google's transport refuses
 // beside a quota project, and Cloud Storage asks a person's credentials for none.
 func NewGoogleBilledTo(ctx context.Context, quotaProject string) (Google, error) {
+	return newGoogle(ctx, billedToOptions(quotaProject))
+}
+
+// billedToOptions are the options NewGoogleBilledTo opens each client with: the quota
+// project for every client but the storage client, which is handed nothing, and nothing
+// for any client when there is no quota project. NewGoogleBilledTo opens with the
+// process's own credentials, so no test can run it: a test reads these options instead.
+func billedToOptions(quotaProject string) *googleOptions {
 	if quotaProject == "" {
-		return NewGoogle(ctx)
+		return optionsForAll(nil, nil)
 	}
 
-	return newGoogle(ctx, optionsForAll([]option.ClientOption{option.WithQuotaProject(quotaProject)}, nil))
+	return optionsForAll([]option.ClientOption{option.WithQuotaProject(quotaProject)}, nil)
 }
 
 // newGoogle opens the clients, each with its own options. When one of them cannot be

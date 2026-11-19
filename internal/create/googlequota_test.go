@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"google.golang.org/api/option"
 )
 
@@ -29,6 +31,51 @@ func TestNewGoogleSplitsTheQuotaProjectFromStorage(t *testing.T) {
 	}
 	if _, err := newGoogle(ctx, optionsForAll(billed, billed)); err == nil || !strings.Contains(err.Error(), "WithHTTPClient is incompatible with QuotaProject") {
 		t.Errorf("newGoogle() with the quota project on the storage client too = %v, want Google's refusal, the reason for the split", err)
+	}
+}
+
+// TestBilledToOptionsKeepTheQuotaProjectOffStorage: NewGoogleBilledTo hands every client
+// the quota project and the storage client nothing, and with no quota project it hands no
+// client anything. The lists are read as billedToOptions answers them, since
+// NewGoogleBilledTo itself opens with the process's own credentials and a test has none.
+// A quota project handed to the storage client would otherwise show at the break-glass
+// account's terminal alone, as the refusal TestNewGoogleSplitsTheQuotaProjectFromStorage
+// reads; one taken off another client, as that API's refusal of a person's credentials.
+func TestBilledToOptionsKeepTheQuotaProjectOffStorage(t *testing.T) {
+	t.Parallel()
+
+	const project = "imr-root-gbl-core-f2a4"
+	billed := []option.ClientOption{option.WithQuotaProject(project)}
+	tests := []struct {
+		name         string
+		quotaProject string
+		want         *googleOptions
+	}{
+		{
+			// Every client is named but the storage client. A client added to the set is
+			// decided here too: with the quota project, or beside the storage client.
+			name:         "a quota project is handed to every client but the storage client",
+			quotaProject: project,
+			want: &googleOptions{
+				folders: billed, projects: billed, iam: billed, billing: billed, services: billed, servicesBeta: billed,
+				secrets: billed, dns: billed, budgets: billed,
+			},
+		},
+		{
+			name:         "no quota project is no option for any client",
+			quotaProject: "",
+			want:         &googleOptions{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := billedToOptions(tt.quotaProject)
+			if diff := cmp.Diff(tt.want, got, cmp.AllowUnexported(googleOptions{}), cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("billedToOptions(%q) hands a client other options than NewGoogleBilledTo is to open it with (-want +got):\n%s", tt.quotaProject, diff)
+			}
+		})
 	}
 }
 
