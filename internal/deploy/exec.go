@@ -66,6 +66,10 @@ func (OSRunner) Output(ctx context.Context, c Command, errOut io.Writer) ([]byte
 }
 
 func command(ctx context.Context, c Command) *exec.Cmd {
+	// This is the deploy steps' runner: the program is the one a step drives (tofu, docker,
+	// an application's hook script through bash), and the arguments are the ones the step
+	// builds. Running the program it is handed is what the runner is for.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
 	cmd.Dir = c.Dir
 	cmd.Env = append(os.Environ(), c.Env...)

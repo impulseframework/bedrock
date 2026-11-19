@@ -1664,7 +1664,11 @@ func reply(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(body); err != nil {
-		// The client reads a truncated answer; the test then fails on it.
+		// The client reads a truncated answer; the test then fails on it. The audit is of
+		// an HTML page that writes what a user sent: this is the test fake of GitHub's API,
+		// it answers the client under test, and what it writes here is its own encoder's
+		// error under a JSON content type.
+		// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter
 		_, _ = w.Write([]byte(strings.TrimSpace(err.Error())))
 	}
 }

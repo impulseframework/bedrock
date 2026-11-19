@@ -119,21 +119,32 @@ func server(t *testing.T, releases string, assets map[string]string) *Source {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/impulseframework/bedrock/releases", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") != "1" {
-			_, _ = w.Write([]byte("[]"))
+			answerWith(w, "[]")
 
 			return
 		}
-		_, _ = w.Write([]byte(releases))
+		answerWith(w, releases)
 	})
 	for name, content := range assets {
 		mux.HandleFunc("/impulseframework/bedrock/releases/download/v0.4.0/"+name, func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(content))
+			answerWith(w, content)
 		})
 	}
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
 	return &Source{Base: srv.URL, API: srv.URL, HTTP: srv.Client()}
+}
+
+// answerWith writes the body as a test server's answer. Every handler of the servers in
+// this file answers through it, so what they write is marked in one place.
+func answerWith(w http.ResponseWriter, body string) {
+	// The audit is of an HTML page that writes what a user sent. These servers stand in
+	// for GitHub and the Go module proxy: they answer what those would (JSON, a release's
+	// files, a go.mod) to the client under test, from the test's own tables, and no
+	// browser reads them.
+	// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter
+	_, _ = w.Write([]byte(body))
 }
 
 func TestLatest(t *testing.T) {
@@ -304,12 +315,12 @@ func proxyServer(t *testing.T) *Source {
 		file := strings.TrimPrefix(r.URL.Path, "/github.com/impulseframework/bedrock/@v/")
 		if rev, ok := strings.CutSuffix(file, ".info"); ok && infos[rev] != "" {
 			version := infos[rev]
-			_, _ = fmt.Fprintf(w, `{"Version":%q,"Time":"2026-09-28T22:22:37Z","Origin":{"VCS":"git","Hash":%q}}`, version, origins[version])
+			answerWith(w, fmt.Sprintf(`{"Version":%q,"Time":"2026-09-28T22:22:37Z","Origin":{"VCS":"git","Hash":%q}}`, version, origins[version]))
 
 			return
 		}
 		if version, ok := strings.CutSuffix(file, ".mod"); ok && mods[version] != "" {
-			_, _ = w.Write([]byte(mods[version]))
+			answerWith(w, mods[version])
 
 			return
 		}
@@ -327,15 +338,15 @@ func proxyServer(t *testing.T) *Source {
 
 			return
 		}
-		_, _ = fmt.Fprintf(w, `{"object":{"type":"commit","sha":%q}}`, head)
+		answerWith(w, fmt.Sprintf(`{"object":{"type":"commit","sha":%q}}`, head))
 	})
 	mux.HandleFunc("/repos/impulseframework/bedrock/branches", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") != "1" {
-			_, _ = w.Write([]byte("[]"))
+			answerWith(w, "[]")
 
 			return
 		}
-		_, _ = fmt.Fprintf(w, `[{"name":"feature/abac-implementation","commit":{"sha":%q}},{"name":"master","commit":{"sha":%q}}]`, headCommit, replacedCommit)
+		answerWith(w, fmt.Sprintf(`[{"name":"feature/abac-implementation","commit":{"sha":%q}},{"name":"master","commit":{"sha":%q}}]`, headCommit, replacedCommit))
 	})
 	// comparisons are what GitHub says of a branch against a commit: ahead when the branch
 	// holds the commit.
@@ -350,7 +361,7 @@ func proxyServer(t *testing.T) *Source {
 
 			return
 		}
-		_, _ = fmt.Fprintf(w, `{"status":%q}`, status)
+		answerWith(w, fmt.Sprintf(`{"status":%q}`, status))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

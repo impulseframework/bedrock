@@ -52,6 +52,9 @@ func TestProgram(t *testing.T) {
 			t.Parallel()
 
 			port := freePort(t)
+			// The program is this test binary, started as the welcome program, and the
+			// arguments are the table's above: the ones a Cloud Run service passes it.
+			// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 			cmd := exec.CommandContext(t.Context(), os.Args[0], test.args...)
 			cmd.Env = append(os.Environ(), asProgram+"=1", "PORT="+port)
 			var output bytes.Buffer

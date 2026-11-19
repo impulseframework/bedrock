@@ -116,6 +116,10 @@ func indexProblems(idx int, ups, downs []Entry) []Problem {
 // GitHub API lists for a file at a commit, so a file in the tree is compared with the
 // one committed without reading the committed content.
 func BlobSHA(content []byte) string {
+	// SHA-1 is the hash git names a blob by, so no other hash gives the name the GitHub
+	// API lists. The name is compared with a committed file's: naming, not cryptography,
+	// and nothing is kept secret or signed with it.
+	// nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-sha1
 	h := sha1.New()
 	fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write(content)
