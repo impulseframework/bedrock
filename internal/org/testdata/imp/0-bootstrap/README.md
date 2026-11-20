@@ -104,8 +104,11 @@ applies would, and left no person with a grant to trim:
    enabled; the boot layer identity `imp-boot-gbl-tofu` with the roles
    of `var.boot_layer_roles` on the organization's folder and of
    `var.boot_project_roles` on the boot project; Folder Admin on the
-   folder for the break-glass account (`seed@imp.example`), its one
-   standing grant; the state bucket `imp-boot-gbl-state-a1b2`; and, in the root
+   folder for the break-glass account (`seed@imp.example`), the one
+   grant the creation gives it (what it holds above the folder, Billing
+   Account Administrator on the root organization's billing account with it,
+   is in the root `README.md`, "Several organizations"); the state bucket
+   `imp-boot-gbl-state-a1b2`; and, in the root
    organization's root project, the boot identity's `secretPolicyAdmin` on
    the three GitHub Apps' key secrets and the Cloud Build token secret ("The
    GitHub Apps' keys" below).

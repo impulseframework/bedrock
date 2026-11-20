@@ -70,10 +70,14 @@ the unit of blast radius, and the Google Cloud organization's administrator
 stays above every folder.
 
 The one account above the folder is the organization's break-glass account
-(`breakGlassAccount` in `placement.json`), which holds Folder Admin on the
-folder, given by the creation, and nothing else. The folder was made by the
-root organization's creating identity, with Folder Creator at the
-organization node, which took its own grants off everything it made at the
+(`breakGlassAccount` in `placement.json`), the root organization's. On the
+folder it holds Folder Admin, given by the creation. Above the folder it holds
+what it was granted by hand before the root organization's bootstrap, which
+nothing of bedrock's takes off: Organization Administrator and Folder Creator
+at the organization node, and Billing Account Administrator on the root
+organization's billing account, granted by a billing administrator. The folder
+was made by the root organization's creating identity, with Folder Creator at
+the organization node, which took its own grants off everything it made at the
 creation's end and holds nothing under the folder since ("Created by the
 root organization", below).
 

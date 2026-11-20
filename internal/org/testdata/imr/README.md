@@ -99,7 +99,14 @@ The one account above the folders is the organization's break-glass account
 (`breakGlassAccount` in `placement.json`, `seed@imp.example`): a Google
 account in the Workspace directory with no person behind it, which ran the
 bootstrap and keeps the administration of the folder Google gives a creator,
-its key for a recovery by hand, and holds nothing else. Beside it, the creating
+its key for a recovery by hand. It holds as well what it ran the bootstrap
+with, granted by hand before it and taken off by nothing of bedrock's
+("Bootstrapped by one command", below): Organization Administrator and Folder
+Creator at the organization node, and Billing Account Administrator on the
+billing account, granted by a billing administrator; BigQuery Admin and
+Service Usage Consumer on the root project, which the apply keeps; and Folder
+Admin on each hosting organization's folder, given by its creation. Beside it,
+the creating
 identity `imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com` holds Folder Creator at the organization node
 and Billing Account Administrator on the billing account, granted by the
 bootstrap: with them it creates each hosting organization under a folder of its
