@@ -1405,7 +1405,7 @@ func (e *engine) triggerChange(ctx context.Context, t *Trigger, call func() erro
 			return err
 		}
 		if waited >= actAsApplies {
-			return errors.Newf("Cloud Build refuses the change of the trigger %s (%v): the trigger runs as %s, and Cloud Build lets an identity create or change it only when the identity holds %s on that account (the permission iam.serviceAccounts.actAs). This run granted the role on %s to %s, and IAM has not applied the grant after %d minutes of tries, the longest its documentation gives a policy change. The grant stands: run the apply trigger %s again, and it changes the trigger once IAM applies the grant",
+			return errors.Newf("Cloud Build refuses the change of the trigger %s (%v): the trigger runs as %s, and Cloud Build lets an identity create or change it only when the identity holds %s on that account (the permission iam.serviceAccounts.actAs). This run granted the role on %s to %s, and IAM has not applied the grant after %d minutes of tries: its documentation says a policy change typically takes 2 minutes, and potentially 7 minutes or longer. The grant stands: run the apply trigger %s again, and it changes the trigger once IAM applies the grant",
 				t.Name, errors.Cause(err), account, roleServiceAccountUser, account, applier, int(actAsApplies.Minutes()), e.p.ApplyTriggerName())
 		}
 		wait = min(wait, actAsApplies-waited)

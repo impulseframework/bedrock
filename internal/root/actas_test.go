@@ -219,9 +219,10 @@ func TestTriggerChangeWaitsForTheGrant(t *testing.T) {
 	})
 
 	// IAM never applies the grant: the tries end seven minutes of waits after the first
-	// refusal, the time IAM's documentation gives a policy change, and the run fails with
-	// the grant and the account named.
-	t.Run("the grant is not applied in the time IAM gives", func(t *testing.T) {
+	// refusal, and the run fails with the grant and the account named, and with what
+	// IAM's documentation says of the time a policy change takes: typically 2 minutes,
+	// potentially 7 minutes or longer, and so no longest time.
+	t.Run("the grant is not applied in the 7 minutes of tries", func(t *testing.T) {
 		t.Parallel()
 
 		w := newWorld(t)
@@ -236,7 +237,7 @@ func TestTriggerChangeWaitsForTheGrant(t *testing.T) {
 		applier, planner := w.p.ApplierIdentity(), w.p.PlannerIdentity()
 		want := "Cloud Build refuses the change of the trigger " + w.p.PlanTriggerName() + " (googleapi: Error 403: The caller does not have permission): the trigger runs as " + planner +
 			", and Cloud Build lets an identity create or change it only when the identity holds " + serviceAccountUser + " on that account (the permission iam.serviceAccounts.actAs). This run granted the role on " + planner +
-			" to serviceAccount:" + applier + ", and IAM has not applied the grant after 7 minutes of tries, the longest its documentation gives a policy change. The grant stands: run the apply trigger " + w.p.ApplyTriggerName() +
+			" to serviceAccount:" + applier + ", and IAM has not applied the grant after 7 minutes of tries: its documentation says a policy change typically takes 2 minutes, and potentially 7 minutes or longer. The grant stands: run the apply trigger " + w.p.ApplyTriggerName() +
 			" again, and it changes the trigger once IAM applies the grant"
 		if got := errors.Cause(err).Error(); got != want {
 			t.Errorf("the apply's error is\n  %s\nwant\n  %s", got, want)
@@ -251,7 +252,7 @@ func TestTriggerChangeWaitsForTheGrant(t *testing.T) {
 			total += wait
 		}
 		if total != 7*time.Minute {
-			t.Errorf("the apply waited %s in all, want the 7 minutes IAM's documentation gives a policy change and no longer", total)
+			t.Errorf("the apply waited %s in all, want 7 minutes, the longer of the two times IAM's documentation names for a policy change, and no longer", total)
 		}
 		report := stoppedReport(t, err)
 		if report.Applied != 2 {
