@@ -434,10 +434,10 @@ with, which the person removes once the triggers apply again (0-bootstrap/README
 "Recovery, by hand"): each person holding roles/owner on a project the placement records, which Google
 gives a project's creator; each person holding Folder Admin or Folder Editor on a folder
 under the organization's, which Google gives a folder's creator; and each role the
-break-glass account holds on a project or on the organization's folder beyond the ones it
-keeps: Folder Admin on the organization's folder, its key for a recovery by hand, and in a
-root organization BigQuery Admin and Service Usage Consumer on the root project, which its
-apply keeps. That
+break-glass account holds on a project, on the organization's folder or on a folder under it
+beyond the ones it keeps: Folder Admin on the organization's folder, its key for a recovery
+by hand, and in a root organization BigQuery Admin and Service Usage Consumer on the root
+project, which its apply keeps. That
 listing reads the projects' and folders' IAM policies with the run's Google credentials
 (gcloud auth application-default login); without any it says so, and it never fails the
 check. Last it lists each API key in an environment project that carries no API
@@ -715,10 +715,10 @@ func registrationReport(ctx context.Context, d deps, p *org.Placement, dir strin
 // leftoverReport lists each grant a hand apply left a person with: Owner on a
 // project, which Google gives a project's creator; Folder Admin and Folder Editor on a
 // folder under the organization's, which Google gives a folder's creator; and the roles
-// the break-glass account holds on a project or on the organization's folder beyond the
-// ones it keeps: Folder Admin on the folder, its key for a recovery by hand, and on a
-// root organization's root project the two the apply keeps
-// (org.Placement.BreakGlassProjectRoles). The person removes
+// the break-glass account holds on a project, on the organization's folder or on a
+// folder under it beyond the ones it keeps: Folder Admin on the organization's folder,
+// its key for a recovery by hand, and on a root organization's root project the two the
+// apply keeps (org.Placement.BreakGlassProjectRoles). The person removes
 // them once the apply trigger applies the layers again (0-bootstrap/README.md, "Recovery,
 // by hand"). It lists as well each grant on the organization's folder to a
 // principal outside the organization, which nothing of the organization's makes: the

@@ -3025,8 +3025,8 @@ cannot be reached, it says so and never fails the check. `org check` then lists 
 a hand apply left still held, with its place: Owner held by a person (a `user:`
 member) on a project the placement records, Folder Admin or Folder Editor held by a person
 on a folder under the organization's folder, which Google gives whoever creates a project or
-a folder, and every role the break-glass account holds on the organization's folder or a
-project but the ones it keeps: Folder Admin on the organization's folder and, in a root
+a folder, and every role the break-glass account holds on the organization's folder, a
+folder under it or a project but the ones it keeps: Folder Admin on the organization's folder and, in a root
 organization, BigQuery Admin and Service Usage Consumer on the root project, which its apply
 keeps. All of them are
 temporary by design and removed by hand once the apply trigger applies the layers

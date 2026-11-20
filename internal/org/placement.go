@@ -420,10 +420,13 @@ type Placement struct {
 	// environment projects are what the applications' identities and backends are named
 	// under; every project names the layer identities the triggers' runs impersonate.
 	// Absent until bedrock org create (boot) or the creation, after 1-org's first apply
-	// (the others), has recorded them; REPLACEME is rendered in their place.
+	// (the others), has recorded them; REPLACEME is rendered in their place. A root
+	// organization's has one key, root (RootProjectKey): the root project, which bedrock
+	// org bootstrap makes and records.
 	Projects map[string]string `json:"projects,omitempty"`
 	// ProjectNumbers are the projects' numbers by the same keys: boot from the seed, the
-	// rest from 1-org's project_numbers output, recorded beside Projects. 0-bootstrap
+	// rest from 1-org's project_numbers output, and a root organization's root from its
+	// bootstrap, recorded beside Projects. 0-bootstrap
 	// grants each recorded environment project's Cloud Build service agent the read of
 	// the connections' token secret by its number. An application's placement records
 	// its environments' ids and numbers together (bedrock org register writes them into
