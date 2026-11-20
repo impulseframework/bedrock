@@ -2728,7 +2728,10 @@ the GitHub organization with its Bot Account, default branch, three App IDs and,
 root organization names one, the word the Apps' names start with (`githubAppPrefix`), the
 Cloud Build authorization, the break-glass account, the bedrock pin and `root`), chooses
 the boot project's four-hex suffix, lists the organization in `placement.json`
-(`hostingOrganizations`) and renders, printing what the merge creates. The merge's `org
+(`hostingOrganizations`) and renders, printing what the merge creates. A hosting
+organization is billed to the root organization's billing account, the one the creating
+identity administers: a record that names another is refused, by `org create` and by the
+merge's apply before it makes anything. The merge's `org
 apply` creates each listed organization without a folder yet as the root organization's
 creating identity (`<prefix>-create-gbl-tofu`, made by its bootstrap, which granted it
 Folder Creator at the organization node and Billing Account Administrator on the billing

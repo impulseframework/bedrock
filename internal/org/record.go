@@ -80,13 +80,14 @@ func ReadRecord(dir, prefix string) (*Placement, error) {
 // Fill puts into the hosting organization's placement what the root organization
 // supplies, and chooses the boot project's suffix when none is chosen yet, so that the
 // record is complete before the creation runs: the Google Cloud organization and its
-// domain, the billing account (the root organization's unless the record names one), the
-// GitHub organization, its Bot Account, default branch and the three apps' ids, the word
-// their names start with and the release app's slug, the Cloud Build authorization (the
-// same connection token, read from the root organization's boot project), the break-glass
-// account, the bedrock pin, and the root organization itself (root). What the person
-// wrote and the root organization does not supply stays. It refuses a record whose prefix
-// is the root organization's or whose values contradict the root organization's.
+// domain, the billing account (the root organization's, which every hosting organization
+// is billed to: a record that names another is refused), the GitHub organization, its
+// Bot Account, default branch and the three apps' ids, the word their names start with
+// and the release app's slug, the Cloud Build authorization (the same connection token,
+// read from the root organization's boot project), the break-glass account, the bedrock
+// pin, and the root organization itself (root). What the person wrote and the root
+// organization does not supply stays. It refuses a record whose prefix is the root
+// organization's or whose values contradict the root organization's.
 func Fill(root, h *Placement) error {
 	if !root.IsRoot() {
 		return errors.New("the placement is a hosting organization's, and only a root organization creates another organization")
@@ -103,8 +104,8 @@ func Fill(root, h *Placement) error {
 	if h.IsRoot() {
 		return errors.New("kind is root, and a record is a hosting organization's placement: leave kind out")
 	}
-	if h.BillingAccount == "" {
-		h.BillingAccount = root.BillingAccount
+	if err := fillBillingAccount(root, h); err != nil {
+		return err
 	}
 	if h.SourceRepo == "" {
 		h.SourceRepo = h.Prefix + "-infrastructure"
@@ -145,6 +146,22 @@ func Fill(root, h *Placement) error {
 	}
 
 	return h.Validate()
+}
+
+// fillBillingAccount gives the record the root organization's billing account
+// (billingAccount), and refuses a record that names another: a hosting organization is
+// billed to its root organization's account, the one account the creating identity
+// administers (Desired.BillingGrants in internal/root). On another account the creation
+// would stop at the boot project's billing link, refused, with the organization's
+// folder, the terraform folder and the project made, and stop there again on every
+// later push.
+func fillBillingAccount(root, h *Placement) error {
+	if h.BillingAccount != "" && h.BillingAccount != root.BillingAccount {
+		return errors.Newf("%s/%s/%s names the billing account %s (billingAccount), and a hosting organization is billed to its root organization's billing account, %s, the one the creating identity administers: name %s, or take billingAccount out and run bedrock org create %s again, which fills it in", RecordsDir, h.Prefix, PlacementFile, h.BillingAccount, root.BillingAccount, root.BillingAccount, h.Prefix)
+	}
+	h.BillingAccount = root.BillingAccount
+
+	return nil
 }
 
 // fillAppPrefix gives the record the word the root organization's GitHub Apps' names

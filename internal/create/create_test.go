@@ -822,29 +822,51 @@ func TestRunHandOffBranchLeft(t *testing.T) {
 	}
 }
 
-// TestRunRefusals: a record whose boot project is not the listing's, and a seam that
-// refuses a step, each stop the creation with the step named, and nothing after it runs.
+// TestRunRefusals: a record whose boot project is not the listing's, a record billed to
+// another account than the root organization's, and a seam that refuses a step, each stop
+// the creation with the step named, and nothing after it runs. A record refused is
+// refused before Google is asked anything: no folder is looked for and none is made.
 func TestRunRefusals(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		prepare func(f *flow, root *org.Placement)
+		prepare func(t *testing.T, f *flow, root *org.Placement, dir string)
 		wantErr string
+		// asksGoogle says the stop comes after the record is read: a record refused is
+		// refused before Google is asked anything.
+		asksGoogle bool
 	}{
 		{
 			name: "the listing and the record disagree on the boot project",
-			prepare: func(_ *flow, root *org.Placement) {
+			prepare: func(_ *testing.T, _ *flow, root *org.Placement, _ string) {
 				root.HostingOrganization("rgb").BootProject = "rgb-boot-gbl-core-0000"
 			},
 			wantErr: "records boot project rgb-boot-gbl-core-e5f6 and placement.json's hostingOrganizations entry rgb-boot-gbl-core-0000: bedrock org create rgb brings them together",
 		},
 		{
+			name: "the record names another billing account than the root organization's",
+			prepare: func(t *testing.T, _ *flow, _ *org.Placement, dir string) {
+				t.Helper()
+				path := org.RecordPath(dir, "rgb")
+				h, err := org.ReadPlacement(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				h.BillingAccount = "ABCDEF-012345-6789AB"
+				if err := h.Write(path); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "organizations/rgb/placement.json names the billing account ABCDEF-012345-6789AB (billingAccount), and a hosting organization is billed to its root organization's billing account, 012345-6789AB-CDEF01, the one the creating identity administers: name 012345-6789AB-CDEF01, or take billingAccount out and run bedrock org create rgb again, which fills it in",
+		},
+		{
 			name: "a folder that cannot be made",
-			prepare: func(f *flow, _ *org.Placement) {
+			prepare: func(_ *testing.T, f *flow, _ *org.Placement, _ string) {
 				f.google.Refuse["CreateFolder"] = errRefused
 			},
-			wantErr: "refused by the stand-in",
+			wantErr:    "refused by the stand-in",
+			asksGoogle: true,
 		},
 	}
 	for _, tt := range tests {
@@ -853,11 +875,14 @@ func TestRunRefusals(t *testing.T) {
 
 			f := newFlow(t)
 			dir, root := checkout(t)
-			tt.prepare(f, root)
+			tt.prepare(t, f, root, dir)
 			var out bytes.Buffer
 			_, err := create.Run(t.Context(), f.clients(), request(root, dir), &out)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("Run() error = %v, want %q", err, tt.wantErr)
+				t.Fatalf("Run() error = %v, want %q; Google was asked %v", err, tt.wantErr, f.google.Calls)
+			}
+			if !tt.asksGoogle && (len(f.google.Calls) != 0 || len(f.google.Identities) != 0) {
+				t.Errorf("Google was opened as %v and asked %v, want a record refused before anything is asked", f.google.Identities, f.google.Calls)
 			}
 			if len(f.runner.ran) != 0 || len(f.srv.Created) != 0 || len(f.store.objects) != 0 {
 				t.Errorf("the creation went on after the refusal: %v, %v, %v", f.runner.ran, f.srv.Created, f.store.objects)
