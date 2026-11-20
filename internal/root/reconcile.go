@@ -110,10 +110,12 @@ type engine struct {
 	// policies is the Org Policy client; created are the hosting organizations this run
 	// created, by prefix, with their placements as recorded, for the policies section,
 	// and createdFolders their own folders, which the section compares before the
-	// hand-off records them.
+	// hand-off records them; policiesSet are the ones whose creation set their policies
+	// itself in this run, before its push (creations), which the section passes over.
 	policies       OrgPolicies
 	created        map[string]*org.Placement
 	createdFolders map[string]string
+	policiesSet    map[string]bool
 	secrets        Secrets
 	dns            DNS
 	builds         Builds
@@ -1498,7 +1500,11 @@ func (e *engine) apps(ctx context.Context) error {
 }
 
 // creations creates each hosting organization the placement records without a folder,
-// as the creating identity, and records the hand-off.
+// as the creating identity, and records the hand-off. The organization policies are the
+// applier's to set, and the creation calls back for them at the two steps they are due:
+// the one on the organization's own folder once the seed stands, before the first
+// applies, and the baseline on the four folders once 1-org's first apply has made them,
+// before the push the new organization's own apply trigger runs on.
 func (e *engine) creations(ctx context.Context) error {
 	pending := e.p.Pending()
 	if len(pending) == 0 {
@@ -1512,7 +1518,18 @@ func (e *engine) creations(ctx context.Context) error {
 		seeded := func(ctx context.Context, folder string) error {
 			return e.setPolicies(ctx, record.Prefix, OrganizationFolderPolicies(folder))
 		}
-		res, err := create.Run(ctx, e.clients.Create, &create.Request{Root: e.p, RootDir: e.req.Dir, Record: record, Token: e.req.GitHubToken, Commit: e.req.Commit, Seeded: seeded}, e.out)
+		organized := func(ctx context.Context, h *org.Placement) error {
+			if err := e.baseline(ctx, h); err != nil {
+				return err
+			}
+			if e.policiesSet == nil {
+				e.policiesSet = map[string]bool{}
+			}
+			e.policiesSet[record.Prefix] = true
+
+			return nil
+		}
+		res, err := create.Run(ctx, e.clients.Create, &create.Request{Root: e.p, RootDir: e.req.Dir, Record: record, Token: e.req.GitHubToken, Commit: e.req.Commit, Seeded: seeded, Organized: organized}, e.out)
 		if err != nil {
 			// A creation that stops has made what its steps before the stop make (the
 			// folder, the boot project), and finishes on the next push.

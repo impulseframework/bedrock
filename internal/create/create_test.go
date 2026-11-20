@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -216,6 +217,21 @@ func (f *flow) clients() *create.Clients {
 		Store:  f.store,
 		Sleep:  func(context.Context, time.Duration) error { return nil },
 	}
+}
+
+// pushed reports whether rgb's repository carries the foundation: placement.json on its
+// default branch, which the creation's push puts there.
+func (f *flow) pushed() bool {
+	var pushed bool
+	f.srv.Update(func() {
+		repo, ok := f.srv.Repos[owner+"/rgb-infrastructure"]
+		if !ok {
+			return
+		}
+		_, pushed = repo.Files[repo.Trees[repo.Refs["refs/heads/master"].SHA]+":placement.json"]
+	})
+
+	return pushed
 }
 
 func request(root *org.Placement, dir string) *create.Request {
@@ -764,6 +780,71 @@ func TestRunSeededBeforeFirstApply(t *testing.T) {
 		if c.Args[0] == "apply" {
 			t.Errorf("an apply ran after the hook refused: %v", c.Args)
 		}
+	}
+}
+
+// TestRunOrganizedBeforePush: the request's Organized hook runs once 1-org's first apply
+// has made the folders, with the placement that records them and each environment
+// project's public-invoker tag, and before the push, so the root organization's apply can
+// set the organization-policy baseline before the new organization's own apply trigger
+// applies a layer; a hook that fails stops the creation before its push.
+func TestRunOrganizedBeforePush(t *testing.T) {
+	t.Parallel()
+
+	f := newFlow(t)
+	dir, root := checkout(t)
+	req := request(root, dir)
+	var ran int
+	var folders map[string]string
+	var tags map[string]org.PublicInvokerTag
+	var appliedBefore []string
+	var pushedBefore bool
+	req.Organized = func(_ context.Context, h *org.Placement) error {
+		ran++
+		folders, tags = maps.Clone(h.Folders), maps.Clone(h.PublicInvokerTags)
+		for _, c := range f.runner.ran {
+			if c.Args[0] == "apply" {
+				appliedBefore = append(appliedBefore, filepath.Base(c.Dir))
+			}
+		}
+		pushedBefore = f.pushed()
+
+		return nil
+	}
+	var out bytes.Buffer
+	if _, err := create.Run(t.Context(), f.clients(), req, &out); err != nil {
+		t.Fatalf("Run() error = %v; output:\n%s", err, out.String())
+	}
+	if ran != 1 {
+		t.Fatalf("Organized ran %d time(s), want once", ran)
+	}
+	if want := []string{"0-bootstrap", "1-org"}; !slices.Equal(appliedBefore, want) {
+		t.Errorf("the applies before Organized were %v, want %v", appliedBefore, want)
+	}
+	if want := map[string]string{"shared": "900000000011", "tst": "900000000012", "stg": "900000000013", "prd": "900000000014"}; !maps.Equal(folders, want) {
+		t.Errorf("Organized ran with the folders %v, want the four 1-org made, %v", folders, want)
+	}
+	if want := (org.PublicInvokerTag{Key: "tagKeys/281000000001", Value: "tagValues/282000000001"}); len(tags) != 3 || tags["tst"] != want {
+		t.Errorf("Organized ran with the public-invoker tags %v, want one for each environment, %v for tst", tags, want)
+	}
+	if pushedBefore {
+		t.Error("the foundation was pushed before Organized ran")
+	}
+	if !f.pushed() {
+		t.Error("the creation that finished pushed no foundation")
+	}
+
+	// A hook that fails stops the creation before its push.
+	g := newFlow(t)
+	dir, root = checkout(t)
+	req = request(root, dir)
+	req.Organized = func(context.Context, *org.Placement) error { return errors.New("the policy is refused") }
+	out.Reset()
+	if _, err := create.Run(t.Context(), g.clients(), req, &out); err == nil || !strings.Contains(err.Error(), "after 1-org's first apply of rgb, before its push") || !strings.Contains(err.Error(), "the policy is refused") {
+		t.Errorf("Run() error = %v, want the hook's refusal", err)
+	}
+	if g.pushed() {
+		t.Error("the foundation was pushed after the hook refused")
 	}
 }
 

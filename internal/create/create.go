@@ -59,6 +59,14 @@ type Request struct {
 	// identity does not), so 1-org's first apply makes no project with a default network.
 	// nil when nothing is to run.
 	Seeded func(ctx context.Context, organizationFolder string) error
+	// Organized runs once 1-org's first apply has made the organization's folders and
+	// before the push, with the organization's placement, which records the folders and
+	// each environment project's public-invoker tag by then (folders, publicInvokerTags):
+	// the root organization's apply sets the organization-policy baseline on the four
+	// folders there (the applier's to set, as the folder's own policy is), so the
+	// organization's own apply trigger, which applies every layer from the push on,
+	// applies none before the baseline stands. nil when nothing is to run.
+	Organized func(ctx context.Context, h *org.Placement) error
 }
 
 // Marker is what the creation leaves in the root organization's state bucket once the
@@ -405,6 +413,11 @@ func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, se
 	folders, err := f.organize(ctx, dir, h)
 	if err != nil {
 		return nil, err
+	}
+	if f.req.Organized != nil {
+		if err := f.req.Organized(ctx, h); err != nil {
+			return nil, errors.Wrapf(err, "after 1-org's first apply of %s, before its push", h.Prefix)
+		}
 	}
 	if err := f.zone(ctx, g, h); err != nil {
 		return nil, err

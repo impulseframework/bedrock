@@ -416,16 +416,29 @@ func TestApplyRunStopped(t *testing.T) {
 
 // tofu stands in for OpenTofu in a creation: every program a creation runs succeeds, and
 // tofu output answers the outputs of the foundation of the hosting organization rgb, its
-// six projects and its four folders.
-type tofu struct{}
+// six projects and its folders.
+type tofu struct {
+	// folders are the folders 1-org's outputs name, by key; rgbFolders when nil.
+	folders map[string]string
+}
+
+// rgbFolders are rgb's four folders as its 1-org's outputs name them: its own, not the
+// ones the record of imp names.
+func rgbFolders() map[string]string {
+	return map[string]string{"shared": "900000000021", "tst": "900000000022", "stg": "900000000023", "prd": "900000000024"}
+}
 
 func (tofu) Run(context.Context, deploy.Command, io.Writer) error {
 	return nil
 }
 
-func (tofu) Output(_ context.Context, c deploy.Command, _ io.Writer) ([]byte, error) {
+func (o tofu) Output(_ context.Context, c deploy.Command, _ io.Writer) ([]byte, error) {
 	if c.Args[0] != "output" {
 		return nil, nil
+	}
+	folders := o.folders
+	if folders == nil {
+		folders = rgbFolders()
 	}
 	ids, numbers := map[string]string{}, map[string]string{}
 	for i, key := range []string{"shr", "net", "spn", "tst", "stg", "prd"} {
@@ -440,7 +453,7 @@ func (tofu) Output(_ context.Context, c deploy.Command, _ io.Writer) ([]byte, er
 	value := func(v any) map[string]any { return map[string]any{"value": v} }
 	data, err := json.Marshal(map[string]any{
 		"project_ids": value(ids), "project_numbers": value(numbers),
-		"folder_ids":             value(map[string]string{"shared": "900000000011", "tst": "900000000012", "stg": "900000000013", "prd": "900000000014"}),
+		"folder_ids":             value(folders),
 		"public_invoker_tag_key": value(keys), "public_invoker_tag_value": value(values),
 	})
 	if err != nil {
