@@ -1,8 +1,13 @@
 // hand.go drives tofu in a layer's directory as the person running the command, with
 // their own sign-in and no identity impersonated: bedrock org destroy's two layers
 // (destroy.go), and the apply of 0-bootstrap bedrock upgrade makes when the pin changes
-// kind, since the triggers' steps change shape with it and 0-bootstrap is the one layer
-// no trigger applies.
+// kind. The triggers' steps change shape with the kind, and 0-bootstrap is the layer
+// that holds the triggers. The apply trigger applies it as it applies every layer
+// (org.Placement.LayerRuns), in a run on the steps as they stand, and in the release
+// shape those steps refuse a commit pin (the FetchBedrock step, org's steps.go): after
+// a move from a release to a commit no trigger's run reaches the layer's apply, so
+// bedrock upgrade applies it by hand. It applies a move from a commit to a release the
+// same way, which leaves the triggers and the repository in one shape.
 
 package layers
 
