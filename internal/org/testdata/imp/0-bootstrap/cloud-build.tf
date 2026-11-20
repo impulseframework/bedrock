@@ -377,7 +377,7 @@ locals {
         sys.exit(placement_path + " pins bedrock " + version + ", which is neither a release nor a commit pin: the version goes into the address the release is downloaded from, so nothing else is taken; bedrock upgrade records the pin")
     if re.search(r"[-.][0-9]{14}-[0-9a-f]{12}\Z", version):
         if steps.endswith("-release"):
-            sys.exit(placement_path + " pins bedrock " + version + ", a commit pin, and this trigger's steps are in the release shape (" + steps + "): this step downloads a release, and no step follows to build a commit. A commit pin needs the commit shape, which bedrock upgrade applies to 0-bootstrap when it moves the pin from a release to a commit; when the pin was moved without that apply, apply 0-bootstrap from this branch by hand (in 0-bootstrap: tofu init, then tofu apply, as the bootstrap administrator) before this pull request's plan, or the merge's apply, can run")
+            sys.exit(placement_path + " pins bedrock " + version + ", a commit pin, and this trigger's steps are in the release shape (" + steps + "): this step downloads a release, and no step follows to build a commit. A commit pin needs the commit shape, which bedrock upgrade applies to 0-bootstrap when it moves the pin from a release to a commit; when the pin was moved without that apply, apply 0-bootstrap from this branch by hand (in 0-bootstrap: tofu init, then tofu apply, as the break-glass account) before this pull request's plan, or the merge's apply, can run")
         commit = version[-12:]
         branches = tempfile.mkdtemp(prefix="bedrock-branches-")
         cloned = subprocess.run(["git", "clone", "--quiet", "--bare", "--no-tags", "--filter=tree:0", repository, branches], capture_output=True, text=True, check=False)

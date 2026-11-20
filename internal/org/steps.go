@@ -72,7 +72,7 @@ const (
 // again in a clone is its recovery by hand. Neither holds a quote or a $, which the
 // script's string and Cloud Build would read.
 const (
-	commitShapeByHand     = "A commit pin needs the commit shape, which bedrock upgrade applies to 0-bootstrap when it moves the pin from a release to a commit; when the pin was moved without that apply, apply 0-bootstrap from this branch by hand (in 0-bootstrap: tofu init, then tofu apply, as the bootstrap administrator) before this pull request's plan, or the merge's apply, can run"
+	commitShapeByHand     = "A commit pin needs the commit shape, which bedrock upgrade applies to 0-bootstrap when it moves the pin from a release to a commit; when the pin was moved without that apply, apply 0-bootstrap from this branch by hand (in 0-bootstrap: tofu init, then tofu apply, as the break-glass account) before this pull request's plan, or the merge's apply, can run"
 	rootCommitShapeByHand = "A commit pin needs the commit shape, and a root organization has no layer to apply: the engine makes its triggers. Run bedrock org bootstrap again in a clone at this branch, as the break-glass account, which makes the organization as the branch's placement.json says and brings the two triggers to the commit shape, before this pull request's plan, or the merge's apply, can run"
 )
 
