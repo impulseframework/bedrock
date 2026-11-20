@@ -138,9 +138,9 @@ func TestEngineFromNothing(t *testing.T) {
 		"secrets: moves the alias current of imr-root-gbl-github-release-key from no version to version 2",
 		"secrets: moves the alias current of imr-root-gbl-github-token from no version to version 1",
 		"secrets: sets the policy of imr-root-gbl-github-token: secretPolicyAdmin to serviceAccount:imp-boot-gbl-tofu@imp-boot-gbl-core-a1b2.iam.gserviceaccount.com, serviceAccount:imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com, secretmanager.secretAccessor to serviceAccount:service-100000000011@gcp-sa-cloudbuild.iam.gserviceaccount.com",
-		"grants: grants serviceAccount:imr-root-gbl-applier@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/dns.admin on project imr-root-gbl-core-c3d4",
-		"grants: grants serviceAccount:imr-root-gbl-planner@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/browser on folder 100",
-		"grants: grants serviceAccount:imr-root-gbl-applier@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/iam.serviceAccountTokenCreator on the identity imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com",
+		"IAM: grants serviceAccount:imr-root-gbl-applier@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/dns.admin on project imr-root-gbl-core-c3d4",
+		"IAM: grants serviceAccount:imr-root-gbl-planner@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/browser on folder 100",
+		"IAM: grants serviceAccount:imr-root-gbl-applier@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/iam.serviceAccountTokenCreator on the identity imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com",
 		"zones: creates the zone imr-root-gbl-dns-clientbay-example for clientbay.example",
 		"zones: hands harbor.clientbay.example onward to ns-cloud-c1.googledomains.com., ns-cloud-c2.googledomains.com., ns-cloud-c3.googledomains.com., ns-cloud-c4.googledomains.com.",
 		"zones: creates the zone imr-root-gbl-dns-zones-imp-example for zones.imp.example",
@@ -178,7 +178,7 @@ func TestEngineFromNothing(t *testing.T) {
 	if len(applied.Findings) != 0 {
 		t.Errorf("the bootstrap's apply has findings: %q", applied.Findings)
 	}
-	if !strings.Contains(out, "grants: grants serviceAccount:imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/billing.admin on billing account 012345-6789AB-CDEF01") {
+	if !strings.Contains(out, "IAM: grants serviceAccount:imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/billing.admin on billing account 012345-6789AB-CDEF01") {
 		t.Errorf("the bootstrap did not grant the creating identity billing administration:\n%s", out)
 	}
 
@@ -290,7 +290,7 @@ func TestEngineDrift(t *testing.T) {
 	containsAll(t, got,
 		"secrets: moves the alias current of imr-root-gbl-github-release-key from version 1 to version 2",
 		"zones: in the zone imr-root-gbl-dns-clientbay-example: hands harbor.clientbay.example onward to ns-cloud-c1.googledomains.com., ns-cloud-c2.googledomains.com., ns-cloud-c3.googledomains.com., ns-cloud-c4.googledomains.com.; takes back beacon.clientbay.example",
-		"grants: takes roles/owner off serviceAccount:imr-root-gbl-planner@imr-root-gbl-core-c3d4.iam.gserviceaccount.com on project imr-root-gbl-core-c3d4",
+		"IAM: takes roles/owner off serviceAccount:imr-root-gbl-planner@imr-root-gbl-core-c3d4.iam.gserviceaccount.com on project imr-root-gbl-core-c3d4",
 		"GitHub: brings the default branch's ruleset of imp-example/imr-root-infrastructure to the placement: bypass actors",
 		"GitHub: sets the organization variable CI_LARGE_RUNNER to ci-large (was ci-tiny)",
 	)

@@ -356,13 +356,15 @@ func (e *engine) note(n string) {
 	e.report.Notes = append(e.report.Notes, n)
 }
 
-// The sections, as the report names them.
+// The sections, as the report names them. The grants' section is named for the service
+// (IAM), not for the grants: each of its lines opens with what the run does (grants,
+// takes), and a section named grants would say the word twice.
 const (
 	sectionServices     = "APIs"
 	sectionIdentities   = "identities"
 	sectionRoles        = "roles"
 	sectionSecrets      = "secrets"
-	sectionGrants       = "grants"
+	sectionIAM          = "IAM"
 	sectionZones        = "zones"
 	sectionVerification = "verification"
 	sectionCloudBuild   = "Cloud Build"
@@ -631,7 +633,7 @@ func (e *engine) bootstrapGrants(ctx context.Context) error {
 		if holds(bindings, g.Role, g.Member) {
 			continue
 		}
-		if err := e.change(ctx, sectionGrants, fmt.Sprintf("grants %s %s on the identity %s, for the bootstrap's run", g.Member, g.Role, g.Resource), func(ctx context.Context) error {
+		if err := e.change(ctx, sectionIAM, fmt.Sprintf("grants %s %s on the identity %s, for the bootstrap's run", g.Member, g.Role, g.Resource), func(ctx context.Context) error {
 			return e.iam.GrantServiceAccount(ctx, g.Resource, g.Role, g.Member)
 		}); err != nil {
 			return err
@@ -653,7 +655,7 @@ func (e *engine) bootstrapWithdrawal(ctx context.Context) error {
 		if !holds(bindings, g.Role, g.Member) {
 			continue
 		}
-		if err := e.change(ctx, sectionGrants, fmt.Sprintf("takes %s's %s off the identity %s, the bootstrap's grant for its run", g.Member, g.Role, g.Resource), func(ctx context.Context) error {
+		if err := e.change(ctx, sectionIAM, fmt.Sprintf("takes %s's %s off the identity %s, the bootstrap's grant for its run", g.Member, g.Role, g.Resource), func(ctx context.Context) error {
 			return e.iam.RevokeServiceAccount(ctx, g.Resource, g.Role, g.Member)
 		}); err != nil {
 			return err
@@ -694,7 +696,7 @@ func (e *engine) grants(ctx context.Context) error {
 		if holds(bindings, g.Role, g.Member) {
 			continue
 		}
-		if err := e.change(ctx, sectionGrants, fmt.Sprintf("grants %s %s on the identity %s", g.Member, g.Role, g.Resource), func(ctx context.Context) error {
+		if err := e.change(ctx, sectionIAM, fmt.Sprintf("grants %s %s on the identity %s", g.Member, g.Role, g.Resource), func(ctx context.Context) error {
 			if err := e.iam.GrantServiceAccount(ctx, g.Resource, g.Role, g.Member); err != nil {
 				return err
 			}
@@ -727,7 +729,7 @@ func (e *engine) transferAgent(ctx context.Context) error {
 		return nil
 	}
 
-	return e.change(ctx, sectionGrants, fmt.Sprintf("makes the BigQuery Data Transfer Service's agent in project %s and grants it %s, ahead of the pricing export's console step", g.Resource, g.Role), func(ctx context.Context) error {
+	return e.change(ctx, sectionIAM, fmt.Sprintf("makes the BigQuery Data Transfer Service's agent in project %s and grants it %s, ahead of the pricing export's console step", g.Resource, g.Role), func(ctx context.Context) error {
 		email, err := e.google.ServiceAgent(ctx, g.Resource, TransferService)
 		if err != nil {
 			return err
@@ -762,7 +764,7 @@ func (e *engine) operatorGrants(ctx context.Context) error {
 		if g.Role == org.ServiceUsageConsumerRole {
 			why = "for the quota its checks at a terminal bill to the project"
 		}
-		if err := e.change(ctx, sectionGrants, fmt.Sprintf("grants %s %s on project %s, %s", g.Member, g.Role, g.Resource, why), func(ctx context.Context) error {
+		if err := e.change(ctx, sectionIAM, fmt.Sprintf("grants %s %s on project %s, %s", g.Member, g.Role, g.Resource, why), func(ctx context.Context) error {
 			return e.google.GrantProject(ctx, g.Resource, g.Role, g.Member)
 		}); err != nil {
 			return err
@@ -853,7 +855,7 @@ func (e *engine) outerPolicy(ctx context.Context, what, whose, who string, read 
 // finding otherwise, since a trigger's run holds no right to it.
 func (e *engine) outerGrant(ctx context.Context, what, who string, apply func(ctx context.Context) error) error {
 	if e.req.Bootstrap {
-		return e.change(ctx, sectionGrants, what, apply)
+		return e.change(ctx, sectionIAM, what, apply)
 	}
 	e.finding("the root organization lacks a grant the bootstrap makes: " + what + "; " + who + " makes it, or bedrock org bootstrap run again does")
 
@@ -883,7 +885,7 @@ func (e *engine) memberRoles(ctx context.Context, where string, want map[string]
 			if slices.Contains(held, role) {
 				continue
 			}
-			if err := e.change(ctx, sectionGrants, fmt.Sprintf("grants %s %s on %s", m, role, where), func(ctx context.Context) error {
+			if err := e.change(ctx, sectionIAM, fmt.Sprintf("grants %s %s on %s", m, role, where), func(ctx context.Context) error {
 				return grant(ctx, resource, role, m)
 			}); err != nil {
 				return err
@@ -896,7 +898,7 @@ func (e *engine) memberRoles(ctx context.Context, where string, want map[string]
 			}
 		}
 		if len(extra) > 0 {
-			if err := e.change(ctx, sectionGrants, fmt.Sprintf("takes %s off %s on %s", joined(extra), m, where), func(ctx context.Context) error {
+			if err := e.change(ctx, sectionIAM, fmt.Sprintf("takes %s off %s on %s", joined(extra), m, where), func(ctx context.Context) error {
 				return revoke(ctx, resource, m, extra)
 			}); err != nil {
 				return err

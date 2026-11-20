@@ -204,7 +204,7 @@ func TestBootstrapMakesTheAppliersGrantsAndApplyKeepsThem(t *testing.T) {
 		t.Fatal(err)
 	}
 	report, _ := w.run(t, root.Check, false)
-	if want := []string{"grants: grants " + gone.Member + " " + gone.Role + " on the identity " + gone.Resource}; !slices.Equal(whats(report), want) {
+	if want := []string{"IAM: grants " + gone.Member + " " + gone.Role + " on the identity " + gone.Resource}; !slices.Equal(whats(report), want) {
 		t.Errorf("the check lists %q, want %q", whats(report), want)
 	}
 	if applied, out := w.run(t, root.Apply, false); applied.Applied != 1 || !bound(w.fake.Policies["serviceAccounts/"+gone.Resource], gone.Role, gone.Member) {
@@ -245,8 +245,8 @@ func TestApplyChangesTheTriggersAsTheApplier(t *testing.T) {
 
 	applied, out := w.run(t, root.Apply, false)
 	want := []string{
-		"grants: grants " + planner.Member + " " + serviceAccountUser + " on the identity " + planner.Resource,
-		"grants: grants " + applier.Member + " " + serviceAccountUser + " on the identity " + applier.Resource,
+		"IAM: grants " + planner.Member + " " + serviceAccountUser + " on the identity " + planner.Resource,
+		"IAM: grants " + applier.Member + " " + serviceAccountUser + " on the identity " + applier.Resource,
 		"Cloud Build: brings the trigger " + w.p.PlanTriggerName() + " to its steps: steps",
 		"Cloud Build: brings the trigger " + w.p.ApplyTriggerName() + " to its steps: steps",
 	}
@@ -467,16 +467,16 @@ func TestPlanSaysTheAppliersGrants(t *testing.T) {
 	report, _ := w.run(t, root.Plan, false)
 	var log bytes.Buffer
 	report.Write(&log, root.Plan)
-	wantLog := "grants: the apply grants serviceAccount:" + applier + " " + serviceAccountUser + " on the identity " + planner + "\n" +
-		"grants: the apply grants serviceAccount:" + applier + " " + serviceAccountUser + " on the identity " + applier + "\n" +
+	wantLog := "IAM: the apply grants serviceAccount:" + applier + " " + serviceAccountUser + " on the identity " + planner + "\n" +
+		"IAM: the apply grants serviceAccount:" + applier + " " + serviceAccountUser + " on the identity " + applier + "\n" +
 		"Cloud Build: the apply brings the trigger " + w.p.PlanTriggerName() + " to its steps: steps\n" +
 		"Cloud Build: the apply brings the trigger " + w.p.ApplyTriggerName() + " to its steps: steps\n"
 	if !strings.HasPrefix(log.String(), wantLog) || !strings.HasSuffix(log.String(), "4 change(s) the apply would make; 0 finding(s).\n") {
 		t.Errorf("the plan's log is\n%s\nwant it to open\n%sand to end with the count of the four changes", log.String(), wantLog)
 	}
 	wantComment := "At 0123456:\n\n" +
-		"- grants: grants serviceAccount:" + applier + " " + serviceAccountUser + " on the identity " + planner + "\n" +
-		"- grants: grants serviceAccount:" + applier + " " + serviceAccountUser + " on the identity " + applier + "\n" +
+		"- IAM: grants serviceAccount:" + applier + " " + serviceAccountUser + " on the identity " + planner + "\n" +
+		"- IAM: grants serviceAccount:" + applier + " " + serviceAccountUser + " on the identity " + applier + "\n" +
 		"- Cloud Build: brings the trigger " + w.p.PlanTriggerName() + " to its steps: steps\n" +
 		"- Cloud Build: brings the trigger " + w.p.ApplyTriggerName() + " to its steps: steps\n"
 	if comment := report.Comment("0123456789abcdef", w.p); !strings.Contains(comment, wantComment) {

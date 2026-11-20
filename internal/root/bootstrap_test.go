@@ -163,7 +163,7 @@ func TestBootstrapBroughtApps(t *testing.T) {
 		"Created the repository imp-example/imr-root-infrastructure, private.",
 		"Renamed the branch main of imp-example/imr-root-infrastructure to master, the default branch placement.json names.",
 		"Pushed the foundation to imp-example/imr-root-infrastructure at",
-		"grants: grants serviceAccount:imr-create-gbl-tofu@" + project + ".iam.gserviceaccount.com roles/resourcemanager.folderCreator at the organization node",
+		"IAM: grants serviceAccount:imr-create-gbl-tofu@" + project + ".iam.gserviceaccount.com roles/resourcemanager.folderCreator at the organization node",
 		"Cloud Build: creates the trigger imr-root-uc1-apply",
 		"Took bedrock@imp.example's Owner off " + project + " and its Folder Editor off folder 900000000001; it keeps Folder Admin on the folder.",
 		"The root organization stands as placement.json says: nothing to change.",
