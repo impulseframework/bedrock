@@ -75,11 +75,12 @@ folder it holds Folder Admin, given by the creation. Above the folder it holds
 what it was granted by hand before the root organization's bootstrap, which
 nothing of bedrock's takes off: Organization Administrator and Folder Creator
 at the organization node, and Billing Account Administrator on the root
-organization's billing account, granted by a billing administrator. The folder
-was made by the root organization's creating identity, with Folder Creator at
-the organization node, which took its own grants off everything it made at the
-creation's end and holds nothing under the folder since ("Created by the
-root organization", below).
+organization's billing account, granted by a billing administrator. What it
+holds in the root organization is in that organization's `README.md`
+("Several organizations"). The folder was made by the root organization's
+creating identity, with Folder Creator at the organization node, which took
+its own grants off everything it made at the creation's end and holds nothing
+under the folder since ("Created by the root organization", below).
 
 ## Naming
 
