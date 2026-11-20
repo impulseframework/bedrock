@@ -3421,12 +3421,12 @@ func TestProjectLien(t *testing.T) {
 			want: []string{`"roles/resourcemanager.lienModifier",    # the lien on every project (1-org projects.tf)`},
 		},
 		{
-			name: "1-org's README starts a project's removal, and a clean-slate wipe, with the lien",
+			name: "1-org's README starts a project's removal with the lien, and leaves a clean-slate wipe to bedrock org destroy",
 			path: "1-org/README.md",
 			want: []string{
 				"## Removing a project\n\nA project's removal starts with removing its lien.",
 				"gcloud alpha resource-manager liens list --project=<project id>",
-				"project by project in `project_ids`: the lien first, as\nabove, then `gcloud projects delete <project id>`.",
+				"A\nclean-slate wipe of a test organization takes none of these steps by hand:\n`bedrock org destroy` destroys this layer, each lien with its project",
 			},
 		},
 		{

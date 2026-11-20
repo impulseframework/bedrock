@@ -357,11 +357,11 @@ gcloud alpha resource-manager liens delete <lien name, from the list>
 ```
 
 Then the project goes the way it was meant to: a deliberate change to this
-layer for one project (its `deletion_policy` lifted for that apply), or, for
-a clean-slate wipe of a test organization before it is set up again from the
-seed, by hand, project by project in `project_ids`: the lien first, as
-above, then `gcloud projects delete <project id>`. A wipe that skips the
-lien is refused at the first project.
+layer for one project (its `deletion_policy` lifted for that apply). A
+clean-slate wipe of a test organization takes none of these steps by hand:
+`bedrock org destroy` destroys this layer, each lien with its project, and
+says what starting over takes (`0-bootstrap/README.md`, "Destroying the
+organization").
 
 ## The applications' repositories
 
