@@ -2671,9 +2671,13 @@ for the applier and Organization Policy Viewer for the planner (Google grants th
 there and nowhere lower; with them the root organization sets the organization-policy
 baseline on each hosting organization's folders, the rendered README's "The
 organization-policy baseline"), and its own working grants, which it takes off at the end.
-What it leaves by hand is the break-glass account's Folder Admin on the
-folder, which Google gives a creator, and the repository at its first commit, from which
-every change goes by pull request.
+What it leaves is the break-glass account's Folder Admin on the
+folder, its key for a recovery by hand, with BigQuery Admin and Service Usage Consumer on
+the root project, which the apply keeps (the one for the billing export's console step, the
+other for the quota its checks at a terminal bill to the project), and the repository at
+its first commit, from which
+every change goes by pull request. The roles the account ran the bootstrap with, above the
+folder, are granted by hand before it, and nothing of bedrock's takes them off.
 
 What the apply keeps true, from `placement.json`, section by section: the root project's
 APIs; the runner identities `<prefix>-root-gbl-planner` and `<prefix>-root-gbl-applier`
@@ -2762,7 +2766,7 @@ beside its own on the whole billing account, with the billing export's dataset i
 project (the root `README.md`, "Spend budgets and the billing export"). `org check` in any organization
 lists each grant on the organization's folder to a principal outside it (neither the
 break-glass account nor an identity in one of its projects), beside the leftover grants of
-a hand setup, in a root organization too. A domain is a bare lowercase name, none under another
+a hand apply, in a root organization too. A domain is a bare lowercase name, none under another
 listed, and at most 46 characters, so the zone's name fits; the organization's own domain
 is one like any other, and the live domain check decides whether it is delegated whole or
 by a label; each may declare the records its zone carries (`records`, in the root README). The placement refuses the
@@ -3019,7 +3023,9 @@ a hand apply left still held, with its place: Owner held by a person (a `user:`
 member) on a project the placement records, Folder Admin or Folder Editor held by a person
 on a folder under the organization's folder, which Google gives whoever creates a project or
 a folder, and every role the break-glass account holds on the organization's folder or a
-project but the one it keeps, Folder Admin on the organization's folder. All of them are
+project but the ones it keeps: Folder Admin on the organization's folder and, in a root
+organization, BigQuery Admin and Service Usage Consumer on the root project, which its apply
+keeps. All of them are
 temporary by design and removed by hand once the apply trigger applies the layers
 (`0-bootstrap/README.md`, "Recovery, by hand"). The listing reads the
 projects' and folders' IAM policies with the run's Google credentials (`gcloud auth
@@ -3113,7 +3119,8 @@ layer again with no change to it by starting the apply trigger with `_LAYER`, an
 --region=<region> --project=<boot project> --branch=<default branch>
 --substitutions=_LAYER=2-env,_ENVIRONMENT=tst`; `0-bootstrap/README.md`, "The Cloud
 Build triggers"). The placement names what the runs work with: every project under
-`projects` (`boot` from the seed, the six others from 1-org's `project_ids`), the
+`projects` (`boot` as `org create` recorded it, suffix included, and the creation's seed
+made it; the six others from 1-org's `project_ids`), the
 environment projects' numbers under `projectNumbers` (their Cloud Build service agents'
 read of the token), the Cloud Build GitHub authorization (`cloudBuildInstallationId`,
 `cloudBuildTokenSecretVersion`), the infrastructure GitHub App whose token 1-org's GitHub
