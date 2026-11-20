@@ -3,12 +3,17 @@ package root_test
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-playground/errors/v5"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"google.golang.org/api/googleapi"
+
 	"github.com/impulseframework/bedrock/internal/org"
 	"github.com/impulseframework/bedrock/internal/root"
 )
@@ -106,6 +111,75 @@ func TestApplierHoldsServiceAccountUserOnTheTriggersAccounts(t *testing.T) {
 	}
 	if want := []string{p.PlannerIdentity(), p.ApplierIdentity()}; !slices.Equal(accounts, want) {
 		t.Errorf("the triggers run as %v, want %v", accounts, want)
+	}
+}
+
+// TestRunnersHoldTheseGrantsAndNoOthers: what the root organization grants its planner
+// and its applier is these lists, whole: the bindings on the identities themselves, the
+// roles on the root project and on the organization's folder, and the grants at the
+// organization node. A pull request's build runs as the planner, so the lists' point is
+// that the planner may not act as the applier: the bindings on the applier are the
+// Cloud Build service agent's, which runs the apply trigger's builds as it, and the
+// applier's own. A row that lets the planner act as the applier fails here, and so does
+// Service Account User on the whole project, the folder or the organization, which
+// reaches every identity under it. Any other grant added or taken away changes these
+// lists with it.
+func TestRunnersHoldTheseGrantsAndNoOthers(t *testing.T) {
+	t.Parallel()
+
+	p, err := org.ReadPlacement("../org/testdata/imr/placement.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := root.NewDesired(p)
+	planner, applier, creator := "serviceAccount:"+p.PlannerIdentity(), "serviceAccount:"+p.ApplierIdentity(), "serviceAccount:"+p.CreatingIdentity()
+	const (
+		agent        = "serviceAccount:service-100000000011@gcp-sa-cloudbuild.iam.gserviceaccount.com"
+		tokenCreator = "roles/iam.serviceAccountTokenCreator"
+	)
+	// A member's roles on one resource are a set: their order in the list says nothing.
+	anyOrder := cmpopts.SortSlices(func(a, b string) bool { return a < b })
+
+	wantIdentities := []root.Grant{
+		{Resource: p.PlannerIdentity(), Role: serviceAccountUser, Member: agent},
+		{Resource: p.ApplierIdentity(), Role: serviceAccountUser, Member: agent},
+		{Resource: p.PlannerIdentity(), Role: serviceAccountUser, Member: applier},
+		{Resource: p.ApplierIdentity(), Role: serviceAccountUser, Member: applier},
+		{Resource: p.CreatingIdentity(), Role: tokenCreator, Member: applier},
+		{Resource: p.ApplierIdentity(), Role: tokenCreator, Member: applier},
+	}
+	if diff := cmp.Diff(wantIdentities, d.ServiceAccountGrants()); diff != "" {
+		t.Errorf("the bindings on the identities themselves are not the list (-want +got):\n%s", diff)
+	}
+	wantProject := map[string][]string{
+		planner: {
+			"roles/bigquery.metadataViewer", "roles/cloudbuild.builds.viewer", "roles/cloudbuild.connectionViewer", "roles/dns.reader",
+			"roles/logging.logWriter", "roles/secretmanager.viewer", "roles/serviceusage.serviceUsageConsumer",
+		},
+		applier: {
+			"roles/bigquery.metadataViewer", "roles/bigquery.user", "roles/cloudbuild.builds.editor", "roles/cloudbuild.builds.viewer",
+			"roles/cloudbuild.connectionAdmin", "roles/dns.admin", "roles/iam.roleAdmin", "roles/iam.serviceAccountAdmin", "roles/logging.logWriter",
+			"roles/resourcemanager.projectIamAdmin", "roles/secretmanager.admin", "roles/serviceusage.serviceUsageAdmin",
+		},
+		creator: {"roles/serviceusage.serviceUsageConsumer"},
+	}
+	if diff := cmp.Diff(wantProject, d.ProjectRoles(), anyOrder); diff != "" {
+		t.Errorf("the roles on the root project are not the list (-want +got):\n%s", diff)
+	}
+	wantFolder := map[string][]string{
+		planner: {"roles/browser", "roles/iam.securityReviewer"},
+		applier: {"roles/browser", "roles/iam.securityReviewer", "roles/resourcemanager.folderIamAdmin"},
+	}
+	if diff := cmp.Diff(wantFolder, d.FolderRoles(), anyOrder); diff != "" {
+		t.Errorf("the roles on the organization's folder are not the list (-want +got):\n%s", diff)
+	}
+	wantOrganization := []root.Grant{
+		{Resource: "123456789012", Role: "roles/resourcemanager.folderCreator", Member: creator},
+		{Resource: "123456789012", Role: "roles/orgpolicy.policyAdmin", Member: applier},
+		{Resource: "123456789012", Role: "roles/orgpolicy.policyViewer", Member: planner},
+	}
+	if diff := cmp.Diff(wantOrganization, d.OrganizationGrants()); diff != "" {
+		t.Errorf("the grants at the organization node are not the list (-want +got):\n%s", diff)
 	}
 }
 
@@ -284,6 +358,73 @@ func TestTriggerChangeWaitsForTheGrant(t *testing.T) {
 		}
 		if len(*waits) != 0 {
 			t.Errorf("the apply waited %v on a grant it did not make", *waits)
+		}
+	})
+
+	// The run made the grant for the trigger's account, and the trigger's change fails
+	// with another error than a refusal for a permission: no grant IAM has yet to apply
+	// explains it and no wait resolves it, so it is the change's answer at once, as
+	// Cloud Build gave it.
+	t.Run("an error that is not a refusal for a permission", func(t *testing.T) {
+		t.Parallel()
+
+		w := newWorld(t)
+		w.run(t, root.Apply, true)
+		waits := madeByAnEarlierRelease(t, w, false)
+		w.fake.Refuse["UpdateTrigger"] = &googleapi.Error{Code: http.StatusBadRequest, Message: "Request contains an invalid argument."}
+		var out bytes.Buffer
+		_, err := root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Dir: w.dir, Mode: root.Apply, Commit: "abc1234", GitHubToken: "test-token"}, &out)
+		if err == nil || errors.Cause(err).Error() != "googleapi: Error 400: Request contains an invalid argument." {
+			t.Errorf("the apply's error is %v, want Cloud Build's error as it gave it\n%s", err, out.String())
+		}
+		if len(*waits) != 0 {
+			t.Errorf("the apply waited %v on an error no grant explains", *waits)
+		}
+		if own := actAsGrants(w.p)[w.p.PlannerIdentity()]; !slices.Contains(w.fake.Calls, grantCall(own)) {
+			t.Errorf("the run did not make the grant for the trigger's account, and the case is a run that made it:\n  %s", strings.Join(w.fake.Calls, "\n  "))
+		}
+	})
+
+	// The run made every binding on the identities but the applier's Service Account
+	// User on the planner, which stood before it: the same role on the planner for
+	// another member, the applier's on the other trigger's account, and the bindings
+	// that have nothing to do with a trigger. A refusal of the plan trigger's change is
+	// then not IAM's delay for a grant of this run, and it is the change's answer at
+	// once: the wait is for the applier's grant on the trigger's own account alone.
+	t.Run("a refusal after the run's other grants alone", func(t *testing.T) {
+		t.Parallel()
+
+		w := newWorld(t)
+		w.run(t, root.Apply, true)
+		waits := madeByAnEarlierRelease(t, w, true)
+		own := actAsGrants(w.p)[w.p.PlannerIdentity()]
+		var others []root.Grant
+		for _, g := range root.NewDesired(w.p).ServiceAccountGrants() {
+			if g == own {
+				continue
+			}
+			others = append(others, g)
+			if err := w.fake.RevokeServiceAccount(context.Background(), g.Resource, g.Role, g.Member); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w.fake.Calls = nil
+		w.fake.Unapplied = 1
+		var out bytes.Buffer
+		_, err := root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Dir: w.dir, Mode: root.Apply, Commit: "abc1234", GitHubToken: "test-token"}, &out)
+		if err == nil || errors.Cause(err).Error() != "googleapi: Error 403: The caller does not have permission" {
+			t.Errorf("the apply's error is %v, want Cloud Build's refusal as it gave it\n%s", err, out.String())
+		}
+		if len(*waits) != 0 {
+			t.Errorf("the apply waited %v, and no grant it made is the applier's on the trigger's account", *waits)
+		}
+		if len(others) == 0 || slices.Contains(w.fake.Calls, grantCall(own)) {
+			t.Errorf("the case is a run that made other grants and not %s, and it had %d other(s) to make:\n  %s", grantCall(own), len(others), strings.Join(w.fake.Calls, "\n  "))
+		}
+		for _, g := range others {
+			if !slices.Contains(w.fake.Calls, grantCall(g)) {
+				t.Errorf("the run did not make %s, and the case is a run that made it:\n  %s", grantCall(g), strings.Join(w.fake.Calls, "\n  "))
+			}
 		}
 	})
 
