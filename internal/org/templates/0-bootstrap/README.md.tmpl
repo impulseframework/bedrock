@@ -262,9 +262,11 @@ holds an override file; the last runs `bedrock org plan` or `bedrock org
 apply`. The steps follow the pin's kind at render time: `bedrock upgrade`
 renders this layer with the pin it moves, and when the pin changes kind, a
 release to a commit or a commit to a release, it applies this layer itself,
-as the person running it, after `yes` typed back, since no trigger applies
-this layer and the release shape's fetch step refuses a commit pin (no step
-follows to build it). A pull request that reaches the plan trigger with a
+as the person running it, after `yes` typed back: the apply trigger applies
+this layer like every layer, in a run on the steps as they stand, and the
+release shape's fetch step refuses a commit pin (no step follows to build
+it), so after a move from a release to a commit no run would reach this
+layer's apply. A pull request that reaches the plan trigger with a
 commit pin while the triggers are in the release shape fails at the fetch
 step, whose message says to apply this layer from that branch by hand. The
 bedrock the run uses is the one the checkout pins, never one the trigger

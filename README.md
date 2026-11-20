@@ -856,15 +856,19 @@ by the alias the skeleton binds the driver under.
 In a hosting organization's repository, a move that changes the pin's kind, a release to
 a commit or a commit to a release, changes the shape of the Cloud Build triggers' steps
 (`0-bootstrap/cloud-build.tf`: a release pin renders the fetch step alone, a commit pin
-adds the step that builds it with `go install`), and 0-bootstrap is the one layer no
-trigger applies, so the triggers stay in the old shape until someone applies it. In the
+adds the step that builds it with `go install`). The apply trigger applies 0-bootstrap,
+the layer that holds the triggers, as it applies every layer, in a run on the steps as
+they stand, so the triggers stay in the old shape until an apply of 0-bootstrap. In the
 release shape the fetch step refuses a commit pin, since no step follows to build it: a
-pull request that moved the pin from a release to a commit could not be planned. So
+pull request that moved the pin from a release to a commit could not be planned, and no
+run would reach the layer's apply. So
 `upgrade` says so before it moves anything, asks for `yes` typed back (`--yes` stands in
 for it where there is no terminal; without either the run is refused and nothing is
 moved), and after the render applies 0-bootstrap as the person running it, with their
 sign-in, the way the break-glass account applies the layer by hand (`tofu init`,
-`plan` and `apply` in `0-bootstrap`, at its backend). It prints the plan's summary line
+`plan` and `apply` in `0-bootstrap`, at its backend). It applies a move from a commit to
+a release the same way, which leaves the triggers and the repository in one shape, though
+the commit shape's steps run a release pin too. It prints the plan's summary line
 (the two triggers updated in place) and the apply's, then the usual closing line. A move
 that keeps the kind applies nothing and reads as before. A pull request that reaches the
 plan trigger with a commit pin while the triggers are in the release shape fails at the
@@ -3054,9 +3058,11 @@ pin is read at run time a pull request that moves it already runs the new bedroc
 old steps, so the one rule bedrock keeps is that a release works under the previous
 release's steps. Both triggers pass `_BEDROCK_STEPS`, the shape of their steps and the
 kind of pin they were rendered for, and the two commands say in the run's log when they
-run under another shape. The one move the lag does not cover is a pin that changes kind:
-0-bootstrap is applied by hand, never by a trigger, and the release shape's fetch step
-refuses a commit pin, since no step follows to build it, so `bedrock upgrade` applies
+run under another shape. The one move the lag does not cover is a pin moved from a
+release to a commit: the apply trigger applies 0-bootstrap, the layer that holds the
+triggers, as it applies every layer, in a run on the steps as they stand, and the release
+shape's fetch step refuses a commit pin, since no step follows to build it, so no run
+reaches the layer's apply. `bedrock upgrade` applies
 0-bootstrap itself when it moves the pin across kinds, after `yes` typed back, before the
 pull request is opened ("bedrock upgrade"). No key exists
 anywhere: each trigger runs as a runner identity in the boot project (`<prefix>-org-gbl-
