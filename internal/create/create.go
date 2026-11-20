@@ -133,7 +133,12 @@ const (
 	// OwnershipCode is Cloud DNS's refusal of a zone whose maker does not own the domain
 	// in Google's webmaster verification.
 	OwnershipCode = "verifyManagedZoneDnsNameOwnership"
-	// services are the APIs the boot project needs before its 0-bootstrap applies.
+	// The roles the creation grants and takes off: Project Creator and Tag Administrator,
+	// its identity's own on the organization's folder for the first applies
+	// (creatingFolderRoles); Folder Admin, the break-glass account's on that folder, and,
+	// with Folder Editor and Owner, what Google gives the creator of a folder and of a
+	// project, which the withdrawal takes off; and Billing Account User, the boot and org
+	// identities' on the billing account.
 	bootProjectRoleCreator = "roles/resourcemanager.projectCreator"
 	tagAdminRole           = "roles/resourcemanager.tagAdmin"
 	folderAdminRole        = "roles/resourcemanager.folderAdmin"
