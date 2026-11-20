@@ -135,7 +135,7 @@ func TestRunnersHoldTheseGrantsAndNoOthers(t *testing.T) {
 	planner, applier, creator := "serviceAccount:"+p.PlannerIdentity(), "serviceAccount:"+p.ApplierIdentity(), "serviceAccount:"+p.CreatingIdentity()
 	const (
 		agent        = "serviceAccount:service-100000000011@gcp-sa-cloudbuild.iam.gserviceaccount.com"
-		tokenCreator = "roles/iam.serviceAccountTokenCreator"
+		impersonator = "roles/iam.serviceAccountTokenCreator"
 	)
 	// A member's roles on one resource are a set: their order in the list says nothing.
 	anyOrder := cmpopts.SortSlices(func(a, b string) bool { return a < b })
@@ -145,8 +145,8 @@ func TestRunnersHoldTheseGrantsAndNoOthers(t *testing.T) {
 		{Resource: p.ApplierIdentity(), Role: serviceAccountUser, Member: agent},
 		{Resource: p.PlannerIdentity(), Role: serviceAccountUser, Member: applier},
 		{Resource: p.ApplierIdentity(), Role: serviceAccountUser, Member: applier},
-		{Resource: p.CreatingIdentity(), Role: tokenCreator, Member: applier},
-		{Resource: p.ApplierIdentity(), Role: tokenCreator, Member: applier},
+		{Resource: p.CreatingIdentity(), Role: impersonator, Member: applier},
+		{Resource: p.ApplierIdentity(), Role: impersonator, Member: applier},
 	}
 	if diff := cmp.Diff(wantIdentities, d.ServiceAccountGrants()); diff != "" {
 		t.Errorf("the bindings on the identities themselves are not the list (-want +got):\n%s", diff)
