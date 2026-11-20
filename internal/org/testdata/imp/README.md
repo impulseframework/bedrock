@@ -359,10 +359,10 @@ Decided before writing:
    runs a layer. The service accounts and their role grants are kept.
 2. **GCS backend.** `backend "gcs"` in every layer, one bucket
    (`imp-boot-gbl-state-<suffix>`, created by the seed) with a prefix per
-   layer. The bucket name is substituted into the backend blocks once.
-   `0-bootstrap` is applied against the bucket from its first apply, the
-   creation's: the seed makes the bucket before it, so there is no local state
-   and nothing to migrate.
+   layer. Every render writes the bucket's name into the backend blocks, from
+   `placement.json` (`stateBucket`). `0-bootstrap` is applied against the
+   bucket from its first apply, the creation's: the seed makes the bucket
+   before it, so there is no local state and nothing to migrate.
 3. **Organization values.** Domain imp.example, organization 123456789012,
    prefix `imp`, billing account 012345-6789AB-CDEF01, regions us-central1
    and us-west3, contact domain `@imp.example`,
