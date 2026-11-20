@@ -149,7 +149,7 @@ func TestKeysValidate(t *testing.T) {
 		wantErr string
 	}{
 		{name: "the fixture", mutate: func(*Placement) {}},
-		{name: "no root", mutate: func(p *Placement) { p.Root = nil }, wantErr: "root is empty: a hosting organization reads the GitHub Apps' keys and the Cloud Build token from the root organization that holds them; record its prefix (root.organization) and its boot project (root.project)"},
+		{name: "no root", mutate: func(p *Placement) { p.Root = nil }, wantErr: "root is empty: a hosting organization reads the GitHub Apps' keys and the Cloud Build token from the root organization that holds them; record its prefix (root.organization) and its root project (root.project)"},
 		{name: "a project alone", mutate: func(p *Placement) { p.Root.Organization = "" }, wantErr: "root is empty"},
 		{name: "a prefix that is not one", mutate: func(p *Placement) { p.Root.Organization = "Zones" }, wantErr: `root.organization "Zones" is not an organization's prefix`},
 		{name: "its own prefix", mutate: func(p *Placement) { p.Root.Organization = "imp" }, wantErr: `root.organization "imp" is this organization's own prefix: a hosting organization holds no key`},

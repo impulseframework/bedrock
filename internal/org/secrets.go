@@ -145,7 +145,7 @@ var memberPrefixes = []string{"user:", "group:", "serviceAccount:"}
 // organization's and declared once in the root organization's placement.
 func (p *Placement) validateKeys() error {
 	if p.Root == nil || p.Root.Organization == "" || p.Root.Project == "" {
-		return errors.New("root is empty: a hosting organization reads the GitHub Apps' keys and the Cloud Build token from the root organization that holds them; record its prefix (root.organization) and its boot project (root.project)")
+		return errors.New("root is empty: a hosting organization reads the GitHub Apps' keys and the Cloud Build token from the root organization that holds them; record its prefix (root.organization) and its root project (root.project)")
 	}
 	if !prefixRE.MatchString(p.Root.Organization) {
 		return errors.Newf("root.organization %q is not an organization's prefix (2 to 4 lowercase alphanumeric characters starting with a letter)", p.Root.Organization)
