@@ -93,7 +93,7 @@ variable "terraform_folder_id" {
 }
 
 variable "manage_billing_iam" {
-  description = "Whether this layer manages the roles/billing.user grants for the two layer identities on the billing account. Changing a billing account's IAM policy needs Billing Account Administrator, which the break-glass account does not hold on a billing account that is not this organization's own. While this is false the grants are made by hand by a billing administrator (README, step 2) and stay outside OpenTofu."
+  description = "Whether this layer manages the roles/billing.user grants for the two layer identities on the billing account. Changing a billing account's IAM policy needs Billing Account Administrator, which the break-glass account does not hold on a billing account that is not this organization's own. While this is false the grants are the creation's, made by the root organization's creating identity (README, \"Created by the root organization\", step 2), and stay outside OpenTofu."
   type        = bool
   default     = true
 }
