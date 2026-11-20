@@ -66,8 +66,9 @@ const (
 // HostingLayers are the hosting model's layers, in apply order: 2-env before 2-net, since
 // 2-net's URL map names tst's pull-request backend, which 2-env tst makes, while nothing
 // in 2-env waits on 2-net (its two load balancer principals are derived from 1-org until
-// 2-net exists, and the apps domain is the placement's). A root organization's are
-// RootLayers (zones.go); Placement.Layers answers by kind.
+// 2-net exists, and the apps domain is the placement's). A root organization has none,
+// since bedrock keeps it by API (root.go, and the package root); Placement.Layers
+// answers by kind.
 var HostingLayers = []string{bootstrapLayer, orgLayer, shrLayer, spnLayer, envLayer, netLayer}
 
 // layerProjects is the project each single-run layer's identities live in, by layer: the

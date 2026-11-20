@@ -171,13 +171,17 @@ the state bucket `{{.StateBucket}}`; then the first applies of `0-bootstrap`
 and `1-org`, against the bucket, from which the connection, the repository
 link, the two triggers, the folders, the projects and every identity exist;
 then this repository, with the rendered foundation as its first push, which
-the apply trigger ran on, every layer as its own identity. The creation
-identity took its own grants off everything it made and holds nothing here;
-the root organization reaches in for nothing after, and its record of the
-folder (`hostingOrganizations` in its `placement.json`) is what keeps this
-organization's boot identity's grants on the shared secrets rendered
+the apply trigger ran on, every layer as its own identity. The creating
+identity took its own grants off everything it made and holds nothing here.
+Since then the root organization's apply keeps, by API (a root organization
+has no layers), the organization-policy baseline on this organization's
+folders, from its record of this organization; and, from its record of the
+folder (`hostingOrganizations` in its `placement.json`), this organization's
+boot identity's grant on the shared secrets
 ([`0-bootstrap/README.md`](0-bootstrap/README.md), "Created by the root
-organization" and "The GitHub Apps' keys").
+organization" and "The GitHub Apps' keys") and this organization's spend
+budget (the same README, "The spend budget"). Everything else under the
+folder is this organization's own.
 
 The GitHub side is the root organization's: the `{{.GithubOrganization}}`
 organization, its Bot Account `{{.GithubBotAccount}}`, the release,

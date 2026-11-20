@@ -61,8 +61,9 @@ var (
 
 // KeyAlias is the version alias every reader of a key names in place of a number
 // (projects/<project>/secrets/<secret>/versions/current): the root organization's
-// placement pins the version it points at, its 0-bootstrap renders it on the secret, and
-// the apply moves it, which switches every reader in every organization at once.
+// placement pins the version it points at, and its apply moves the alias there, by API
+// (a root organization has no layers), which switches every reader in every
+// organization at once.
 const KeyAlias = "current"
 
 // RootPlace names the root organization whose boot project holds the GitHub Apps' keys,
@@ -79,8 +80,9 @@ type RootPlace struct {
 // organization's placement (hostingOrganizations): one the root organization creates by
 // pull request (bedrock org create; README.md, "Creating a hosting organization"), or one
 // recorded as it stands. Its folder is recorded once the organization is created, and
-// the root organization's grants to its identities render from then on: a grant names
-// an identity that exists.
+// the root organization's apply keeps its boot identity's grant on the shared secrets
+// from then on, by API (a root organization has no layers): a grant names an identity
+// that exists.
 type HostingOrganization struct {
 	// Prefix is the hosting organization's prefix.
 	Prefix string `json:"prefix"`
@@ -95,13 +97,15 @@ type HostingOrganization struct {
 }
 
 // Created reports whether the hosting organization's folder is recorded: the creation
-// has handed it off, and the root organization's grants to its identities render.
+// has handed it off, and the root organization's apply keeps its boot identity's grant
+// on the shared secrets.
 func (h HostingOrganization) Created() bool {
 	return h.Folder != ""
 }
 
 // CreatedHostingOrganizations are the hosting organizations whose folder is recorded,
-// the ones 0-bootstrap grants on the shared secrets.
+// the ones whose boot identities the root organization's apply grants the policy
+// administration of the shared secrets (root.Desired.Secrets).
 func (p *Placement) CreatedHostingOrganizations() []HostingOrganization {
 	var created []HostingOrganization
 	for _, h := range p.HostingOrganizations {
@@ -181,8 +185,8 @@ func (p *Placement) TokenSecretProject() string {
 	return parts[1]
 }
 
-// validateKeyHolding holds a root organization's placement to what its keys' grants
-// render from: no keys of another organization's, key operators that are IAM members,
+// validateKeyHolding holds a root organization's placement to what its apply makes the
+// keys' grants from: no keys of another organization's, key operators that are IAM members,
 // and hosting organizations each with a prefix of its own and a boot project.
 func (p *Placement) validateKeyHolding() error {
 	if p.Root != nil {
@@ -302,7 +306,7 @@ func organizationID(data []byte) string {
 }
 
 // InfrastructureKeySecret is the Secret Manager secret holding the infrastructure GitHub
-// App's private key, as the root organization's 0-bootstrap names it in its boot
+// App's private key, as the root organization's bootstrap names it in its root
 // project.
 func (p *Placement) InfrastructureKeySecret() string {
 	return p.RootOrganization() + "-" + RootProjectKey + "-gbl-github-infrastructure-key"
