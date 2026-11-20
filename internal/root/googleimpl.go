@@ -53,6 +53,26 @@ import (
 // ErrLocked is Lock's answer when the lock object is there already.
 var ErrLocked = errors.New("the lock is held")
 
+// The constructors an exported constructor of this file calls with an identity, a
+// project or options of its choosing: the impersonation, the Org Policy client, the
+// Budgets client (the module's own constructor of it), and the seven clients NewIAM
+// opens. Each variable holds Google's or the module's constructor itself, and nothing but
+// a test assigns one. A test puts a function in its place that records what the exported
+// constructor calls it with: the identity and the project a client calls as show at a
+// call alone, and a call needs credentials a test has none of.
+var (
+	impersonatedTokenSource = impersonate.CredentialsTokenSource
+	newOrgPolicyClient      = orgpolicy.NewClient
+	newBudgetsClient        = budgets.New
+	newIAMAdminClient       = admin.NewIamClient
+	newProjectsClient       = resourcemanager.NewProjectsClient
+	newFoldersClient        = resourcemanager.NewFoldersClient
+	newOrganizationsClient  = resourcemanager.NewOrganizationsClient
+	newBillingService       = cloudbilling.NewService
+	newStorageClient        = storage.NewClient
+	newServiceUsageService  = serviceusage.NewService
+)
+
 // operationPoll is how often a long-running operation is asked after.
 const operationPoll = 5 * time.Second
 
@@ -230,16 +250,7 @@ func NewDNS(ctx context.Context) (DNS, error) {
 // NewDNSAs opens Cloud DNS as the identity, impersonated by the process's credentials:
 // the bootstrap makes the zones as the applier.
 func NewDNSAs(ctx context.Context, identity string) (DNS, error) {
-	return newDNSAs(ctx, identity)
-}
-
-// newDNSAs is NewDNSAs with the options the impersonation itself opens with. NewDNSAs
-// gives none, so the identity is impersonated with the process's default credentials. A
-// test gives an HTTP client that stands in for the IAM Credentials API, where the
-// identity's token is asked for, and reads from a call's refusal whose token the client
-// calls with. NewVerifierAs and NewBudgetsAs are split the same way, for the same test.
-func newDNSAs(ctx context.Context, identity string, impersonation ...option.ClientOption) (DNS, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}}, impersonation...)
+	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
@@ -256,13 +267,7 @@ func newDNSAs(ctx context.Context, identity string, impersonation ...option.Clie
 // creating identity, and itself, since a token for a Google API outside Cloud Platform's
 // scope comes from IAM Credentials and not from the build's own credentials.
 func NewVerifierAs(ctx context.Context, identity string) (Verifier, error) {
-	return newVerifierAs(ctx, identity)
-}
-
-// newVerifierAs is NewVerifierAs with the options the impersonation itself opens with:
-// none from NewVerifierAs, a stand-in for the IAM Credentials API from a test.
-func newVerifierAs(ctx context.Context, identity string, impersonation ...option.ClientOption) (Verifier, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope, siteverification.SiteverificationScope}}, impersonation...)
+	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope, siteverification.SiteverificationScope}})
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
@@ -670,12 +675,12 @@ type iamClients struct {
 }
 
 // iamOptions are the options each client of the set opens with, client by client. NewIAM
-// gives none, so each client opens with the process's default credentials. A test gives
-// each client that holds a connection one of its own, and reads from it whether the
-// client was closed: each gRPC client a gRPC connection, the storage client an HTTP
-// client. The two REST clients, Cloud Billing's and Service Usage's, hold no connection
-// and are given none. A test makes one opening fail by giving that client options
-// Google's transport refuses.
+// gives none, so each client opens with the process's default credentials and bills its
+// calls where those say. A test gives each client that holds a connection one of its
+// own, and reads from it whether the client was closed: each gRPC client a gRPC
+// connection, the storage client an HTTP client. The two REST clients, Cloud Billing's
+// and Service Usage's, hold no connection and are given none. A test makes one opening
+// fail by giving that client options Google's transport refuses.
 type iamOptions struct {
 	admin, projects, folders, organizations, billing, storage, services []option.ClientOption
 }
@@ -684,15 +689,7 @@ type iamOptions struct {
 // Storage and Service Usage. When one of them cannot be opened, the ones opened before it
 // are closed: the caller is answered no client beside the error, and could close none.
 func NewIAM(ctx context.Context) (IAM, error) {
-	return newIAM(ctx, ownCredentials())
-}
-
-// ownCredentials are the options NewIAM opens each client with: none for any of them, so
-// every client opens with the process's default credentials and bills its calls where
-// those say. An option entered here would change the identity or the project a client
-// calls as, which shows at that client's first call alone, so a test reads the lists.
-func ownCredentials() *iamOptions {
-	return &iamOptions{}
+	return newIAM(ctx, &iamOptions{})
 }
 
 // newIAM opens the clients, each with its own options, and closes the ones it had opened
@@ -712,25 +709,25 @@ func newIAM(ctx context.Context, opts *iamOptions) (IAM, error) {
 // leaves the ones before it open and the ones after it nil.
 func (c *iamClients) open(ctx context.Context, opts *iamOptions) error {
 	var err error
-	if c.admin, err = admin.NewIamClient(ctx, opts.admin...); err != nil {
+	if c.admin, err = newIAMAdminClient(ctx, opts.admin...); err != nil {
 		return errors.Wrap(err, "admin.NewIamClient()")
 	}
-	if c.projects, err = resourcemanager.NewProjectsClient(ctx, opts.projects...); err != nil {
+	if c.projects, err = newProjectsClient(ctx, opts.projects...); err != nil {
 		return errors.Wrap(err, "resourcemanager.NewProjectsClient()")
 	}
-	if c.folders, err = resourcemanager.NewFoldersClient(ctx, opts.folders...); err != nil {
+	if c.folders, err = newFoldersClient(ctx, opts.folders...); err != nil {
 		return errors.Wrap(err, "resourcemanager.NewFoldersClient()")
 	}
-	if c.organizations, err = resourcemanager.NewOrganizationsClient(ctx, opts.organizations...); err != nil {
+	if c.organizations, err = newOrganizationsClient(ctx, opts.organizations...); err != nil {
 		return errors.Wrap(err, "resourcemanager.NewOrganizationsClient()")
 	}
-	if c.billing, err = cloudbilling.NewService(ctx, opts.billing...); err != nil {
+	if c.billing, err = newBillingService(ctx, opts.billing...); err != nil {
 		return errors.Wrap(err, "cloudbilling.NewService()")
 	}
-	if c.storage, err = storage.NewClient(ctx, opts.storage...); err != nil {
+	if c.storage, err = newStorageClient(ctx, opts.storage...); err != nil {
 		return errors.Wrap(err, "storage.NewClient()")
 	}
-	if c.services, err = serviceusage.NewService(ctx, opts.services...); err != nil {
+	if c.services, err = newServiceUsageService(ctx, opts.services...); err != nil {
 		return errors.Wrap(err, "serviceusage.NewService()")
 	}
 
@@ -1259,7 +1256,7 @@ func wrapf(err error, format string, args ...any) error {
 
 // NewOrgPolicies opens the Org Policy client with the application default credentials.
 func NewOrgPolicies(ctx context.Context, quotaProject string) (OrgPolicies, error) {
-	c, err := orgpolicy.NewClient(ctx, billedTo(quotaProject)...)
+	c, err := newOrgPolicyClient(ctx, option.WithQuotaProject(quotaProject))
 	if err != nil {
 		return nil, errors.Wrap(err, "orgpolicy.NewClient()")
 	}
@@ -1366,27 +1363,13 @@ func policyFromProto(p *orgpolicypb.Policy) *Policy {
 // NewBudgets opens the Budgets API with the run's credentials, billing its calls to the
 // root project: a person's application default credentials name no project of their own.
 func NewBudgets(ctx context.Context, quotaProject string) (budgets.Client, error) {
-	return budgets.New(ctx, billedTo(quotaProject)...)
-}
-
-// billedTo are the options NewOrgPolicies and NewBudgets open their client with: the
-// quota project, which is the project the client's calls are billed to, and nothing
-// else, so the client opens with the process's default credentials. A test reads these
-// options, since a call that would show the project needs credentials a test has none of.
-func billedTo(quotaProject string) []option.ClientOption {
-	return []option.ClientOption{option.WithQuotaProject(quotaProject)}
+	return newBudgetsClient(ctx, option.WithQuotaProject(quotaProject))
 }
 
 // NewBudgetsAs opens the Budgets API as the identity the credentials impersonate: the
 // applier as the creating identity, which holds Billing Account Administrator.
 func NewBudgetsAs(ctx context.Context, identity string) (budgets.Client, error) {
-	return newBudgetsAs(ctx, identity)
-}
-
-// newBudgetsAs is NewBudgetsAs with the options the impersonation itself opens with:
-// none from NewBudgetsAs, a stand-in for the IAM Credentials API from a test.
-func newBudgetsAs(ctx context.Context, identity string, impersonation ...option.ClientOption) (budgets.Client, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}}, impersonation...)
+	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}

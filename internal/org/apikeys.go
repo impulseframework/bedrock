@@ -154,20 +154,17 @@ func NewKeyLister(ctx context.Context) (KeyLister, error) {
 	return newKeyClient(ctx)
 }
 
+// impersonatedTokenSource is the impersonation, as NewKeyClientAs calls it: Google's own,
+// which nothing but a test assigns. A test puts a function in its place that records what
+// NewKeyClientAs calls it with: the identity a client calls as shows at a call alone, and
+// a call needs credentials a test has none of.
+var impersonatedTokenSource = impersonate.CredentialsTokenSource
+
 // NewKeyClientAs opens the API Keys client as the identity, impersonated with the
 // process's default credentials: bedrock org apply restricts Firebase's browser key as
 // the environment's layer identity.
 func NewKeyClientAs(ctx context.Context, identity string) (KeyClient, error) {
-	return newKeyClientAs(ctx, identity)
-}
-
-// newKeyClientAs is NewKeyClientAs with the options the impersonation itself opens with.
-// NewKeyClientAs gives none, so the identity is impersonated with the process's default
-// credentials. A test gives an HTTP client that stands in for the IAM Credentials API,
-// where the identity's token is asked for, and reads from a call's refusal whose token the
-// client calls with.
-func newKeyClientAs(ctx context.Context, identity string, impersonation ...option.ClientOption) (KeyClient, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}}, impersonation...)
+	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}

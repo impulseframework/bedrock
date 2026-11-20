@@ -19,25 +19,52 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
-// TestNewIAMGivesNoClientAnOption: NewIAM opens every client of the set with no option,
-// so each opens with the process's default credentials and bills its calls where those
-// say. The lists are read as ownCredentials answers them, which is what NewIAM hands the
-// opening. An option entered there would change the identity or the project one client
-// calls as, and only that client's first call would show it.
+// TestNewIAMGivesNoClientAnOption: NewIAM calls the constructor of each of its seven
+// clients once, with no option, so each client opens with the process's default
+// credentials and bills its calls where those say. An option given to one of them would
+// change the identity or the project that client calls as, and only that client's first
+// call would show it. Each constructor is the package's variable, which holds a function
+// here that records the options of the call (recordOpenings) and opens the client
+// without credentials and without a network. The process's default credentials are named
+// by a file that is not there, so a client opened by any other way than its variable
+// cannot be opened at all.
 func TestNewIAMGivesNoClientAnOption(t *testing.T) {
-	t.Parallel()
+	// The constructors swapped below are the package's and the variable the process's, so
+	// the test runs alone: t.Setenv forbids t.Parallel.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
 
-	if diff := cmp.Diff(&iamOptions{}, ownCredentials(), cmp.AllowUnexported(iamOptions{}), cmpopts.EquateEmpty()); diff != "" {
-		t.Errorf("ownCredentials() hands a client an option, and NewIAM is to open every client with none (-want +got):\n%s", diff)
+	standIn, _ := watchedIAMOptions(t)
+	openings := []struct {
+		constructor string
+		// calls are the calls of the constructor, each the options it was given.
+		calls *[][]option.ClientOption
+	}{
+		{constructor: "admin.NewIamClient", calls: recordOpenings(t, &newIAMAdminClient, standIn.admin...)},
+		{constructor: "resourcemanager.NewProjectsClient", calls: recordOpenings(t, &newProjectsClient, standIn.projects...)},
+		{constructor: "resourcemanager.NewFoldersClient", calls: recordOpenings(t, &newFoldersClient, standIn.folders...)},
+		{constructor: "resourcemanager.NewOrganizationsClient", calls: recordOpenings(t, &newOrganizationsClient, standIn.organizations...)},
+		{constructor: "cloudbilling.NewService", calls: recordOpenings(t, &newBillingService, standIn.billing...)},
+		{constructor: "storage.NewClient", calls: recordOpenings(t, &newStorageClient, standIn.storage...)},
+		{constructor: "serviceusage.NewService", calls: recordOpenings(t, &newServiceUsageService, standIn.services...)},
+	}
+	clients, err := NewIAM(context.Background())
+	if err != nil {
+		t.Fatalf("NewIAM() = %v", err)
+	}
+	defer clients.Close()
+	want := [][]option.ClientOption{nil}
+	for _, o := range openings {
+		if diff := cmp.Diff(want, *o.calls, cmpopts.EquateEmpty()); diff != "" {
+			t.Errorf("NewIAM() called %s() other than once with no option (-want +got):\n%s", o.constructor, diff)
+		}
 	}
 }
 
-// TestNewIAMOpensWithTheProcessCredentials: NewIAM hands the opening the lists
-// ownCredentials answers, so the first client of the set, IAM's, looks for the process's
-// default credentials. Those are named by a file that is not there: the refusal is that
-// client's, and names the file it looked for. The opening stops there, so this test reads
-// the first client's list alone; the lists of all seven are read as ownCredentials
-// answers them (TestNewIAMGivesNoClientAnOption).
+// TestNewIAMOpensWithTheProcessCredentials: with nothing swapped, the first client of
+// the set, IAM's, looks for the process's default credentials. Those are named by a file
+// that is not there: the refusal is that client's, and names the file it looked for. The
+// opening stops there, so this test reads the first client alone; what NewIAM calls each
+// of the seven constructors with is read by TestNewIAMGivesNoClientAnOption.
 func TestNewIAMOpensWithTheProcessCredentials(t *testing.T) {
 	// The variable is the process's, so the test runs alone: t.Setenv forbids t.Parallel.
 	missing := filepath.Join(t.TempDir(), "no-credentials.json")
@@ -190,6 +217,29 @@ func watchedIAMOptions(t *testing.T) (*iamOptions, []holder) {
 		{name: "organizations", closed: shutDown(organizations)},
 		{name: "Cloud Storage", closed: buckets.closed},
 	}
+}
+
+// recordOpenings puts a function in the place of a client's constructor for the length
+// of the test, and answers the calls it gets, each the options it was given. The
+// function opens the client with the stand-in options in place of the ones it was called
+// with, so the client opens without credentials and without a network whatever the
+// caller chose. The variable is the package's, so a test that swaps one does not run in
+// parallel.
+func recordOpenings[C any](t *testing.T, constructor *func(context.Context, ...option.ClientOption) (C, error), standIn ...option.ClientOption) *[][]option.ClientOption {
+	t.Helper()
+
+	library := *constructor
+	calls := &[][]option.ClientOption{}
+	*constructor = func(ctx context.Context, opts ...option.ClientOption) (C, error) {
+		*calls = append(*calls, opts)
+
+		return library(ctx, standIn...)
+	}
+	t.Cleanup(func() {
+		*constructor = library
+	})
+
+	return calls
 }
 
 // refused are options no Google client opens with: the transport refuses scopes beside an

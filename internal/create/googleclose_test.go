@@ -13,6 +13,7 @@ import (
 	resourcemanager "cloud.google.com/go/resourcemanager/apiv3"
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/storage"
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
@@ -135,48 +136,101 @@ func TestGoogleCloseClosesEachClientItHolds(t *testing.T) {
 }
 
 // TestARegionalSecretClientOpensWithTheSecretManagerClientsOptions: the client for a
-// regional secret opens with the options the set's Secret Manager client opened with, at
-// the region's endpoint. Under NewGoogleAs those options are the creating identity's
-// token source, and under NewGoogleBilledTo the quota project: a regional client opened
-// without them would act as the process's own identity, or bill no project, and only a
-// regional secret's first policy read would show it. Here the Secret Manager client's
-// option is a connection of its own, so a regional client opened with that option is
-// built on the same connection, and closing the regional client alone closes it. The
-// process's default credentials are named by a file that is not there, so a regional
-// client handed nothing looks for them and cannot be opened.
+// regional secret opens at the region's endpoint, named from the location in the secret's
+// name, and with the options the set's Secret Manager client opened with after it. Under
+// NewGoogleAs those options are the creating identity's token source, and under
+// NewGoogleBilledTo the quota project: a regional client opened without them would act as
+// the process's own identity, or bill no project, and one opened at the global endpoint
+// would be refused the regional secret; only a regional secret's first policy read would
+// show either. Here the set is NewGoogleBilledTo's, and the constructors are the
+// package's variables, which hold functions that record what they are called with
+// (recordGoogleOpenings): the Secret Manager client's constructor is called once for the
+// set, and once for the region with the region's endpoint and then the quota project. A
+// second secret of the region opens no further client, and a secret that names no
+// location is answered the set's own client.
 func TestARegionalSecretClientOpensWithTheSecretManagerClientsOptions(t *testing.T) {
-	// The variable is the process's, so the test runs alone: t.Setenv forbids t.Parallel.
+	// The constructors swapped below are the package's and the variable the process's, so
+	// the test runs alone: t.Setenv forbids t.Parallel.
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
 
+	const project = "imr-root-gbl-core-f2a4"
 	ctx := context.Background()
-	opts, holders := watchedGoogleOptions(t)
-	opened, err := newGoogle(ctx, opts)
+	opened := recordGoogleOpenings(t)
+	set, err := NewGoogleBilledTo(ctx, project)
+	if err != nil {
+		t.Fatalf("NewGoogleBilledTo() = %v", err)
+	}
+	g, ok := set.(*google)
+	if !ok {
+		t.Fatalf("NewGoogleBilledTo() answered a %T, want the set of clients", set)
+	}
+	t.Cleanup(func() {
+		_ = g.Close()
+	})
+
+	regional, err := g.secretClient(ctx, "projects/"+project+"/locations/us-central1/secrets/github-app-key")
+	if err != nil {
+		t.Fatalf("secretClient() for a regional secret = %v", err)
+	}
+	if regional == g.secrets {
+		t.Fatal("secretClient() answered the set's own client for a regional secret")
+	}
+	if again, err := g.secretClient(ctx, "projects/"+project+"/locations/us-central1/secrets/webhook-secret"); err != nil || again != regional {
+		t.Errorf("secretClient() for a second secret of the region = %p, %v, want the region's client, %p", again, err, regional)
+	}
+	if global, err := g.secretClient(ctx, "projects/"+project+"/secrets/github-app-key"); err != nil || global != g.secrets {
+		t.Errorf("secretClient() for a secret that names no location = %p, %v, want the set's own client, %p", global, err, g.secrets)
+	}
+	want := [][]option.ClientOption{
+		{option.WithQuotaProject(project)},
+		{option.WithEndpoint("secretmanager.us-central1.rep.googleapis.com:443"), option.WithQuotaProject(project)},
+	}
+	if diff := cmp.Diff(want, *opened["secrets"]); diff != "" {
+		t.Errorf("the Secret Manager client's constructor was called other than once with the set's options, and once with the region's endpoint and then those options (-want +got):\n%s", diff)
+	}
+}
+
+// TestARegionalSecretClientOpensWithNoOtherClientsOptions: the options the set keeps for
+// its regional clients are the Secret Manager client's list, and no other client's. Every
+// exported constructor gives the Secret Manager client the list it gives the folders
+// client and each other client but storage's, so a set one of them opened cannot show
+// whose list was kept: a set that kept the folders client's list passes the test above.
+// Here the set is opened with one quota project in every other client's list and another
+// in the Secret Manager client's, and the constructors are the package's variables, which
+// hold functions that record what they are called with (recordGoogleOpenings): the
+// Secret Manager client's constructor is called for the region with the region's endpoint
+// and then the Secret Manager client's own project.
+func TestARegionalSecretClientOpensWithNoOtherClientsOptions(t *testing.T) {
+	// The constructors swapped below are the package's and the variable the process's, so
+	// the test runs alone: t.Setenv forbids t.Parallel.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
+
+	const others, own = "imr-root-gbl-core-f2a4", "imr-root-gbl-core-7c3e"
+	ctx := context.Background()
+	opened := recordGoogleOpenings(t)
+	opts := optionsForAll([]option.ClientOption{option.WithQuotaProject(others)}, []option.ClientOption{option.WithQuotaProject(others)})
+	opts.secrets = []option.ClientOption{option.WithQuotaProject(own)}
+	set, err := newGoogle(ctx, opts)
 	if err != nil {
 		t.Fatalf("newGoogle() = %v", err)
 	}
-	g, ok := opened.(*google)
+	g, ok := set.(*google)
 	if !ok {
-		t.Fatalf("newGoogle() answered a %T, want the set of clients", opened)
+		t.Fatalf("newGoogle() answered a %T, want the set of clients", set)
 	}
-	t.Cleanup(func() { _ = g.Close() })
+	t.Cleanup(func() {
+		_ = g.Close()
+	})
 
-	regional, err := g.secretClient(ctx, "projects/imr-root-gbl-core-f2a4/locations/us-central1/secrets/github-app-key")
-	if err != nil {
-		t.Fatalf("secretClient() for a regional secret = %v: the regional client was opened without the Secret Manager client's options, and looked for credentials", err)
+	if _, err := g.secretClient(ctx, "projects/"+own+"/locations/us-central1/secrets/github-app-key"); err != nil {
+		t.Fatalf("secretClient() for a regional secret = %v", err)
 	}
-	if regional == g.secrets {
-		t.Fatal("secretClient() answered the global client for a regional secret")
+	want := [][]option.ClientOption{
+		{option.WithQuotaProject(own)},
+		{option.WithEndpoint("secretmanager.us-central1.rep.googleapis.com:443"), option.WithQuotaProject(own)},
 	}
-	if err := regional.Close(); err != nil {
-		t.Errorf("Close() of the regional client = %v", err)
-	}
-	for _, h := range holders {
-		switch own, closed := h.name == "Secret Manager", h.closed(); {
-		case own && !closed:
-			t.Errorf("closing the regional client left the Secret Manager client's connection open: the regional client did not open with that client's options")
-		case !own && closed:
-			t.Errorf("closing the regional client closed the %s client's connection: the regional client opened with that client's options", h.name)
-		}
+	if diff := cmp.Diff(want, *opened["secrets"]); diff != "" {
+		t.Errorf("the Secret Manager client's constructor was called other than once with its own list, and once with the region's endpoint and then that list (-want +got):\n%s", diff)
 	}
 }
 

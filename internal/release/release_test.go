@@ -136,8 +136,9 @@ func server(t *testing.T, releases string, assets map[string]string) *Source {
 	return &Source{Base: srv.URL, API: srv.URL, HTTP: srv.Client()}
 }
 
-// answerWith writes the body as a test server's answer. Every handler of the servers in
-// this file answers through it, so what they write is marked in one place.
+// answerWith writes the body as a test server's answer. Every answer of the servers in
+// this file that is not an error is written through it, so that write is marked in one
+// place; an error is answered with http.Error.
 func answerWith(w http.ResponseWriter, body string) {
 	// The audit is of an HTML page that writes what a user sent. These servers stand in
 	// for GitHub and the Go module proxy: they answer what those would (JSON, a release's

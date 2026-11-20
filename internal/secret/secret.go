@@ -182,23 +182,21 @@ type secretManager struct {
 	client *secretmanager.Client
 }
 
+// newSecretManagerClient is the Secret Manager client's constructor, as NewSecretManager
+// calls it: Google's own, which nothing but a test assigns. A test puts a function in its
+// place that records the options it is called with: the project a client's calls are
+// billed to shows at a call alone, and a call needs credentials a test has none of.
+var newSecretManagerClient = secretmanager.NewClient
+
 // NewSecretManager opens the Secret Manager client with Application Default Credentials,
 // billing its calls to the project (the quota project).
 func NewSecretManager(ctx context.Context, project string) (Client, error) {
-	client, err := secretmanager.NewClient(ctx, billedTo(project)...)
+	client, err := newSecretManagerClient(ctx, option.WithQuotaProject(project))
 	if err != nil {
 		return nil, errors.Wrap(err, "secretmanager.NewClient()")
 	}
 
 	return &secretManager{client: client}, nil
-}
-
-// billedTo are the options NewSecretManager opens the client with: the quota project,
-// which is the project the client's calls are billed to, and nothing else, so the client
-// opens with Application Default Credentials. A test reads these options, since a call
-// that would show the project needs credentials a test has none of.
-func billedTo(project string) []option.ClientOption {
-	return []option.ClientOption{option.WithQuotaProject(project)}
 }
 
 // GetSecretVersion asks the API about the named version.

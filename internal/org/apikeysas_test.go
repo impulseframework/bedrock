@@ -11,41 +11,60 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"golang.org/x/oauth2"
+	"google.golang.org/api/impersonate"
 	"google.golang.org/api/option"
 )
 
 // asIdentity is the identity the tests open the API Keys client as.
 const asIdentity = "sa-org-apply@imr-example-dev-core-9c1d.iam.gserviceaccount.com"
 
-// TestNewKeyClientAsCallsAsTheIdentity: the client NewKeyClientAs opens calls with the
-// identity's token, asked for with Cloud Platform's scope. A client opened without the
-// identity's token source would act as the process's own identity, which shows at its
-// first call alone. Here the IAM Credentials API is a stand-in that refuses every token
-// and says whose it was asked for, so a call of the client fails with that refusal before
-// anything is sent. The process's default credentials are named by a file that is not
-// there, so a client that was not handed the token source cannot be opened at all.
+// TestNewKeyClientAsCallsAsTheIdentity: NewKeyClientAs asks for the token of the identity
+// it is given, with Cloud Platform's scope and no option, and the client it opens calls
+// with the token it was answered. A client opened as another identity, or with the
+// process's own, shows that at its first call alone. The impersonation is the package's
+// variable, which holds a function here that records what the constructor calls it with
+// (recordImpersonations): an option the constructor gave it would change the credentials
+// the identity is impersonated with, so any option fails the test. The token source it
+// answers is Google's own, asking a stand-in for the IAM Credentials API that refuses
+// every token and says whose it was asked for, so a call of the client ends at that
+// refusal and its own request is never sent. The process's default credentials are named
+// by a file that is not there, so a client that was not handed the token source cannot be
+// opened at all.
 func TestNewKeyClientAsCallsAsTheIdentity(t *testing.T) {
-	// The variable is the process's, so the test runs alone: t.Setenv forbids t.Parallel.
+	// The impersonation swapped below is the package's and the variable the process's, so
+	// the test runs alone: t.Setenv forbids t.Parallel.
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
 
 	ctx := context.Background()
-	client, err := newKeyClientAs(ctx, asIdentity, option.WithHTTPClient(&http.Client{Transport: tokenRefusals{}}))
+	asked := recordImpersonations(t)
+	client, err := NewKeyClientAs(ctx, asIdentity)
 	if err != nil {
-		t.Fatalf("newKeyClientAs() = %v: with the process's credentials missing, a client that was not handed the identity's token source cannot be opened", err)
+		t.Fatalf("NewKeyClientAs() = %v", err)
 	}
-	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() {
+		_ = client.Close()
+	})
 
+	wantAsked := []impersonation{{config: impersonate.CredentialsConfig{TargetPrincipal: asIdentity, Scopes: []string{cloudPlatformScope}}}}
+	if diff := cmp.Diff(wantAsked, *asked, cmp.AllowUnexported(impersonation{}), cmpopts.EquateEmpty()); diff != "" {
+		t.Errorf("NewKeyClientAs() asked for other than that identity's token, once, with Cloud Platform's scope and no option (-want +got):\n%s", diff)
+	}
 	want := tokenRefusal(asIdentity, cloudPlatformScope)
 	if _, err := client.ProjectKeys(ctx, "imr-example-dev-core-9c1d"); err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("a call of the client newKeyClientAs() opened = %v, want the refusal %q: the client does not call with that identity's token, asked for with that scope", err, want)
+		t.Errorf("a call of the client NewKeyClientAs() opened = %v, want the refusal %q: the client does not call with the token it asked for", err, want)
 	}
 }
 
-// TestNewKeyClientAsImpersonatesWithTheProcessCredentials: NewKeyClientAs passes the
-// identity it is given on, and gives the impersonation no option of its own, so the
-// identity is impersonated with the process's default credentials. Those are named by a
-// file that is not there: the refusal names the file the impersonation looked for, and
-// ends with the identity it was to impersonate, which is the one given and no other.
+// TestNewKeyClientAsImpersonatesWithTheProcessCredentials: with nothing swapped, the
+// impersonation NewKeyClientAs asks for looks for the process's default credentials.
+// Those are named by a file that is not there: the refusal names the file the
+// impersonation looked for. It ends with the identity the constructor was given, as the
+// constructor writes it into its own message, which says the refusal is the
+// impersonation's and not the client's; whose token the constructor asks for is read by
+// TestNewKeyClientAsCallsAsTheIdentity.
 func TestNewKeyClientAsImpersonatesWithTheProcessCredentials(t *testing.T) {
 	// The variable is the process's, so the test runs alone: t.Setenv forbids t.Parallel.
 	missing := filepath.Join(t.TempDir(), "no-credentials.json")
@@ -57,18 +76,48 @@ func TestNewKeyClientAsImpersonatesWithTheProcessCredentials(t *testing.T) {
 		t.Fatalf("NewKeyClientAs() opened a client with the process's credentials missing: the impersonation does not open with them")
 	}
 	if want := "impersonate.CredentialsTokenSource(): " + asIdentity; !strings.HasSuffix(err.Error(), want) {
-		t.Errorf("NewKeyClientAs() = %v, want it to end with %q: the identity impersonated is not the one given", err, want)
+		t.Errorf("NewKeyClientAs() = %v, want it to end with %q: the refusal is not the impersonation's", err, want)
 	}
 	if !strings.Contains(err.Error(), missing) {
 		t.Errorf("NewKeyClientAs() = %v, want it to name %s: the impersonation did not look for the process's credentials", err, missing)
 	}
 }
 
+// impersonation is one call of the impersonation: the identity and the scopes the token
+// was asked for, and the options the call was given.
+type impersonation struct {
+	config  impersonate.CredentialsConfig
+	options []option.ClientOption
+}
+
+// recordImpersonations puts a function in the place of the package's impersonation for
+// the length of the test, and answers the calls it gets. The function asks Google's own
+// impersonation for the token source, for the identity and the scopes it was called
+// with, and gives it an HTTP client that stands in for the IAM Credentials API
+// (tokenRefusals) in place of the options it was called with. The variable is the
+// package's, so a test that swaps it does not run in parallel.
+func recordImpersonations(t *testing.T) *[]impersonation {
+	t.Helper()
+
+	library := impersonatedTokenSource
+	calls := &[]impersonation{}
+	impersonatedTokenSource = func(ctx context.Context, config impersonate.CredentialsConfig, opts ...option.ClientOption) (oauth2.TokenSource, error) {
+		*calls = append(*calls, impersonation{config: config, options: opts})
+
+		return library(ctx, config, option.WithHTTPClient(&http.Client{Transport: tokenRefusals{}}))
+	}
+	t.Cleanup(func() {
+		impersonatedTokenSource = library
+	})
+
+	return calls
+}
+
 // tokenRefusals stands in for the IAM Credentials API, where a client opened as an
 // identity asks for that identity's token: it refuses every request, and its refusal
-// names the identity the token was asked for and the scopes it was asked with. A client
-// asks for its token before it sends anything, so its first call fails with this refusal,
-// which says whose token the client calls with, and no request leaves the test.
+// names the identity the token was asked for and the scopes it was asked with. A REST
+// client asks for its token before it sends a request, so its first call fails with this
+// refusal, which says whose token the client calls with, and the request is never sent.
 type tokenRefusals struct{}
 
 func (tokenRefusals) RoundTrip(r *http.Request) (*http.Response, error) {

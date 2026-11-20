@@ -173,9 +173,11 @@ linters:
         # is never dialed, made with TLS credentials as a connection to Google is, and
         # read from each connection's state whether that client was closed. The other
         # clients get no connection: a REST client holds none, and the storage client
-        # is read from an HTTP client of its own. The module's own code needs none of
-        # the three. An entry that ends in $ names that package alone, not the packages
-        # below it.
+        # is read from an HTTP client of its own. The tests that read what a constructor
+        # opens a gRPC client with hand the client such a connection too, in place of
+        # the options the constructor was called with, so that it opens without
+        # credentials and dials nothing. The module's own code needs none of the three.
+        # An entry that ends in $ names that package alone, not the packages below it.
         test-only:
           files:
             - '!$test'

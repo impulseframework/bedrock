@@ -153,18 +153,29 @@ func optionsForAll(opts, storageOpts []option.ClientOption) *googleOptions {
 	}
 }
 
+// The impersonation and the constructors of the set's ten clients, as NewGoogleAs, the
+// set's opening and a regional secret's client call them. Each variable holds Google's or
+// the module's constructor itself, and nothing but a test assigns one. A test puts a
+// function in its place that records what it is called with: the identity, the scopes and
+// the options a client opens with show at a call alone, and a call needs credentials a
+// test has none of.
+var (
+	impersonatedTokenSource = impersonate.CredentialsTokenSource
+	newFoldersClient        = resourcemanager.NewFoldersClient
+	newProjectsClient       = resourcemanager.NewProjectsClient
+	newIAMAdminClient       = admin.NewIamClient
+	newBillingService       = cloudbilling.NewService
+	newServiceUsageService  = serviceusage.NewService
+	newServiceUsageBeta     = serviceusagebeta.NewService
+	newStorageClient        = storage.NewClient
+	newSecretManagerClient  = secretmanager.NewClient
+	newDNSService           = dns.NewService
+	newBudgetsClient        = budgets.New
+)
+
 // NewGoogleAs opens the Google clients as the identity.
 func NewGoogleAs(ctx context.Context, identity string) (Google, error) {
-	return newGoogleAs(ctx, identity)
-}
-
-// newGoogleAs is NewGoogleAs with the options the impersonation itself opens with.
-// NewGoogleAs gives none, so the identity is impersonated with the process's default
-// credentials. A test gives an HTTP client that stands in for the IAM Credentials API,
-// where the identity's token is asked for, and reads from a call's refusal whose token the
-// clients call with.
-func newGoogleAs(ctx context.Context, identity string, impersonation ...option.ClientOption) (Google, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}}, impersonation...)
+	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
@@ -190,9 +201,7 @@ func NewGoogleBilledTo(ctx context.Context, quotaProject string) (Google, error)
 
 // billedToOptions are the options NewGoogleBilledTo opens each client with: the quota
 // project for every client but the storage client, which is handed nothing, and nothing
-// for any client when there is no quota project. A test reads these options, and reads
-// that NewGoogleBilledTo opens with them from the one list the set keeps, the Secret
-// Manager client's.
+// for any client when there is no quota project.
 func billedToOptions(quotaProject string) *googleOptions {
 	if quotaProject == "" {
 		return optionsForAll(nil, nil)
@@ -219,34 +228,34 @@ func newGoogle(ctx context.Context, opts *googleOptions) (Google, error) {
 // cannot be opened, which leaves the ones before it open and the ones after it nil.
 func (g *google) open(ctx context.Context, opts *googleOptions) error {
 	var err error
-	if g.folders, err = resourcemanager.NewFoldersClient(ctx, opts.folders...); err != nil {
+	if g.folders, err = newFoldersClient(ctx, opts.folders...); err != nil {
 		return errors.Wrap(err, "resourcemanager.NewFoldersClient()")
 	}
-	if g.projects, err = resourcemanager.NewProjectsClient(ctx, opts.projects...); err != nil {
+	if g.projects, err = newProjectsClient(ctx, opts.projects...); err != nil {
 		return errors.Wrap(err, "resourcemanager.NewProjectsClient()")
 	}
-	if g.iam, err = admin.NewIamClient(ctx, opts.iam...); err != nil {
+	if g.iam, err = newIAMAdminClient(ctx, opts.iam...); err != nil {
 		return errors.Wrap(err, "admin.NewIamClient()")
 	}
-	if g.billing, err = cloudbilling.NewService(ctx, opts.billing...); err != nil {
+	if g.billing, err = newBillingService(ctx, opts.billing...); err != nil {
 		return errors.Wrap(err, "cloudbilling.NewService()")
 	}
-	if g.services, err = serviceusage.NewService(ctx, opts.services...); err != nil {
+	if g.services, err = newServiceUsageService(ctx, opts.services...); err != nil {
 		return errors.Wrap(err, "serviceusage.NewService()")
 	}
-	if g.servicesBeta, err = serviceusagebeta.NewService(ctx, opts.servicesBeta...); err != nil {
+	if g.servicesBeta, err = newServiceUsageBeta(ctx, opts.servicesBeta...); err != nil {
 		return errors.Wrap(err, "serviceusagebeta.NewService()")
 	}
-	if g.storage, err = storage.NewClient(ctx, opts.storage...); err != nil {
+	if g.storage, err = newStorageClient(ctx, opts.storage...); err != nil {
 		return errors.Wrap(err, "storage.NewClient()")
 	}
-	if g.secrets, err = secretmanager.NewClient(ctx, opts.secrets...); err != nil {
+	if g.secrets, err = newSecretManagerClient(ctx, opts.secrets...); err != nil {
 		return errors.Wrap(err, "secretmanager.NewClient()")
 	}
-	if g.dns, err = dns.NewService(ctx, opts.dns...); err != nil {
+	if g.dns, err = newDNSService(ctx, opts.dns...); err != nil {
 		return errors.Wrap(err, "dns.NewService()")
 	}
-	if g.budgets, err = budgets.New(ctx, opts.budgets...); err != nil {
+	if g.budgets, err = newBudgetsClient(ctx, opts.budgets...); err != nil {
 		return err
 	}
 
@@ -677,7 +686,7 @@ func (g *google) secretClient(ctx context.Context, secret string) (*secretmanage
 		return client, nil
 	}
 	opts := append([]option.ClientOption{option.WithEndpoint("secretmanager." + location + ".rep.googleapis.com:443")}, g.secretOpts...)
-	client, err := secretmanager.NewClient(ctx, opts...)
+	client, err := newSecretManagerClient(ctx, opts...)
 	if err != nil {
 		return nil, errors.Wrapf(err, "secretmanager.NewClient(): %s", location)
 	}

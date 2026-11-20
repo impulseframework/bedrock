@@ -12,98 +12,137 @@ import (
 	"google.golang.org/api/option"
 )
 
-// TestNewGoogleSplitsTheQuotaProjectFromStorage: the clients open with a quota project
-// when the storage client is kept out of it, and Google's transport refuses the storage
-// client a quota project beside the HTTP client it appends itself, which is why
-// NewGoogleBilledTo splits the options. No client dials at construction; the credentials
-// are left out so the test needs none.
+// TestNewGoogleSplitsTheQuotaProjectFromStorage: the REST clients open with a quota
+// project when the storage client is kept out of it, and Google's transport refuses the
+// storage client a quota project beside the HTTP client it appends itself, which is why
+// NewGoogleBilledTo splits the options. The credentials are left out, so the test needs
+// none. Each gRPC client is handed a connection that is never dialed in place of the
+// quota project, so nothing is dialed; what NewGoogleBilledTo hands those four is read by
+// TestNewGoogleBilledToKeepsTheQuotaProjectOffStorage.
 func TestNewGoogleSplitsTheQuotaProjectFromStorage(t *testing.T) {
-	t.Parallel()
+	// A storage client validates no option when this variable names an emulator, and would
+	// open with the quota project: a machine that runs one is not to fail the test for it.
+	// The variable is the process's, so the test runs alone: t.Setenv forbids t.Parallel.
+	t.Setenv("STORAGE_EMULATOR_HOST", "")
 
 	ctx := context.Background()
 	none := option.WithoutAuthentication()
 	billed := []option.ClientOption{none, option.WithQuotaProject("imr-root-gbl-core-f2a4")}
-	g, err := newGoogle(ctx, optionsForAll(billed, []option.ClientOption{none}))
+	split, both := optionsForAll(billed, []option.ClientOption{none}), optionsForAll(billed, billed)
+	for _, opts := range []*googleOptions{split, both} {
+		opts.folders = []option.ClientOption{option.WithGRPCConn(undialed(t))}
+		opts.projects = []option.ClientOption{option.WithGRPCConn(undialed(t))}
+		opts.iam = []option.ClientOption{option.WithGRPCConn(undialed(t))}
+		opts.secrets = []option.ClientOption{option.WithGRPCConn(undialed(t))}
+	}
+	g, err := newGoogle(ctx, split)
 	if err != nil {
 		t.Fatalf("newGoogle() with the storage client kept out of the quota project = %v", err)
 	}
 	if err := g.Close(); err != nil {
 		t.Errorf("Close() = %v", err)
 	}
-	if _, err := newGoogle(ctx, optionsForAll(billed, billed)); err == nil || !strings.Contains(err.Error(), "WithHTTPClient is incompatible with QuotaProject") {
+	if _, err := newGoogle(ctx, both); err == nil || !strings.Contains(err.Error(), "WithHTTPClient is incompatible with QuotaProject") {
 		t.Errorf("newGoogle() with the quota project on the storage client too = %v, want Google's refusal, the reason for the split", err)
 	}
 }
 
-// TestBilledToOptionsKeepTheQuotaProjectOffStorage: NewGoogleBilledTo hands every client
-// the quota project and the storage client nothing, and with no quota project it hands no
-// client anything. The lists are read as billedToOptions answers them, since
-// NewGoogleBilledTo itself opens with the process's own credentials and a test has none.
-// A quota project handed to the storage client would otherwise show at the break-glass
-// account's terminal alone, as the refusal TestNewGoogleSplitsTheQuotaProjectFromStorage
-// reads; one taken off another client, as that API's refusal of a person's credentials.
-func TestBilledToOptionsKeepTheQuotaProjectOffStorage(t *testing.T) {
-	t.Parallel()
+// TestNewGoogleBilledToKeepsTheQuotaProjectOffStorage: NewGoogleBilledTo opens every
+// client with the quota project it is given and nothing else, the storage client with
+// nothing, and with no quota project it opens no client with anything. A quota project
+// handed to the storage client would otherwise show at the break-glass account's terminal
+// alone, as the refusal TestNewGoogleSplitsTheQuotaProjectFromStorage reads; one taken
+// off another client, as that API's refusal of a person's credentials. The ten
+// constructors are the package's variables, which hold functions here that record what
+// NewGoogleBilledTo's set calls them with (recordGoogleOpenings) and open each client
+// without credentials and without a network. The process's default credentials are named
+// by a file that is not there, so a client opened by any other way than its variable
+// cannot be opened at all.
+func TestNewGoogleBilledToKeepsTheQuotaProjectOffStorage(t *testing.T) {
+	// The constructors swapped below are the package's and the variable the process's, so
+	// the test runs alone: t.Setenv forbids t.Parallel.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
 
 	const project = "imr-root-gbl-core-f2a4"
-	billed := []option.ClientOption{option.WithQuotaProject(project)}
+	billed, nothing := [][]option.ClientOption{{option.WithQuotaProject(project)}}, [][]option.ClientOption{nil}
 	tests := []struct {
 		name         string
 		quotaProject string
-		want         *googleOptions
+		want         map[string][][]option.ClientOption
 	}{
 		{
-			// Every client is named but the storage client. A client added to the set is
-			// decided here too: with the quota project, or beside the storage client.
+			// Every client is named, each opened once. A client added to the set is decided
+			// here too: with the quota project, or beside the storage client.
 			name:         "a quota project is handed to every client but the storage client",
 			quotaProject: project,
-			want: &googleOptions{
-				folders: billed, projects: billed, iam: billed, billing: billed, services: billed, servicesBeta: billed,
-				secrets: billed, dns: billed, budgets: billed,
+			want: map[string][][]option.ClientOption{
+				"folders": billed, "projects": billed, "iam": billed, "billing": billed, "services": billed, "servicesBeta": billed,
+				"storage": nothing, "secrets": billed, "dns": billed, "budgets": billed,
 			},
 		},
 		{
 			name:         "no quota project is no option for any client",
 			quotaProject: "",
-			want:         &googleOptions{},
+			want: map[string][][]option.ClientOption{
+				"folders": nothing, "projects": nothing, "iam": nothing, "billing": nothing, "services": nothing, "servicesBeta": nothing,
+				"storage": nothing, "secrets": nothing, "dns": nothing, "budgets": nothing,
+			},
 		},
 	}
+	ctx := context.Background()
+	opened := recordGoogleOpenings(t)
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+		opened.forget()
+		g, err := NewGoogleBilledTo(ctx, tt.quotaProject)
+		if err != nil {
+			t.Errorf("%s: NewGoogleBilledTo(%q) = %v", tt.name, tt.quotaProject, err)
 
-			got := billedToOptions(tt.quotaProject)
-			if diff := cmp.Diff(tt.want, got, cmp.AllowUnexported(googleOptions{}), cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("billedToOptions(%q) hands a client other options than NewGoogleBilledTo is to open it with (-want +got):\n%s", tt.quotaProject, diff)
-			}
-		})
+			continue
+		}
+		if err := g.Close(); err != nil {
+			t.Errorf("%s: Close() = %v", tt.name, err)
+		}
+		if diff := cmp.Diff(tt.want, opened.calls(), cmpopts.EquateEmpty()); diff != "" {
+			t.Errorf("%s: NewGoogleBilledTo(%q) opened a client with other options than it is to (-want +got):\n%s", tt.name, tt.quotaProject, diff)
+		}
 	}
 }
 
 // TestNewGoogleHandsEveryClientTheOptionsItIsGiven: NewGoogle opens every client, the
-// storage client too, with the options it is given. NewGoogleAs gives it the creating
+// storage client too, with the options it is given, in the order given and with nothing
+// else, and with nothing when it is given none. NewGoogleAs gives it the creating
 // identity's token source, and a client opened without it would act as the process's own
-// identity, which shows at that client's first call alone. Here the option given is the
-// one that asks for no credentials, and the process's default credentials are named by a
-// file that is not there: a client handed the option opens, and a client handed nothing
-// looks for the credentials and cannot be opened.
+// identity, which shows at that client's first call alone. The ten constructors are the
+// package's variables, which hold functions here that record what NewGoogle's set calls
+// them with (recordGoogleOpenings) and open each client without credentials and without a
+// network. The process's default credentials are named by a file that is not there, so a
+// client opened by any other way than its variable cannot be opened at all.
 func TestNewGoogleHandsEveryClientTheOptionsItIsGiven(t *testing.T) {
-	// The variable is the process's, so the test runs alone: t.Setenv forbids t.Parallel.
-	missing := filepath.Join(t.TempDir(), "no-credentials.json")
-	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", missing)
+	// The constructors swapped below are the package's and the variable the process's, so
+	// the test runs alone: t.Setenv forbids t.Parallel.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
 
 	ctx := context.Background()
-	// The reading rests on this: with nothing handed to it, a client looks for the
-	// credentials and is refused for want of the file.
-	if _, err := NewGoogle(ctx); err == nil || !strings.Contains(err.Error(), missing) {
-		t.Fatalf("NewGoogle() with no option = %v, want the refusal for want of %s: without it this test cannot tell a client that was handed nothing", err, missing)
-	}
-	g, err := NewGoogle(ctx, option.WithoutAuthentication())
-	if err != nil {
-		t.Fatalf("NewGoogle() with the option that asks for no credentials = %v: a client was opened without the option and looked for credentials", err)
-	}
-	if err := g.Close(); err != nil {
-		t.Errorf("Close() = %v", err)
+	opened := recordGoogleOpenings(t)
+	for _, given := range [][]option.ClientOption{
+		nil,
+		{option.WithUserAgent("bedrock-test"), option.WithRequestReason("a test of the options")},
+	} {
+		opened.forget()
+		g, err := NewGoogle(ctx, given...)
+		if err != nil {
+			t.Errorf("NewGoogle() with %d option(s) = %v", len(given), err)
+
+			continue
+		}
+		if err := g.Close(); err != nil {
+			t.Errorf("Close() = %v", err)
+		}
+		for name, got := range opened.calls() {
+			if diff := cmp.Diff([][]option.ClientOption{given}, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("NewGoogle() with %d option(s) opened the %s client other than once, with those options (-want +got):\n%s", len(given), name, diff)
+			}
+		}
 	}
 }
 
@@ -142,8 +181,11 @@ func TestOptionsForAllLeavesNoClientOut(t *testing.T) {
 // then fail at the client the list belongs to: a list no client opens with fails nothing,
 // and a list another client opens with fails there.
 func TestEveryClientOpensWithItsOwnOptions(t *testing.T) {
-	// The variable is the process's, so the test runs alone: t.Setenv forbids t.Parallel.
+	// The variables are the process's, so the test runs alone: t.Setenv forbids t.Parallel.
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
+	// A storage client validates no option when this variable names an emulator, and would
+	// open with the refused options: a machine that runs one is not to fail the test for it.
+	t.Setenv("STORAGE_EMULATOR_HOST", "")
 
 	// refusals are, by the name of each list of googleOptions, how that list is replaced
 	// with the refused options, and the constructor the failed opening then names.

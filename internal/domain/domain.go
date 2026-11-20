@@ -99,24 +99,22 @@ type cloudDomains struct {
 	project string
 }
 
+// newDomainsClient is the Cloud Domains client's constructor, as NewCloudDomains and
+// NewRegistrationReader call it: Google's own, which nothing but a test assigns. A test
+// puts a function in its place that records the options it is called with: the project
+// a client's calls are billed to shows at a call alone, and a call needs credentials a
+// test has none of.
+var newDomainsClient = domains.NewClient
+
 // NewCloudDomains opens the Cloud Domains client with Application Default Credentials,
 // billing its calls to the project (the quota project).
 func NewCloudDomains(ctx context.Context, project string) (ParametersClient, error) {
-	client, err := domains.NewClient(ctx, billedTo(project)...)
+	client, err := newDomainsClient(ctx, option.WithQuotaProject(project))
 	if err != nil {
 		return nil, errors.Wrap(err, "domains.NewClient()")
 	}
 
 	return &cloudDomains{client: client, project: project}, nil
-}
-
-// billedTo are the options NewCloudDomains and NewRegistrationReader open the Cloud
-// Domains client with: the quota project, which is the project the client's calls are
-// billed to, and nothing else, so the client opens with Application Default Credentials.
-// A test reads these options, since a call that would show the project needs credentials
-// a test has none of.
-func billedTo(project string) []option.ClientOption {
-	return []option.ClientOption{option.WithQuotaProject(project)}
 }
 
 // RetrieveRegisterParameters asks the API about the named domain.
