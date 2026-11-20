@@ -160,7 +160,8 @@ import {
   to = google_service_account.boot_tofu
 }
 
-# The gcloud seed grants this same list on the organization's folder so the
+# The creation's seed grants this same list on the organization's folder, by
+# API (README.md, "Created by the root organization", step 1), so the
 # identity can run this layer at all. Declaring it here makes the grants
 # visible and reviewable instead of leaving them as console state nobody can
 # audit. Keep the two lists in sync: shrinking boot_layer_roles revokes
