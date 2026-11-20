@@ -271,8 +271,11 @@ made again by the bootstrap run again.
 
 `bedrock org check`, at a terminal in a clone with the break-glass account's
 credentials, prints the same comparison as information after the README check,
-and lists each grant on the folder or the project to a person, beside the
-break-glass account's Folder Admin. Recovery by hand is `bedrock org bootstrap`
+and lists what a run by hand left: a person's Owner on the root project, each
+role the break-glass account holds on the project or the folder beyond the
+ones it keeps (Folder Admin on the folder; BigQuery Admin and Service Usage
+Consumer on the root project), and each grant on the folder to a principal
+outside this organization. Recovery by hand is `bedrock org bootstrap`
 again, in a clone: it finds everything that stands and makes the rest.
 Destroying the organization, project and all, is `bedrock org destroy`, by
 hand, refused while a hosting organization is recorded as created; it deletes
@@ -751,9 +754,11 @@ grants the new organization's identities their use of the billing account.
    moves to a fresh commit when what it records changed, and one closed
    unmerged stays as history while another is opened.
 3. **The hand-off.** Its merge records the folder, from which the apply keeps
-   the new boot identity's grants on the shared secrets, and that is the last
-   reach into the new organization: nothing under its folder is this
-   organization's to refresh, and `bedrock org check` there lists any grant on
+   the new boot identity's grant on the shared secrets. Under the new
+   organization's folder the apply here keeps one thing, the
+   organization-policy baseline on its folders, from its record ("The
+   organization-policy baseline"); everything else under the folder is the new
+   organization's own, and `bedrock org check` there lists any grant on
    the folder to a principal outside it. Its spend budget, the amount its
    record names (`monthlyBudget`), stands on its folder since the creation and
    is kept by the apply here ("Spend budgets and the billing export"). Its

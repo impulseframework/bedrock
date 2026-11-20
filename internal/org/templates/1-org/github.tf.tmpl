@@ -79,9 +79,9 @@
 # The organization's Actions variable CI_LARGE_RUNNER, which every
 # application's CI reads for the jobs its //impulse:ci line chooses, and the
 # larger runner it names are the GitHub organization's own settings, declared
-# once in the root organization's own layers for every hosting organization
-# in it (that organization's placement.json, ciLargeRunner); nothing of them
-# is here.
+# once in the root organization's placement.json (ciLargeRunner) for every
+# hosting organization in it and kept by that organization's apply, by API (a
+# root organization has no layers); nothing of them is here.
 #
 # GitHub features this uses on a private repository: rulesets with required
 # status checks and required reviewers, and deployment branch policies on

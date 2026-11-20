@@ -311,8 +311,10 @@ off what Google gives a creator, `roles/owner` on each project it made and
 Folder Admin and Folder Editor on each folder, and holds nothing here; a
 person's access to an environment comes from its team group
 (`2-env/README.md`, "The team group"), and the break-glass account keeps
-Folder Admin on the organization's folder alone, for recovery
-(`0-bootstrap/README.md`, "Recovery, by hand"). `bedrock org check` lists any
+Folder Admin on the organization's folder, the one grant the creation gave
+it, for recovery (`0-bootstrap/README.md`, "Recovery, by hand"; what it holds
+above the folder is in the root `README.md`, "Several organizations").
+`bedrock org check` lists any
 grant on the organization's folder to a principal outside the organization,
 when it runs with Google credentials that read the folder's IAM policy.
 
