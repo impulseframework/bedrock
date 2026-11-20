@@ -142,13 +142,13 @@ func (d deps) domainCheck(cmd *cobra.Command, dir, placement string) error {
 
 // checkRequests is what domain check checks, by the organization's kind: the apps domain
 // and each vanity domain in the network project, or each domain of a root organization
-// in the boot project with the labels its zone hands onward. It refuses a placement that
+// in the root project with the labels its zone hands onward. It refuses a placement that
 // does not record the project yet.
 func checkRequests(p *org.Placement, dir string) ([]domain.CheckRequest, error) {
 	if p.IsRoot() {
 		project := p.ZoneProject()
 		if project == "" {
-			return nil, errors.New("placement.json records no boot project (projects.boot): record the seed's value there, then check again")
+			return nil, errors.New("placement.json records no root project (projects.root): bedrock org bootstrap records it; check again then")
 		}
 		var requests []domain.CheckRequest
 		for _, d := range p.DomainNames() {

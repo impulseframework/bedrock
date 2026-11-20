@@ -230,10 +230,10 @@ func TestOrgCheckLeftovers(t *testing.T) {
 				}, nil
 			},
 			wantOut: []string{
-				"project tst (" + tst + "): " + account + " holds roles/owner, the creator's grant from the first applies by hand" + trimmed,
+				"project tst (" + tst + "): " + account + " holds roles/owner, the creator's grant from an apply by hand" + trimmed,
 				"folder imp (" + organized + "): " + account + " holds roles/resourcemanager.projectCreator, a grant for a hand apply of 1-org" + trimmed,
-				"folder terraform (" + terraform + "): " + account + " holds roles/resourcemanager.folderAdmin, the creator's grant from the first applies by hand" + trimmed,
-				"folder terraform (" + terraform + "): " + account + " holds roles/resourcemanager.folderEditor, the creator's grant from the first applies by hand" + trimmed,
+				"folder terraform (" + terraform + "): " + account + " holds roles/resourcemanager.folderAdmin, the creator's grant from an apply by hand" + trimmed,
+				"folder terraform (" + terraform + "): " + account + " holds roles/resourcemanager.folderEditor, the creator's grant from an apply by hand" + trimmed,
 				"owned file(s) match the placement",
 			},
 			absent: []string{
@@ -268,7 +268,7 @@ func TestOrgCheckLeftovers(t *testing.T) {
 				}, nil
 			},
 			wantOut: []string{
-				"No grant of a hand apply is left: nobody holds roles/owner on a project, nobody Folder Admin or Folder Editor on a folder under the organization's, the break-glass account holds Folder Admin on the organization's folder alone, and nothing on that folder is granted to a principal outside the organization.",
+				"No grant of a hand apply is left: nobody holds roles/owner on a project, nobody Folder Admin or Folder Editor on a folder under the organization's, the break-glass account holds nothing on a project or a folder here beyond the roles it keeps (Folder Admin on the organization's folder and, in a root organization, BigQuery Admin and Service Usage Consumer on the root project), and nothing on the organization's folder is granted to a principal outside the organization.",
 				"owned file(s) match the placement",
 			},
 			absent: []string{"Leftover grants not checked"},
@@ -287,7 +287,7 @@ func TestOrgCheckLeftovers(t *testing.T) {
 			name:     "without credentials the check says what it would do",
 			policies: noPolicies,
 			wantOut: []string{
-				"Leftover grants not checked (no Google credentials in this test): org check lists each grant a hand apply left a person with (a person's roles/owner on a project, a person's Folder Admin or Folder Editor on a folder under the organization's, and the break-glass account's roles beyond its Folder Admin on the organization's folder) and each grant on the organization's folder to a principal outside the organization (neither the break-glass account nor an identity in one of its projects), when it runs with Google credentials that read the projects' and folders' IAM policies (gcloud auth application-default login).",
+				"Leftover grants not checked (no Google credentials in this test): org check lists each grant a hand apply left a person with (a person's roles/owner on a project, a person's Folder Admin or Folder Editor on a folder under the organization's, and the break-glass account's roles beyond the ones it keeps: Folder Admin on the organization's folder and, in a root organization, BigQuery Admin and Service Usage Consumer on the root project) and each grant on the organization's folder to a principal outside the organization (neither the break-glass account nor an identity in one of its projects), when it runs with Google credentials that read the projects' and folders' IAM policies (gcloud auth application-default login).",
 				"owned file(s) match the placement",
 			},
 		},

@@ -434,8 +434,10 @@ with, which the person removes once the triggers apply again (0-bootstrap/README
 "Recovery, by hand"): each person holding roles/owner on a project the placement records, which Google
 gives a project's creator; each person holding Folder Admin or Folder Editor on a folder
 under the organization's, which Google gives a folder's creator; and each role the
-break-glass account holds on a project or on the organization's folder beyond the one it
-keeps, Folder Admin on the organization's folder, its key for a recovery by hand. That
+break-glass account holds on a project or on the organization's folder beyond the ones it
+keeps: Folder Admin on the organization's folder, its key for a recovery by hand, and in a
+root organization BigQuery Admin and Service Usage Consumer on the root project, which its
+apply keeps. That
 listing reads the projects' and folders' IAM policies with the run's Google credentials
 (gcloud auth application-default login); without any it says so, and it never fails the
 check. Last it lists each API key in an environment project that carries no API
@@ -714,7 +716,9 @@ func registrationReport(ctx context.Context, d deps, p *org.Placement, dir strin
 // project, which Google gives a project's creator; Folder Admin and Folder Editor on a
 // folder under the organization's, which Google gives a folder's creator; and the roles
 // the break-glass account holds on a project or on the organization's folder beyond the
-// one it keeps there, Folder Admin, its key for a recovery by hand. The person removes
+// ones it keeps: Folder Admin on the folder, its key for a recovery by hand, and on a
+// root organization's root project the two the apply keeps
+// (org.Placement.BreakGlassProjectRoles). The person removes
 // them once the apply trigger applies the layers again (0-bootstrap/README.md, "Recovery,
 // by hand"). It lists as well each grant on the organization's folder to a
 // principal outside the organization, which nothing of the organization's makes: the
@@ -723,7 +727,7 @@ func registrationReport(ctx context.Context, d deps, p *org.Placement, dir strin
 // done. Nothing here fails the check: the drift between the placement and the
 // repository is the check's verdict, and the grants are a person's to remove.
 func leftoverReport(ctx context.Context, d deps, p *org.Placement, out io.Writer) {
-	const does = "org check lists each grant a hand apply left a person with (a person's roles/owner on a project, a person's Folder Admin or Folder Editor on a folder under the organization's, and the break-glass account's roles beyond its Folder Admin on the organization's folder) and each grant on the organization's folder to a principal outside the organization (neither the break-glass account nor an identity in one of its projects), when it runs with Google credentials that read the projects' and folders' IAM policies (gcloud auth application-default login)"
+	const does = "org check lists each grant a hand apply left a person with (a person's roles/owner on a project, a person's Folder Admin or Folder Editor on a folder under the organization's, and the break-glass account's roles beyond the ones it keeps: Folder Admin on the organization's folder and, in a root organization, BigQuery Admin and Service Usage Consumer on the root project) and each grant on the organization's folder to a principal outside the organization (neither the break-glass account nor an identity in one of its projects), when it runs with Google credentials that read the projects' and folders' IAM policies (gcloud auth application-default login)"
 	if d.org == nil || d.org.policies == nil {
 		fmt.Fprintf(out, "Leftover grants not checked: no IAM policy reader is wired; %s.\n", does)
 
@@ -750,7 +754,7 @@ func leftoverReport(ctx context.Context, d deps, p *org.Placement, out io.Writer
 	}
 	if len(leftovers) == 0 {
 		if folderFound || len(unrecorded) < len(org.Environments) {
-			fmt.Fprintln(out, "No grant of a hand apply is left: nobody holds roles/owner on a project, nobody Folder Admin or Folder Editor on a folder under the organization's, the break-glass account holds Folder Admin on the organization's folder alone, and nothing on that folder is granted to a principal outside the organization.")
+			fmt.Fprintln(out, "No grant of a hand apply is left: nobody holds roles/owner on a project, nobody Folder Admin or Folder Editor on a folder under the organization's, the break-glass account holds nothing on a project or a folder here beyond the roles it keeps (Folder Admin on the organization's folder and, in a root organization, BigQuery Admin and Service Usage Consumer on the root project), and nothing on the organization's folder is granted to a principal outside the organization.")
 		}
 
 		return
@@ -778,8 +782,9 @@ func leftoverRemoval(p *org.Placement) string {
 
 // leftoverWhy says where a leftover grant came from: in a root organization Google's
 // grant to the bootstrap as the creator or the bootstrap's own working grant; in a
-// hosting organization a creator's grant, or the seed's grant to the break-glass account
-// for the first apply of the second layer.
+// hosting organization a creator's grant from an apply by hand (the creation's first
+// applies run as the creating identity, which takes its own off), or a grant the
+// break-glass account gave itself for one (0-bootstrap/README.md, "Recovery, by hand").
 func leftoverWhy(p *org.Placement, l org.Leftover) string {
 	switch {
 	case p.IsRoot() && (l.Role == org.OwnerRole || l.Role == org.FolderEditorRole):
@@ -787,7 +792,7 @@ func leftoverWhy(p *org.Placement, l org.Leftover) string {
 	case p.IsRoot():
 		return "the bootstrap's working grant"
 	case l.Role == org.OwnerRole, l.On == org.OnFolder && (l.Role == org.FolderAdminRole || l.Role == org.FolderEditorRole):
-		return "the creator's grant from the first applies by hand"
+		return "the creator's grant from an apply by hand"
 	case l.On == org.OnFolder && l.Key == p.Prefix:
 		return "a grant for a hand apply of 1-org"
 	default:
