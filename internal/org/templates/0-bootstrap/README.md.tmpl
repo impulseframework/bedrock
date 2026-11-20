@@ -425,8 +425,8 @@ boot project, whose suffix the command chose) before the merge, and the
 creating identity, which holds the same role on the four shared secrets,
 granted the boot identity as the seed and then applied this layer with its
 own policy administration of them. The hand-off recorded the folder, from
-which that organization's `0-bootstrap` keeps the boot identity's grant
-rendered. Nothing was granted by hand.
+which that organization's apply keeps the boot identity's grant, by API: a
+root organization has no layers. Nothing was granted by hand.
 
 Until the App IDs are recorded, the plans are in the runs' logs alone and
 the pipelines talk back through nothing; until the root organization has
