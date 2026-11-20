@@ -12,7 +12,7 @@ import (
 	"github.com/impulseframework/bedrock/internal/org"
 )
 
-// TestOrgCreate: in a root organization's repository, found writes the record for a
+// TestOrgCreate: in a root organization's repository, create writes the record for a
 // person to fill in when there is none; with it filled, fills in what the root
 // organization supplies, chooses the boot project's suffix, lists the organization in
 // placement.json, renders, and says what the merge creates and who grants what before;
@@ -79,7 +79,7 @@ func TestOrgCreate(t *testing.T) {
 		}
 	}
 	if code, out := runOrg(t, "org", "check", "--dir", dir); code != 0 {
-		t.Errorf("org check after found: %d\n%s", code, out)
+		t.Errorf("org check after create: %d\n%s", code, out)
 	}
 
 	// Created: the record stays.

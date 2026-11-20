@@ -42,7 +42,7 @@ type Clients struct {
 }
 
 // Request is one creation: the root organization's placement and checkout, the
-// organization to found (a record without a folder), the infrastructure app's token
+// organization to create (a record without a folder), the infrastructure app's token
 // for the repositories, and the commit the run builds.
 type Request struct {
 	Root    *org.Placement
@@ -264,7 +264,7 @@ func (f *creation) readMarker(ctx context.Context) (*Marker, error) {
 	return &m, nil
 }
 
-// found makes the organization: the seed, then the foundation on it.
+// create makes the organization: the seed, then the foundation on it.
 func (f *creation) create(ctx context.Context) (*Result, error) {
 	h, err := f.record()
 	if err != nil {

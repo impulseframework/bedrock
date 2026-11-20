@@ -7,7 +7,7 @@
 // repository under organizations/<prefix>/placement.json: the hosting shape, written by
 // a person with what is the organization's to decide (its prefix, apps domain, regions,
 // Spanner configuration, team groups, contact domains, labels), and filled by bedrock org
-// found with what the root organization supplies (the Google Cloud organization, the
+// create with what the root organization supplies (the Google Cloud organization, the
 // billing account, the GitHub organization and its apps, the Cloud Build authorization,
 // the break-glass account, the bedrock pin, and the root organization itself) and the
 // boot project's id, whose suffix is chosen then so that the id is known before anything
