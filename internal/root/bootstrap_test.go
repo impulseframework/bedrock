@@ -116,7 +116,8 @@ func bootstrapWorld(t *testing.T) (*roottest.Fake, *githubtest.Server, *root.Cli
 // TestBootstrapBroughtApps: with the three apps brought, the bootstrap makes the folder,
 // the project, the bucket and the four secrets, holds each app to its manifest, pins each
 // key, finds the Cloud Build installation, makes and pushes the repository, makes the
-// rest through the engine, takes its own Owner off, and leaves a clean check.
+// rest through the engine, takes its own Owner off the root project and its Folder
+// Editor off the folder, and leaves a clean check.
 func TestBootstrapBroughtApps(t *testing.T) {
 	t.Parallel()
 

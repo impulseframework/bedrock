@@ -88,9 +88,10 @@ their roles, the secrets' aliases and policies, the creating identity's Folder C
 organization node and Billing Account Administrator on the billing account, the zones of the
 domains (--domain) with DNSSEC, the Cloud Build connection, the repository link and the two
 triggers, the GitHub organization's immutable releases, on for every repository, the
-repository's settings and ruleset with the infrastructure app as its bypass actor; last its
-own Owner off the root project, and the check. No terraform: the root organization is
-bedrock's own bookkeeping, kept true by API on every merge.
+repository's settings and ruleset with the infrastructure app as its bypass actor; last what
+Google gave the account as the creator, Owner on the root project and Folder Editor on the
+folder, off, and the check. No terraform: the root organization is bedrock's own
+bookkeeping, kept true by API on every merge.
 
 The discovery decides what the credentials show: whose they are (the break-glass account),
 the one organization and the one open billing account they see, or --organization (its
