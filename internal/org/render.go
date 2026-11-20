@@ -47,9 +47,8 @@ const (
 	// modelLabelWidth is the width of the model's longest label key,
 	// terraform_source_path, which every labels block aligns to.
 	modelLabelWidth = len("terraform_source_path")
-	// seedLabelCount and blockLineCount are the model's own entries in SeedLabels' list
-	// and the model's own lines in a labels block (its four labels plus the braces).
-	seedLabelCount = 5
+	// blockLineCount is the model's own lines in a labels block (its four labels plus
+	// the braces).
 	blockLineCount = 6
 )
 
@@ -788,20 +787,6 @@ func (v *view) ExtraLabelKeys() string {
 	}
 
 	return strings.Join(parts, ", ")
-}
-
-// SeedLabels is the boot project's labels as one comma-separated key=value list, the
-// form a gcloud command takes. No template takes it: the creation's seed labels the boot
-// project by API (ProjectLabels).
-func (v *view) SeedLabels() string {
-	keys := v.labelKeys()
-	parts := make([]string, 0, seedLabelCount+len(keys))
-	parts = append(parts, "terraform=true", "terraform_source_path=0-bootstrap", "source_repo="+v.SourceRepo, "organization="+v.Prefix, "environment=boot")
-	for _, k := range keys {
-		parts = append(parts, k+"="+v.Labels[k])
-	}
-
-	return strings.Join(parts, ",")
 }
 
 // LabelsBlock is a layer's labels block, the environment given as an expression.
