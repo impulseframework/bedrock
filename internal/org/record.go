@@ -79,15 +79,32 @@ func ReadRecord(dir, prefix string) (*Placement, error) {
 
 // Fill puts into the hosting organization's placement what the root organization
 // supplies, and chooses the boot project's suffix when none is chosen yet, so that the
-// record is complete before the creation runs: the Google Cloud organization and its
-// domain, the billing account (the root organization's, which every hosting organization
-// is billed to: a record that names another is refused), the GitHub organization, its
-// Bot Account, default branch and the three apps' ids, the word their names start with
-// and the release app's slug, the Cloud Build authorization (the same connection token,
-// read from the root organization's boot project), the break-glass account, the bedrock
-// pin, and the root organization itself (root). What the person wrote and the root
-// organization does not supply stays. It refuses a record whose prefix is the root
-// organization's or whose values contradict the root organization's.
+// record is complete before the creation runs. What the person wrote and the root
+// organization does not supply stays.
+//
+// Written over, whatever the record names: the Google Cloud organization, its domain
+// and its Cloud Identity customer, the GitHub organization, its Bot Account, default
+// branch and the three apps' ids, the Cloud Build authorization (the same connection
+// token, read from the root organization's root project), the break-glass account, the
+// bedrock pin, and the root organization itself (root). The larger runner's fields are
+// taken out, since the runner is the root organization's, and the state bucket is named
+// after the boot project.
+//
+// Refused where the record names another than the root organization's, and filled in
+// where it names none: the billing account, which every hosting organization is billed
+// to, and the word the apps' names start with (githubAppPrefix).
+//
+// Kept where the record names one, and filled in where it names none: the repository's
+// name (sourceRepo), the release app's slug, and the boot project, whose suffix is
+// chosen here.
+//
+// Fill also refuses a record whose prefix is the root organization's, whose kind is
+// root, whose first region is not the root organization's primary region where the
+// Cloud Build token the root organization recorded is a regional secret, whose boot
+// project is not named <prefix>-boot-gbl-core-<suffix>, or that lacks what is the
+// organization's own to decide, and whatever Validate refuses in the filled record; and
+// a root placement that is not a root organization's, or records no root project, state
+// bucket or directoryCustomerId.
 func Fill(root, h *Placement) error {
 	if !root.IsRoot() {
 		return errors.New("the placement is a hosting organization's, and only a root organization creates another organization")
