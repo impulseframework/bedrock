@@ -406,9 +406,12 @@ Consequences of the above, not separately decided:
   Administrator on a project or at the organization node, never on a folder.
   Every other grant sits on the organization's folder, none at the
   organization node ("Several organizations").
-- The billing grants are gated by `manage_billing_iam`, false here:
-  the break-glass account is a Billing Account User on the account and cannot set its
-  IAM policy. See the `0-bootstrap` README.
+- The billing grants are gated by `manage_billing_iam`, false here: the apply
+  trigger applies `0-bootstrap` as the boot layer identity, a Billing Account
+  User on the account, which cannot set its IAM policy. The break-glass account
+  holds Billing Account Administrator on the account, granted by a billing
+  administrator before the root organization's bootstrap, and applies the
+  layer only by hand. See the `0-bootstrap` README.
 - The state bucket is the one seeded resource left outside OpenTofu, for the
   reason the model leaves its Scalr environment unmanaged: a layer should not
   own the container of its own state.
