@@ -405,7 +405,7 @@ func handOffBody(h *org.Placement, marker *Marker, handed, commit string) string
 		"- repository `" + marker.Repository + "`, with the rendered foundation as its first push, which its apply trigger runs on: every layer, as its own identity, with nothing left to apply by hand",
 		"- the creating identity's own grants taken off everything it made; the break-glass account holds Folder Admin on the folder",
 		"",
-		"This pull request records the folder in `placement.json` (`hostingOrganizations`), from which 0-bootstrap grants the new boot identity the shared secrets' policy administration, the placement as created under `" + org.RecordsDir + "/" + h.Prefix + "/`, and this organization's README.md rendered from the placement. Nothing under the folder is the root organization's to refresh. Left to a billing administrator: the new organization's spend budget (its `0-bootstrap/README.md`, \"Created by the root organization\"); its boot and org identities hold Billing Account User already, granted by the creation.",
+		"This pull request records the folder in `placement.json` (`hostingOrganizations`), from which this organization's apply keeps the new boot identity's policy administration of the shared secrets and the new organization's spend budget, the placement as created under `" + org.RecordsDir + "/" + h.Prefix + "/`, and this organization's README.md rendered from the placement. Nothing under the folder is the root organization's to refresh. Nothing is left to a billing administrator: the creation made the new organization's spend budget (its `0-bootstrap/README.md`, \"The spend budget\") and granted its boot and org identities Billing Account User.",
 	}, "\n")
 }
 
