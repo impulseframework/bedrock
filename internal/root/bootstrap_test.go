@@ -116,7 +116,8 @@ func bootstrapWorld(t *testing.T) (*roottest.Fake, *githubtest.Server, *root.Cli
 // TestBootstrapBroughtApps: with the three apps brought, the bootstrap makes the folder,
 // the project, the bucket and the four secrets, holds each app to its manifest, pins each
 // key, finds the Cloud Build installation, makes and pushes the repository, makes the
-// rest through the engine, takes its own Owner off, and leaves a clean check.
+// rest through the engine, takes its own Owner off the root project and its Folder
+// Editor off the folder, and leaves a clean check.
 func TestBootstrapBroughtApps(t *testing.T) {
 	t.Parallel()
 
@@ -163,7 +164,7 @@ func TestBootstrapBroughtApps(t *testing.T) {
 		"Created the repository imp-example/imr-root-infrastructure, private.",
 		"Renamed the branch main of imp-example/imr-root-infrastructure to master, the default branch placement.json names.",
 		"Pushed the foundation to imp-example/imr-root-infrastructure at",
-		"grants: grants serviceAccount:imr-create-gbl-tofu@" + project + ".iam.gserviceaccount.com roles/resourcemanager.folderCreator at the organization node",
+		"IAM: grants serviceAccount:imr-create-gbl-tofu@" + project + ".iam.gserviceaccount.com roles/resourcemanager.folderCreator at the organization node",
 		"Cloud Build: creates the trigger imr-root-uc1-apply",
 		"Took bedrock@imp.example's Owner off " + project + " and its Folder Editor off folder 900000000001; it keeps Folder Admin on the folder.",
 		"The root organization stands as placement.json says: nothing to change.",

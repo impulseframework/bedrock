@@ -445,8 +445,8 @@ func TestBotAccount(t *testing.T) {
 
 // TestGithubAppSteps reads what the READMEs say about the organization's GitHub Apps: all
 // three are the root organization's bootstrap's, their keys live in its root project and
-// are read by alias, nothing is added or pinned here, and the spend budget is the one
-// step a billing administrator takes by hand after the creation.
+// are read by alias, nothing is added or pinned here, and nothing on the billing account
+// stays by hand: the spend budget is the creation's.
 func TestGithubAppSteps(t *testing.T) {
 	t.Parallel()
 
@@ -1684,7 +1684,6 @@ func TestViewPhrases(t *testing.T) {
 		{name: "no contact domains", placement: Placement{OrganizationDomain: "acme.com"}, check: func(v *view) string { return v.ContactDomainsList() + " " + v.ContactDomainsProse() }, want: "[\"@acme.com\"] contact domain `@acme.com`"},
 		{name: "one contact domain", placement: Placement{OrganizationDomain: "acme.com", ContactDomains: []string{"@acme.org"}}, check: func(v *view) string { return v.ContactDomainsList() + " " + v.ContactDomainsProse() }, want: "[\"@acme.org\"] contact domain `@acme.org`"},
 		{name: "two contact domains", placement: Placement{ContactDomains: []string{"@acme.com", "@partner.example"}}, check: func(v *view) string { return v.ContactDomainsList() + " " + v.ContactDomainsProse() }, want: "[\"@acme.com\", \"@partner.example\"] contact domains `@acme.com` and `@partner.example`"},
-		{name: "seed labels", placement: Placement{Prefix: "acme", SourceRepo: "acme-infrastructure", Labels: map[string]string{"team": "core"}}, check: func(v *view) string { return v.SeedLabels() }, want: "terraform=true,terraform_source_path=0-bootstrap,source_repo=acme-infrastructure,organization=acme,environment=boot,team=core"},
 		{name: "label prose", placement: Placement{Labels: map[string]string{"team": "core", "cost": "a"}}, check: func(v *view) string { return v.ExtraLabelsProse() + " / " + v.ExtraLabelKeys() }, want: "`cost = \"a\"`, `team = \"core\"` / `cost`, `team`"},
 		{name: "the environments, as a list and as prose", placement: Placement{}, check: func(v *view) string { return v.EnvironmentsList() + " " + v.EnvironmentsProse() }, want: "[\"tst\", \"stg\", \"prd\"] `tst`, `stg` and `prd`"},
 		{name: "the approval environments, as a list and as prose", placement: Placement{}, check: func(v *view) string { return v.ApprovalEnvironmentsList() + " " + v.ApprovalEnvironmentsProse() }, want: "[\"stg\", \"prd\"] `stg` and `prd`"},
@@ -2344,7 +2343,7 @@ func TestApplicationPlacement(t *testing.T) {
 			p.CloudArmor = &derive.CloudArmor{RuleSets: []derive.RuleSet{{Name: "sqli-v33-stable", Sensitivity: 2}}, Bypasses: []derive.Bypass{{Path: "/hooks/*", Reason: "the senders sign their bodies"}}}
 		}, version: commitPin},
 		{name: "a release pin without its checksum", mutate: func(*Placement) {}, version: "v0.4.0", wantErr: "bedrockVersion v0.4.0 is a release, and a release pin carries its bedrockSha256"},
-		{name: "no state bucket", mutate: func(p *Placement) { p.StateBucket = "" }, version: commitPin, wantErr: "placement.json records no stateBucket yet: the seed's state bucket goes there"},
+		{name: "no state bucket", mutate: func(p *Placement) { p.StateBucket = "" }, version: commitPin, wantErr: "placement.json records no stateBucket yet: bedrock org create names the state bucket in the organization's record and the creation's seed makes it"},
 		{name: "no environment project numbers", mutate: func(p *Placement) { p.ProjectNumbers = map[string]string{"boot": "1"} }, version: commitPin, wantErr: "placement.json records no project id and number for tst, stg and prd yet"},
 		{name: "no production project", mutate: func(p *Placement) { delete(p.Projects, "prd") }, version: commitPin, wantErr: "placement.json records no project id and number for prd yet"},
 	}
@@ -2639,7 +2638,7 @@ func TestTriggers(t *testing.T) {
 				"    placement_path = sys.argv[4] if len(sys.argv) > 4 else \"placement.json\"\n    steps = os.environ.get(\"BEDROCK_STEPS\", \"\")\n    with open(placement_path, encoding=\"utf-8\") as f:\n        placement = json.load(f)\n    version = placement.get(\"bedrockVersion\", \"\")\n    digest = placement.get(\"bedrockSha256\", \"\")\n",
 				"    url = host + \"/impulseframework/bedrock/releases/download/\" + version + \"/bedrock-linux-amd64\"\n",
 				"    if hashlib.sha256(data).hexdigest() != digest:\n",
-				"        if steps.endswith(\"-release\"):\n            sys.exit(placement_path + \" pins bedrock \" + version + \", a commit pin, and this trigger's steps are in the release shape (\" + steps + \"): this step downloads a release, and no step follows to build a commit. A commit pin needs the commit shape, which bedrock upgrade applies to 0-bootstrap when it moves the pin from a release to a commit; when the pin was moved without that apply, apply 0-bootstrap from this branch by hand (in 0-bootstrap: tofu init, then tofu apply, as the bootstrap administrator) before this pull request's plan, or the merge's apply, can run\")\n",
+				"        if steps.endswith(\"-release\"):\n            sys.exit(placement_path + \" pins bedrock \" + version + \", a commit pin, and this trigger's steps are in the release shape (\" + steps + \"): this step downloads a release, and no step follows to build a commit. A commit pin needs the commit shape, which bedrock upgrade applies to 0-bootstrap when it moves the pin from a release to a commit; when the pin was moved without that apply, apply 0-bootstrap from this branch by hand (in 0-bootstrap: tofu init, then tofu apply, as the break-glass account) before this pull request's plan, or the merge's apply, can run\")\n",
 				"    {\n      id         = \"FetchBedrock\"\n      name       = \"gcr.io/cloud-builders/gcloud\"\n      entrypoint = \"python3\"\n      args       = [\"-c\", local.fetch_bedrock, \"/builder/home\", \"https://github.com\", \"https://github.com/impulseframework/bedrock.git\"]\n      env        = [\"BEDROCK_STEPS=" + StepsVersion + "-release\"]\n      timeout    = \"300s\"\n    },\n",
 				"    {\n      id         = \"Check\"\n      name       = \"ghcr.io/opentofu/opentofu:1.12.6\"\n      entrypoint = local.bedrock\n      args       = [\"org\", \"check\"]\n      env        = []\n      timeout    = \"600s\"\n    },\n  ]\n",
 				"    dynamic \"step\" {\n      for_each = local.steps\n      content {\n        id         = step.value.id\n        name       = step.value.name\n        entrypoint = step.value.entrypoint\n        args       = step.value.args\n        env        = step.value.env\n        timeout    = step.value.timeout\n      }\n    }\n",
@@ -3421,12 +3420,12 @@ func TestProjectLien(t *testing.T) {
 			want: []string{`"roles/resourcemanager.lienModifier",    # the lien on every project (1-org projects.tf)`},
 		},
 		{
-			name: "1-org's README starts a project's removal, and a clean-slate wipe, with the lien",
+			name: "1-org's README starts a project's removal with the lien, and leaves a clean-slate wipe to bedrock org destroy",
 			path: "1-org/README.md",
 			want: []string{
 				"## Removing a project\n\nA project's removal starts with removing its lien.",
 				"gcloud alpha resource-manager liens list --project=<project id>",
-				"project by project in `project_ids`: the lien first, as\nabove, then `gcloud projects delete <project id>`.",
+				"A\nclean-slate wipe of a test organization takes none of these steps by hand:\n`bedrock org destroy` destroys this layer, each lien with its project",
 			},
 		},
 		{

@@ -10,7 +10,9 @@ terraform {
   #   TF_DATA_DIR=.terraform.tst tofu init -backend-config="prefix=3-app/lantrn/tst"
   #   tofu plan -var environment=tst
   #
-  # The bucket name is substituted once, by hand, as in 1-org.
+  # Every render writes the bucket's name, from this application's
+  # placement.json (stateBucket), where bedrock org register recorded the
+  # organization's state bucket.
   backend "gcs" {
     bucket = "imp-boot-gbl-state-REPLACEME"
     prefix = "3-app/lantrn/ENVIRONMENT" # overridden at init; see the comment above and the README

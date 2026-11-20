@@ -1,8 +1,9 @@
 # 1-org
 
-Where the organization is described: folders, the org policy baseline,
-Essential Contacts, every project, and the identities that manage each
-project's own layer. Its first apply is the root organization's creation
+Where the organization is described: folders, Essential Contacts, every
+project, and the identities that manage each project's own layer (the
+organization-policy baseline on the folders is the root organization's:
+"What it creates"). Its first apply is the root organization's creation
 identity's, in the creation (`0-bootstrap/README.md`, "Created by the root
 organization"); from then on the apply trigger applies it as `{{.Prefix}}-org-gbl-tofu` and the plan
 trigger plans it on a pull request as `{{.Prefix}}-org-gbl-plan`.
@@ -16,9 +17,11 @@ trigger plans it on a pull request as `{{.Prefix}}-org-gbl-plan`.
 - Not the organization-policy baseline on those folders: Google grants
   Organization Policy Administrator at the organization node and nowhere
   lower, and no identity of this organization holds a role there, so the root
-  organization `{{.RootOrganization}}` sets the baseline on the four folders
-  from this organization's record and keeps it true on every apply of its own
-  (its `README.md`, "The organization-policy baseline"). This layer records
+  organization `{{.RootOrganization}}` set the baseline on the four folders
+  from this organization's record, in the creation, right after this layer's
+  first apply and before this repository's first push, and keeps it true on
+  every apply of its own (its `README.md`, "The organization-policy
+  baseline"). This layer records
   what those policies name: the folders' ids and each environment project's
   public-invoker tag (`folder_ids`, `public_invoker_tag_key`,
   `public_invoker_tag_value`), which the creation writes into `placement.json`.
@@ -297,8 +300,8 @@ nothing could run it as one. It ran in this directory against the bucket
 infrastructure GitHub App's token as `GITHUB_TOKEN`; `terraform.tfvars` had
 `boot_project_id` from the seed, and the backend block and the read of
 `0-bootstrap`'s state name the bucket from `placement.json`. The layer makes
-folders, org policy, and projects with `deletion_policy = "PREVENT"` and a
-lien each, which are hard to undo; the root organization's pull request is
+folders, and projects with `deletion_policy = "PREVENT"` and a lien each,
+which are hard to undo; the root organization's pull request is
 where a creation is reviewed, its plan saying what the merge creates. The
 init's `.terraform.lock.hcl` came with the first push.
 
@@ -311,8 +314,10 @@ off what Google gives a creator, `roles/owner` on each project it made and
 Folder Admin and Folder Editor on each folder, and holds nothing here; a
 person's access to an environment comes from its team group
 (`2-env/README.md`, "The team group"), and the break-glass account keeps
-Folder Admin on the organization's folder alone, for recovery
-(`0-bootstrap/README.md`, "Recovery, by hand"). `bedrock org check` lists any
+Folder Admin on the organization's folder, the one grant the creation gave
+it, for recovery (`0-bootstrap/README.md`, "Recovery, by hand"; what it holds
+above the folder is in the root `README.md`, "Several organizations").
+`bedrock org check` lists any
 grant on the organization's folder to a principal outside the organization,
 when it runs with Google credentials that read the folder's IAM policy.
 
@@ -355,11 +360,11 @@ gcloud alpha resource-manager liens delete <lien name, from the list>
 ```
 
 Then the project goes the way it was meant to: a deliberate change to this
-layer for one project (its `deletion_policy` lifted for that apply), or, for
-a clean-slate wipe of a test organization before it is set up again from the
-seed, by hand, project by project in `project_ids`: the lien first, as
-above, then `gcloud projects delete <project id>`. A wipe that skips the
-lien is refused at the first project.
+layer for one project (its `deletion_policy` lifted for that apply). A
+clean-slate wipe of a test organization takes none of these steps by hand:
+`bedrock org destroy` destroys this layer, each lien with its project, and
+says what starting over takes (`0-bootstrap/README.md`, "Destroying the
+organization").
 
 ## The applications' repositories
 
@@ -567,8 +572,11 @@ sharing with the public-invoker exception, the allowed contact domains) is
 the root organization `{{.RootOrganization}}`'s to set and to keep, since the
 role that sets an organization policy exists at the organization node alone;
 its `README.md` ("The organization-policy baseline") lists every constraint
-and its shape. Nothing of it is in this layer, and `tofu plan` here never
-shows a policy.
+and its shape. It set the baseline in the creation, once this layer's first
+apply had made the folders and before this repository's first push, so the
+apply trigger applied no layer here before the baseline stood, and its apply
+compares it on every run since. Nothing of it is in this layer, and
+`tofu plan` here never shows a policy.
 
 ## Central logging
 

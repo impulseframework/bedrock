@@ -137,7 +137,7 @@ func TestFetchBedrockScript(t *testing.T) {
 			placement:  `{"bedrockVersion": "` + stamp + onBranch[:12] + `"}`,
 			repository: "file://" + filepath.Join(t.TempDir(), "missing"),
 			env:        []string{stepsEnv + "=" + StepsVersion + "-release"},
-			wantErr:    "placement.json pins bedrock " + stamp + onBranch[:12] + ", a commit pin, and this trigger's steps are in the release shape (" + StepsVersion + "-release): this step downloads a release, and no step follows to build a commit. A commit pin needs the commit shape, which bedrock upgrade applies to 0-bootstrap when it moves the pin from a release to a commit; when the pin was moved without that apply, apply 0-bootstrap from this branch by hand (in 0-bootstrap: tofu init, then tofu apply, as the bootstrap administrator) before this pull request's plan, or the merge's apply, can run",
+			wantErr:    "placement.json pins bedrock " + stamp + onBranch[:12] + ", a commit pin, and this trigger's steps are in the release shape (" + StepsVersion + "-release): this step downloads a release, and no step follows to build a commit. A commit pin needs the commit shape, which bedrock upgrade applies to 0-bootstrap when it moves the pin from a release to a commit; when the pin was moved without that apply, apply 0-bootstrap from this branch by hand (in 0-bootstrap: tofu init, then tofu apply, as the break-glass account) before this pull request's plan, or the merge's apply, can run",
 		},
 		{
 			name:       "a commit pin under the release shape in a root organization: refused, naming the bootstrap run again, since there is no layer to apply",

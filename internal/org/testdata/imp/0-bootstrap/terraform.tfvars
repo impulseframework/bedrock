@@ -1,12 +1,15 @@
-# Committed on purpose: nothing here is a secret. The REPLACEME values come
-# from the seed step in README.md: the boot project ID the seed chose, suffix
-# included, and the bare numeric IDs of the seeded organization and terraform
-# folders.
+# Committed on purpose: nothing here is a secret. The creation writes the
+# three IDs below (README.md, "Created by the root organization", steps 1 and
+# 2): the boot project's ID, suffix included, and the bare numeric IDs of the
+# organization and terraform folders its seed made. A REPLACEME is an ID a
+# render outside a creation did not have.
 
 billing_account_id = "012345-6789AB-CDEF01"
-# boot_project_id is the ID the seed step chose, suffix included;
-# organization_folder_id and terraform_folder_id are the bare numeric folder
-# IDs from the seed step, under organization 123456789012.
+# boot_project_id is the ID the organization's record names (projects.boot),
+# suffix included: bedrock org create chose the suffix where the record named
+# none, and the creation's seed made the project with that ID.
+# organization_folder_id and terraform_folder_id are the bare numeric IDs of
+# the two folders the seed made, under organization 123456789012.
 boot_project_id        = "imp-boot-gbl-core-a1b2"
 organization_folder_id = "REPLACEME"
 terraform_folder_id    = "REPLACEME"

@@ -70,12 +70,17 @@ the unit of blast radius, and the Google Cloud organization's administrator
 stays above every folder.
 
 The one account above the folder is the organization's break-glass account
-(`breakGlassAccount` in `placement.json`), which holds Folder Admin on the
-folder, given by the creation, and nothing else. The folder was made by the
-root organization's creating identity, with Folder Creator at the
-organization node, which took its own grants off everything it made at the
-creation's end and holds nothing under the folder since ("Created by the
-root organization", below).
+(`breakGlassAccount` in `placement.json`), the root organization's. On the
+folder it holds Folder Admin, given by the creation. Above the folder it holds
+what it was granted by hand before the root organization's bootstrap, which
+nothing of bedrock's takes off: Organization Administrator and Folder Creator
+at the organization node, and Billing Account Administrator on the root
+organization's billing account, granted by a billing administrator. What it
+holds in the root organization is in that organization's `README.md`
+("Several organizations"). The folder was made by the root organization's
+creating identity, with Folder Creator at the organization node, which took
+its own grants off everything it made at the creation's end and holds nothing
+under the folder since ("Created by the root organization", below).
 
 ## Naming
 
@@ -166,13 +171,18 @@ the state bucket `imp-boot-gbl-state-a1b2`; then the first applies of `0-bootstr
 and `1-org`, against the bucket, from which the connection, the repository
 link, the two triggers, the folders, the projects and every identity exist;
 then this repository, with the rendered foundation as its first push, which
-the apply trigger ran on, every layer as its own identity. The creation
-identity took its own grants off everything it made and holds nothing here;
-the root organization reaches in for nothing after, and its record of the
-folder (`hostingOrganizations` in its `placement.json`) is what keeps this
-organization's boot identity's grants on the shared secrets rendered
+the apply trigger ran on, every layer as its own identity. The creating
+identity took its own grants off everything it made and holds nothing here.
+Since then the root organization's apply keeps, by API (a root organization
+has no layers), the organization-policy baseline on this organization's
+folders, which it set in the creation before that first push, from its
+record of this organization; and, from its record of the
+folder (`hostingOrganizations` in its `placement.json`), this organization's
+boot identity's grant on the shared secrets
 ([`0-bootstrap/README.md`](0-bootstrap/README.md), "Created by the root
-organization" and "The GitHub Apps' keys").
+organization" and "The GitHub Apps' keys") and this organization's spend
+budget (the same README, "The spend budget"). Everything else under the
+folder is this organization's own.
 
 The GitHub side is the root organization's: the `imp-example`
 organization, its Bot Account `imp-bot`, the release,
@@ -355,10 +365,10 @@ Decided before writing:
    runs a layer. The service accounts and their role grants are kept.
 2. **GCS backend.** `backend "gcs"` in every layer, one bucket
    (`imp-boot-gbl-state-<suffix>`, created by the seed) with a prefix per
-   layer. The bucket name is substituted into the backend blocks once.
-   `0-bootstrap` is applied against the bucket from its first apply, the
-   creation's: the seed makes the bucket before it, so there is no local state
-   and nothing to migrate.
+   layer. Every render writes the bucket's name into the backend blocks, from
+   `placement.json` (`stateBucket`). `0-bootstrap` is applied against the
+   bucket from its first apply, the creation's: the seed makes the bucket
+   before it, so there is no local state and nothing to migrate.
 3. **Organization values.** Domain imp.example, organization 123456789012,
    prefix `imp`, billing account 012345-6789AB-CDEF01, regions us-central1
    and us-west3, contact domain `@imp.example`,
@@ -410,9 +420,9 @@ Consequences of the above, not separately decided:
   trigger applies `0-bootstrap` as the boot layer identity, a Billing Account
   User on the account, which cannot set its IAM policy. The break-glass account
   holds Billing Account Administrator on the root organization's billing
-  account (this organization's as well, unless its record named another),
-  granted by a billing administrator before the root organization's bootstrap,
-  and applies the layer only by hand. See the `0-bootstrap` README.
+  account, which this organization is billed to, granted by a billing
+  administrator before the root organization's bootstrap, and applies the
+  layer only by hand. See the `0-bootstrap` README.
 - The state bucket is the one seeded resource left outside OpenTofu, for the
   reason the model leaves its Scalr environment unmanaged: a layer should not
   own the container of its own state.

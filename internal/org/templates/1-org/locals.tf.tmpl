@@ -24,9 +24,10 @@ locals {
 
   # Folder hierarchy created beneath the org root, alongside the terraform
   # folder from 0-bootstrap. The folders exist ahead of the projects that will
-  # fill them: they are where org policy and Essential Contacts attach, so a
-  # project inherits the guardrails the moment it is created rather than after
-  # a follow-up run.
+  # fill them: they are where Essential Contacts attach and where the root
+  # organization sets the org policy baseline, once this layer's first apply
+  # has made them and before this repository's first push, so a project takes
+  # both from its folder and none is set project by project.
   folders = {
     shared = "shared"
     tst    = "tst"

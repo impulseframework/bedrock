@@ -155,7 +155,8 @@ func TestOrgBootstrap(t *testing.T) {
 		"Next, each where it happens:",
 		"clone imp-example/imr-root-infrastructure (git clone https://github.com/imp-example/imr-root-infrastructure.git), which holds what " + dir + " holds, at its first commit.",
 		dir + " holds the files pushed; clone the repository to go on from it: git clone https://github.com/imp-example/imr-root-infrastructure.git",
-		"The break-glass account keeps Folder Admin on the folder imr alone",
+		"The break-glass account keeps Folder Admin on the folder imr, its key for a recovery by hand,\nand on the root project BigQuery Admin, for the export, and Service Usage Consumer",
+		"It holds as well the roles it ran this\nbootstrap with, which nothing of bedrock's takes off: Organization Administrator and Folder\nCreator at the organization node, and Billing Account Administrator on the billing account",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("printed:\n%s\nwant it to contain %q", out, want)

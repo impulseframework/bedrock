@@ -1,5 +1,7 @@
-# Committed on purpose: nothing here is a secret. The REPLACEME value is the
-# seeded state bucket, the same name as in every backend block.
+# Committed on purpose: nothing here is a secret. state_bucket is the
+# organization's state bucket, from this application's placement.json
+# (stateBucket), where bedrock org register recorded it: the same name every
+# render writes into the backend block.
 # environment is never set here: every run passes -var environment=<env>.
 
 state_bucket = "imp-boot-gbl-state-REPLACEME"

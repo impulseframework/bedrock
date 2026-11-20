@@ -104,8 +104,11 @@ applies would, and left no person with a grant to trim:
    enabled; the boot layer identity `{{.Prefix}}-boot-gbl-tofu` with the roles
    of `var.boot_layer_roles` on the organization's folder and of
    `var.boot_project_roles` on the boot project; Folder Admin on the
-   folder for the break-glass account (`{{.BreakGlassAccount}}`), its one
-   standing grant; the state bucket `{{.StateBucket}}`; and, in the root
+   folder for the break-glass account (`{{.BreakGlassAccount}}`), the one
+   grant the creation gives it (what it holds above the folder, Billing
+   Account Administrator on the root organization's billing account with it,
+   is in this repository's `README.md`, "Several organizations"); the state
+   bucket `{{.StateBucket}}`; and, in the root
    organization's root project, the boot identity's `secretPolicyAdmin` on
    the three GitHub Apps' key secrets and the Cloud Build token secret ("The
    GitHub Apps' keys" below).
@@ -126,10 +129,17 @@ applies would, and left no person with a grant to trim:
    need the day `1-org` links a project it creates.
 3. **The first apply of `1-org`**, the same way, with the infrastructure
    GitHub App's token for its GitHub provider: the folders, the six projects
-   with their liens, identities, custom roles and org policies. Its
-   `project_ids` and `project_numbers` outputs went into `placement.json`
-   (`projects`, `projectNumbers`) and the layers were rendered again, so every
-   identity is named by its project before anything was pushed.
+   with their liens, identities and custom roles, and the public-invoker
+   tags. Its `project_ids` and `project_numbers` outputs went into
+   `placement.json` (`projects`, `projectNumbers`) and the layers were
+   rendered again, so every identity is named by its project before anything
+   was pushed. No organization policy is this layer's: the root
+   organization's apply set one on the organization's folder before the first
+   applies, and the baseline on the four folders once this apply's outputs
+   had named the folders and the tags (`folders`, `publicInvokerTags` in
+   `placement.json`) and before the push of step 4, so the apply trigger
+   applied no layer before the baseline stood (`1-org/README.md`,
+   "Organization policies").
 4. **This repository**, made private in the `{{.GithubOrganization}}`
    organization with the rendered foundation as its first push, which the
    apply trigger of step 2 ran on: every layer, as its own identity, in layer
@@ -138,11 +148,12 @@ applies would, and left no person with a grant to trim:
    applies' inits.
 5. **The withdrawal.** The creating identity took its own grants off
    everything it made: Owner on each project, Folder Admin and Folder Editor
-   on each folder, and its three roles on the organization's folder. It holds
-   nothing here now; a marker in the root organization's state bucket says the
-   creation is done, and a pull request there recorded the folder
-   (`hostingOrganizations`), from which that organization keeps the boot
-   identity's grants on the shared secrets rendered.
+   on each folder, and Project Creator and Tag Administrator on the
+   organization's folder. It holds nothing here now; a marker in the root
+   organization's state bucket says the creation is done, and a pull request
+   there recorded the folder (`hostingOrganizations`), from which that
+   organization's apply keeps the boot identity's grant on the shared secrets,
+   by API: a root organization has no layers ("The GitHub Apps' keys" below).
 
 Nothing on the billing account stays by hand: the spend budget is the
 creation's ("The spend budget" below). The consent screen of each environment
@@ -191,10 +202,10 @@ resources assert them.
 | Name | Description | Type | Default | Required |
 |---|---|---|---|:---:|
 | `billing_account_id` | Billing account ID to link projects to. | `string` | n/a | yes |
-| `boot_layer_roles` | Roles granted to the boot layer identity on the organization's folder. The seed grants the same list; change both together. | `list(string)` | eight roles, see `variables.tf` | no |
+| `boot_layer_roles` | Roles granted to the boot layer identity on the organization's folder. The creation's seed grants the same list: the default and the seed's list are both bedrock's, and a test of bedrock's holds them the same. | `list(string)` | eight roles, see `variables.tf` | no |
 | `boot_plan_roles` | Reads on the organization's folder of the two boot layers' plan identities. | `list(string)` | eight roles, see `variables.tf` | no |
 | `boot_project_id` | Project ID of the seeded boot project, suffix included. Adopted, not created. | `string` | n/a | yes |
-| `boot_project_roles` | Roles granted to the boot layer identity on the boot project alone, the ones Google never binds on a folder. The seed grants the same list; change both together. | `list(string)` | one role, see `variables.tf` | no |
+| `boot_project_roles` | Roles granted to the boot layer identity on the boot project alone, the ones Google never binds on a folder. The creation's seed grants the same list: the default and the seed's list are both bedrock's, and a test of bedrock's holds them the same. | `list(string)` | one role, see `variables.tf` | no |
 | `org_project_roles` | Roles granted to the org layer identity on the boot project alone, the ones Google never binds on a folder: Custom Roles Administrator, for the custom role `1-org` creates there. | `list(string)` | one role, see `variables.tf` | no |
 | `github_default_branch` | The infrastructure repository's default branch: the plan trigger runs on a pull request into it, the apply trigger on a push to it. | `string` | `"{{.GithubDefaultBranch}}"` | no |
 | `github_organization` | The GitHub organization of the infrastructure and application repositories. | `string` | `"{{.GithubOrganization}}"` | no |
@@ -422,8 +433,8 @@ boot project, whose suffix the command chose) before the merge, and the
 creating identity, which holds the same role on the four shared secrets,
 granted the boot identity as the seed and then applied this layer with its
 own policy administration of them. The hand-off recorded the folder, from
-which that organization's `0-bootstrap` keeps the boot identity's grant
-rendered. Nothing was granted by hand.
+which that organization's apply keeps the boot identity's grant, by API: a
+root organization has no layers. Nothing was granted by hand.
 
 Until the App IDs are recorded, the plans are in the runs' logs alone and
 the pipelines talk back through nothing; until the root organization has

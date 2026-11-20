@@ -4,7 +4,7 @@ variable "billing_account_id" {
 }
 
 variable "boot_layer_roles" {
-  description = "Roles granted to the boot layer identity on the organization's folder, and nowhere higher. The gcloud seed in this layer's README grants the same list; change both together."
+  description = "Roles granted to the boot layer identity on the organization's folder, and nowhere higher. The creation's seed grants the same list, by API (README, \"Created by the root organization\", step 1): this default and the seed's list are both bedrock's, and a test of bedrock's holds them the same."
   type        = list(string)
   default = [
     "roles/cloudbuild.builds.editor",        # the two triggers that plan and apply the layers (cloud-build.tf)
@@ -34,12 +34,12 @@ variable "boot_plan_roles" {
 }
 
 variable "boot_project_id" {
-  description = "(Required) Project ID of the boot project created during the gcloud seed, including the random suffix chosen for it (e.g. \"imp-boot-gbl-core-a1b2\"). This layer adopts the project rather than creating it, so the ID has to be supplied rather than derived."
+  description = "(Required) Project ID of the boot project the creation's seed made (README, \"Created by the root organization\", step 1), including the random suffix chosen for it (e.g. \"imp-boot-gbl-core-a1b2\"). This layer adopts the project rather than creating it, so the ID has to be supplied rather than derived."
   type        = string
 }
 
 variable "boot_project_roles" {
-  description = "Roles granted to the boot layer identity on the boot project alone: the roles Google binds on a project or at the organization node and never on a folder. The gcloud seed in this layer's README grants the same list; change both together."
+  description = "Roles granted to the boot layer identity on the boot project alone: the roles Google binds on a project or at the organization node and never on a folder. The creation's seed grants the same list, by API (README, \"Created by the root organization\", step 1): this default and the seed's list are both bedrock's, and a test of bedrock's holds them the same."
   type        = list(string)
   default = [
     "roles/iam.roleAdmin", # the custom roles this layer creates in the boot project (project updater, state bucket policy admin)
@@ -73,7 +73,7 @@ variable "infrastructure_repository" {
 }
 
 variable "organization_folder_id" {
-  description = "(Required) Numeric ID of the organization's folder created during the gcloud seed, without the folders/ prefix: the folder named after the prefix that holds the terraform folder and, from 1-org, the environment folders. Adopted, not created."
+  description = "(Required) Numeric ID of the organization's folder the creation's seed made (README, \"Created by the root organization\", step 1), without the folders/ prefix: the folder named after the prefix that holds the terraform folder and, from 1-org, the environment folders. Adopted, not created."
   type        = string
 
   validation {
@@ -83,7 +83,7 @@ variable "organization_folder_id" {
 }
 
 variable "terraform_folder_id" {
-  description = "(Required) Numeric ID of the terraform folder created during the gcloud seed, without the \"folders/\" prefix. Adopted by this layer on its first run."
+  description = "(Required) Numeric ID of the terraform folder the creation's seed made (README, \"Created by the root organization\", step 1), without the \"folders/\" prefix. Adopted by this layer on its first run."
   type        = string
 
   validation {
@@ -93,7 +93,7 @@ variable "terraform_folder_id" {
 }
 
 variable "manage_billing_iam" {
-  description = "Whether this layer manages the roles/billing.user grants for the two layer identities on the billing account. Changing a billing account's IAM policy needs Billing Account Administrator, and the apply trigger applies this layer as the boot layer identity, a Billing Account User on the account. The break-glass account holds Billing Account Administrator on the root organization's billing account (this organization's as well, unless its record named another), granted by a billing administrator before the root organization's bootstrap, and applies this layer only by hand. While this is false the grants are the creation's, made by the root organization's creating identity (README, \"Created by the root organization\", step 2), and stay outside OpenTofu."
+  description = "Whether this layer manages the roles/billing.user grants for the two layer identities on the billing account. Changing a billing account's IAM policy needs Billing Account Administrator, and the apply trigger applies this layer as the boot layer identity, a Billing Account User on the account. The break-glass account holds Billing Account Administrator on the root organization's billing account, which this organization is billed to, granted by a billing administrator before the root organization's bootstrap, and applies this layer only by hand. While this is false the grants are the creation's, made by the root organization's creating identity (README, \"Created by the root organization\", step 2), and stay outside OpenTofu."
   type        = bool
   default     = true
 }

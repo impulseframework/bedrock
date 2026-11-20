@@ -1,15 +1,17 @@
 terraform {
   # One directory, applied once per environment with -var environment=<env>.
   # No workspaces: each environment's state lives at its own prefix,
-  # 2-env/<env>, in the bucket 0-bootstrap seeded. A backend block cannot read
-  # a variable, so the prefix below is a placeholder that every init overrides:
+  # 2-env/<env>, in the bucket the creation's seed made. A backend block
+  # cannot read a variable, so the prefix below is a placeholder that every
+  # init overrides:
   #
   #   TF_DATA_DIR=.terraform.tst tofu init -backend-config="prefix=2-env/tst"
   #   tofu plan -var environment=tst
   #
   # TF_DATA_DIR keeps one backend cache per environment in the same checkout,
-  # so an init for stg cannot be paired with a plan for tst by mistake. The
-  # bucket name is substituted once, by hand, as in 1-org.
+  # so an init for stg cannot be paired with a plan for tst by mistake. Every
+  # render writes the bucket's name, from placement.json (stateBucket), as in
+  # 1-org.
   backend "gcs" {
     bucket = "{{.StateBucket}}"
     prefix = "2-env/ENVIRONMENT" # overridden at init; see the comment above and the README

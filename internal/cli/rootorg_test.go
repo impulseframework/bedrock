@@ -654,11 +654,11 @@ func TestRootDomainCheck(t *testing.T) {
 			wantOut:  []string{"placement.json names no domain (domains): nothing to check until one is delegated to this organization.\n"},
 		},
 		{
-			name:     "refused before the boot project is recorded",
+			name:     "refused before the root project is recorded",
 			recorded: false,
 			domains:  handed,
 			world:    labelWorld{world: delegated},
-			wantErr:  "placement.json records no boot project (projects.boot): record the seed's value there, then check again",
+			wantErr:  "placement.json records no root project (projects.root): bedrock org bootstrap records it; check again then",
 		},
 	}
 	for _, tt := range tests {

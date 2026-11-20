@@ -555,6 +555,6 @@ variable "members_administrator" {
 }
 
 variable "state_bucket" {
-  description = "(Required) State bucket 0-bootstrap seeded, read for the upstream layers' outputs. The same name is substituted into the backend block by hand."
+  description = "(Required) The organization's state bucket, read for the upstream layers' outputs. Every render writes the same name into the backend block, from placement.json (stateBucket)."
   type        = string
 }

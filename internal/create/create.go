@@ -42,8 +42,12 @@ type Clients struct {
 }
 
 // Request is one creation: the root organization's placement and checkout, the
-// organization to found (a record without a folder), the infrastructure app's token
-// for the repositories, and the commit the run builds.
+// organization to create (a record without a folder), the infrastructure app's token
+// for the repositories, the commit the run builds, and what the root organization's
+// apply runs at the two steps the organization policies are due, which are the applier's
+// to set and not the creating identity's: the one on the organization's folder once the
+// seed stands, before the first applies (Seeded), and the baseline on the four folders
+// once 1-org's first apply has made them, before the push (Organized).
 type Request struct {
 	Root    *org.Placement
 	RootDir string
@@ -59,6 +63,14 @@ type Request struct {
 	// identity does not), so 1-org's first apply makes no project with a default network.
 	// nil when nothing is to run.
 	Seeded func(ctx context.Context, organizationFolder string) error
+	// Organized runs once 1-org's first apply has made the organization's folders and
+	// before the push, with the organization's placement, which records the folders and
+	// each environment project's public-invoker tag by then (folders, publicInvokerTags):
+	// the root organization's apply sets the organization-policy baseline on the four
+	// folders there (the applier's to set, as the folder's own policy is), so the
+	// organization's own apply trigger, which applies every layer from the push on,
+	// applies none before the baseline stands. nil when nothing is to run.
+	Organized func(ctx context.Context, h *org.Placement) error
 }
 
 // Marker is what the creation leaves in the root organization's state bucket once the
@@ -133,7 +145,12 @@ const (
 	// OwnershipCode is Cloud DNS's refusal of a zone whose maker does not own the domain
 	// in Google's webmaster verification.
 	OwnershipCode = "verifyManagedZoneDnsNameOwnership"
-	// services are the APIs the boot project needs before its 0-bootstrap applies.
+	// The roles the creation grants and takes off: Project Creator and Tag Administrator,
+	// its identity's own on the organization's folder for the first applies
+	// (creatingFolderRoles); Folder Admin, the break-glass account's on that folder, and,
+	// with Folder Editor and Owner, what Google gives the creator of a folder and of a
+	// project, which the withdrawal takes off; and Billing Account User, the boot and org
+	// identities' on the billing account.
 	bootProjectRoleCreator = "roles/resourcemanager.projectCreator"
 	tagAdminRole           = "roles/resourcemanager.tagAdmin"
 	folderAdminRole        = "roles/resourcemanager.folderAdmin"
@@ -152,10 +169,11 @@ const (
 // creatingFolderRoles are the roles the creation grants its identity on the
 // organization's folder for the first applies, beside the Folder Admin a folder's creator
 // has, since a folder's administrator creates no project: Project Creator for the boot
-// project and 1-org's projects, Organization Policy Administrator for 1-org's policies on
-// its folders, and Tag Administrator for the tag keys 1-org makes in the environment
-// projects. Its Folder Admin, a creator's, covers the rest; the withdrawal takes all of
-// it off.
+// project and 1-org's projects, and Tag Administrator for the tag keys 1-org makes in the
+// environment projects. Its Folder Admin, a creator's, covers the rest; the withdrawal
+// takes all of it off. The organization policies on the folder and on the four folders
+// 1-org makes beneath it are not the creating identity's to set: the root organization's
+// apply sets them as the applier (Request.Seeded, Request.Organized).
 var creatingFolderRoles = []string{bootProjectRoleCreator, tagAdminRole}
 
 // services are the APIs the creation enables in a boot project before its 0-bootstrap
@@ -263,7 +281,7 @@ func (f *creation) readMarker(ctx context.Context) (*Marker, error) {
 	return &m, nil
 }
 
-// found makes the organization: the seed, then the foundation on it.
+// create makes the organization: the seed, then the foundation on it.
 func (f *creation) create(ctx context.Context) (*Result, error) {
 	h, err := f.record()
 	if err != nil {
@@ -373,9 +391,13 @@ func (f *creation) seed(ctx context.Context, g Google, h *org.Placement) (*org.S
 }
 
 // establish builds the foundation on the seed: the rendered repository, the repository
-// on GitHub, the first applies of 0-bootstrap and 1-org, the render again with the
-// projects 1-org made, the push, the creating identity's withdrawal, the marker and the
-// hand-off.
+// on GitHub, the first applies of 0-bootstrap and 1-org, the organization-policy baseline
+// on the folders 1-org made (set by the root organization's apply, Request.Organized), the
+// apps domain's zone, the render again with the projects 1-org made, the push, the
+// creating identity's withdrawal, the marker and the hand-off. The baseline comes before
+// the push because the organization's own apply trigger applies every layer from the push
+// on; a creation that stopped and runs again reaches the step again, where a policy that
+// stands is left as it is.
 func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, seed *org.Seed, number string) (*Result, error) {
 	dir, err := os.MkdirTemp("", "bedrock-create-"+h.Prefix+"-")
 	if err != nil {
@@ -399,6 +421,11 @@ func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, se
 	folders, err := f.organize(ctx, dir, h)
 	if err != nil {
 		return nil, err
+	}
+	if f.req.Organized != nil {
+		if err := f.req.Organized(ctx, h); err != nil {
+			return nil, errors.Wrapf(err, "after 1-org's first apply of %s, before its push", h.Prefix)
+		}
 	}
 	if err := f.zone(ctx, g, h); err != nil {
 		return nil, err

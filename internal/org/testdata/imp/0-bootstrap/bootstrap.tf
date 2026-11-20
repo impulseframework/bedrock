@@ -40,8 +40,8 @@ locals {
 # The terraform folder sits alongside the environment folders created by 1-org
 # and holds nothing but the automation plane. Keeping it out of the environment
 # hierarchy means an environment folder can be reorganized without touching the
-# identity that provisions it, and the org policies 1-org applies to the
-# environment folders never reach the identities that manage them.
+# identity that provisions it, and the org policies the root organization sets
+# on the environment folders never reach the identities that manage them.
 
 # The organization's folder, named after its prefix, holds everything the
 # layers make under the GCP organization: the terraform folder here, the
@@ -80,10 +80,12 @@ import {
 # project for every downstream layer.
 #
 # random_project_id is off and the ID comes from a variable: the project already
-# exists with a suffix the seed script chose, and the module would otherwise
-# generate a different one and try to create a second project. folder_id comes
-# from the same variable rather than from google_folder.terraform so that a
-# tainted or replaced folder cannot cascade into replacing the project.
+# exists, made by the creation's seed with the ID the organization's record
+# names (bedrock org create chose its suffix where the record named none), and
+# the module would otherwise generate a different one and try to create a
+# second project. folder_id comes from the same variable rather than from
+# google_folder.terraform so that a tainted or replaced folder cannot cascade
+# into replacing the project.
 module "boot_project" {
   source  = "terraform-google-modules/project-factory/google"
   version = "18.3.0"
@@ -160,10 +162,13 @@ import {
   to = google_service_account.boot_tofu
 }
 
-# The gcloud seed grants this same list on the organization's folder so the
+# The creation's seed grants this same list on the organization's folder, by
+# API (README.md, "Created by the root organization", step 1), so the
 # identity can run this layer at all. Declaring it here makes the grants
 # visible and reviewable instead of leaving them as console state nobody can
-# audit. Keep the two lists in sync: shrinking boot_layer_roles revokes
+# audit. Both lists are bedrock's, and a test of bedrock's holds them the
+# same: the seed's is in its code, and this one is var.boot_layer_roles'
+# default, rendered from its template. Shrinking boot_layer_roles revokes
 # permissions from the identity running the apply, and the run that does it
 # may not survive to finish. Nothing is granted at the organization node.
 resource "google_folder_iam_member" "boot_tofu" {
@@ -178,7 +183,8 @@ resource "google_folder_iam_member" "boot_tofu" {
 # Custom Roles Administrator binds on a project or at the organization node,
 # never on a folder (IAM refuses the binding), so the identity holds it on the
 # boot project alone, where the custom roles this layer makes live. The seed
-# grants the same list (var.boot_project_roles); keep the two in sync.
+# grants the same list (var.boot_project_roles' default), which the same test
+# of bedrock's holds to the seed's.
 resource "google_project_iam_member" "boot_tofu_project" {
   for_each = toset(var.boot_project_roles)
 
@@ -201,8 +207,10 @@ resource "google_project_iam_member" "org_tofu_project" {
 
 # roles/billing.user rather than roles/billing.admin:
 # linking a project to the account is all a layer ever does with billing, and
-# the account belongs to CCC rather than to this organization. Gated because
-# only a Billing Account Administrator can apply it; see var.manage_billing_iam.
+# the account is the root organization's, which this organization is billed to
+# (billingAccount in placement.json; a record that names another account is
+# refused). Gated because only a Billing Account Administrator can apply it;
+# see var.manage_billing_iam.
 resource "google_billing_account_iam_member" "boot_tofu" {
   count = var.manage_billing_iam ? 1 : 0
 
@@ -214,8 +222,9 @@ resource "google_billing_account_iam_member" "boot_tofu" {
 # ---------------------------------------------------------------------------
 # Org layer identity
 #
-# 1-org creates folders, projects, org policies, custom roles, a tag key and
-# per-project service accounts. Those grants sit on the organization's folder
+# 1-org creates folders, projects, custom roles, a tag key and per-project
+# service accounts; the org policies on its folders are the root
+# organization's to set. Those grants sit on the organization's folder
 # because the projects they act on do not exist yet, and nowhere higher: the
 # folder is the whole of this organization's reach.
 # ---------------------------------------------------------------------------

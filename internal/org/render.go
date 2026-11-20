@@ -47,9 +47,8 @@ const (
 	// modelLabelWidth is the width of the model's longest label key,
 	// terraform_source_path, which every labels block aligns to.
 	modelLabelWidth = len("terraform_source_path")
-	// seedLabelCount and blockLineCount are the model's own lines in the seed's label
-	// list and in a labels block (its four labels plus the braces).
-	seedLabelCount = 5
+	// blockLineCount is the model's own lines in a labels block (its four labels plus
+	// the braces).
 	blockLineCount = 6
 )
 
@@ -66,8 +65,9 @@ const (
 // HostingLayers are the hosting model's layers, in apply order: 2-env before 2-net, since
 // 2-net's URL map names tst's pull-request backend, which 2-env tst makes, while nothing
 // in 2-env waits on 2-net (its two load balancer principals are derived from 1-org until
-// 2-net exists, and the apps domain is the placement's). A root organization's are
-// RootLayers (zones.go); Placement.Layers answers by kind.
+// 2-net exists, and the apps domain is the placement's). A root organization has none,
+// since bedrock keeps it by API (root.go, and the package root); Placement.Layers
+// answers by kind.
 var HostingLayers = []string{bootstrapLayer, orgLayer, shrLayer, spnLayer, envLayer, netLayer}
 
 // layerProjects is the project each single-run layer's identities live in, by layer: the
@@ -97,7 +97,8 @@ type view struct {
 }
 
 // BootProjectID is the boot project's id for a seeded tfvars: the placement's once
-// recorded, else <prefix>-boot-gbl-core-REPLACEME for the seed to fill in.
+// recorded, else <prefix>-boot-gbl-core-REPLACEME, as a render outside a creation has
+// it: bedrock org create chooses the suffix in the organization's record (Fill).
 func (v *view) BootProjectID() string {
 	if id := v.Projects[bootProject]; id != "" {
 		return id
@@ -786,18 +787,6 @@ func (v *view) ExtraLabelKeys() string {
 	}
 
 	return strings.Join(parts, ", ")
-}
-
-// SeedLabels is the label list the seed step's gcloud commands pass.
-func (v *view) SeedLabels() string {
-	keys := v.labelKeys()
-	parts := make([]string, 0, seedLabelCount+len(keys))
-	parts = append(parts, "terraform=true", "terraform_source_path=0-bootstrap", "source_repo="+v.SourceRepo, "organization="+v.Prefix, "environment=boot")
-	for _, k := range keys {
-		parts = append(parts, k+"="+v.Labels[k])
-	}
-
-	return strings.Join(parts, ",")
 }
 
 // LabelsBlock is a layer's labels block, the environment given as an expression.

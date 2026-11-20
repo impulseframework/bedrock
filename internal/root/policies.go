@@ -4,12 +4,13 @@
 // there (the root README, "Several organizations"), so the hosting organization's 1-org
 // makes the folders and the root organization's apply, whose applier holds the role (and
 // whose planner holds Organization Policy Viewer, both granted by the bootstrap), sets the
-// policies on them: in the creation, right after 1-org's first apply, and on every apply
-// after, from the organization's record (organizations/<prefix>/placement.json), which
-// the creation filled with the folders' ids and each environment project's public-invoker
-// tag (folders, publicInvokerTags). One constraint is set earlier and higher, on the
-// organization's own folder right after the seed (OrganizationFolderBaseline), so that
-// 1-org's first apply already runs under it.
+// policies on them: in the creation, right after 1-org's first apply and before the push
+// the organization's own apply trigger applies every layer on (create.Request.Organized),
+// and on every apply after, from the organization's record
+// (organizations/<prefix>/placement.json), which the creation filled with the folders'
+// ids and each environment project's public-invoker tag (folders, publicInvokerTags). One
+// constraint is set earlier and higher, on the organization's own folder right after the
+// seed (OrganizationFolderBaseline), so that 1-org's first apply already runs under it.
 
 package root
 
@@ -218,10 +219,15 @@ func sameJSON(a, b string) bool {
 }
 
 // orgPolicies is the section: for each hosting organization created (recorded with its
-// folder, or created by this run), the constraint on its own folder and each policy of
-// the baseline on the four beneath that it lacks or holds otherwise is set.
+// folder, or found created by this run), the constraint on its own folder and each policy
+// of the baseline on the four beneath that it lacks or holds otherwise is set. An
+// organization this run's creation made is passed over: the creation set both moments
+// ago, each at its step (creations), and a second pass would list its findings twice.
 func (e *engine) orgPolicies(ctx context.Context) error {
 	for _, record := range e.p.HostingOrganizations {
+		if e.policiesSet[record.Prefix] {
+			continue
+		}
 		h, ok, err := e.hostingRecord(record)
 		if err != nil {
 			return err
@@ -234,16 +240,26 @@ func (e *engine) orgPolicies(ctx context.Context) error {
 				return err
 			}
 		}
-		policies, findings := DesiredPolicies(h)
-		for _, f := range findings {
-			e.finding(f)
-		}
-		if err := e.setPolicies(ctx, h.Prefix, policies); err != nil {
+		if err := e.baseline(ctx, h); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// baseline sets, on the four folders the hosting organization's placement records, each
+// policy of the baseline that its folder lacks or holds otherwise, and lists what the
+// placement lacks as a finding: the section's work for an organization that stands, and
+// the creation's for the one it makes, once 1-org's first apply has made the folders and
+// before the push (create.Request.Organized).
+func (e *engine) baseline(ctx context.Context, h *org.Placement) error {
+	policies, findings := DesiredPolicies(h)
+	for _, f := range findings {
+		e.finding(f)
+	}
+
+	return e.setPolicies(ctx, h.Prefix, policies)
 }
 
 // organizationFolder is the hosting organization's own folder: the one this run's

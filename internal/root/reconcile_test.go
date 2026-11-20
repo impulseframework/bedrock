@@ -138,9 +138,9 @@ func TestEngineFromNothing(t *testing.T) {
 		"secrets: moves the alias current of imr-root-gbl-github-release-key from no version to version 2",
 		"secrets: moves the alias current of imr-root-gbl-github-token from no version to version 1",
 		"secrets: sets the policy of imr-root-gbl-github-token: secretPolicyAdmin to serviceAccount:imp-boot-gbl-tofu@imp-boot-gbl-core-a1b2.iam.gserviceaccount.com, serviceAccount:imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com, secretmanager.secretAccessor to serviceAccount:service-100000000011@gcp-sa-cloudbuild.iam.gserviceaccount.com",
-		"grants: grants serviceAccount:imr-root-gbl-applier@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/dns.admin on project imr-root-gbl-core-c3d4",
-		"grants: grants serviceAccount:imr-root-gbl-planner@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/browser on folder 100",
-		"grants: grants serviceAccount:imr-root-gbl-applier@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/iam.serviceAccountTokenCreator on the identity imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com",
+		"IAM: grants serviceAccount:imr-root-gbl-applier@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/dns.admin on project imr-root-gbl-core-c3d4",
+		"IAM: grants serviceAccount:imr-root-gbl-planner@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/browser on folder 100",
+		"IAM: grants serviceAccount:imr-root-gbl-applier@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/iam.serviceAccountTokenCreator on the identity imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com",
 		"zones: creates the zone imr-root-gbl-dns-clientbay-example for clientbay.example",
 		"zones: hands harbor.clientbay.example onward to ns-cloud-c1.googledomains.com., ns-cloud-c2.googledomains.com., ns-cloud-c3.googledomains.com., ns-cloud-c4.googledomains.com.",
 		"zones: creates the zone imr-root-gbl-dns-zones-imp-example for zones.imp.example",
@@ -178,7 +178,7 @@ func TestEngineFromNothing(t *testing.T) {
 	if len(applied.Findings) != 0 {
 		t.Errorf("the bootstrap's apply has findings: %q", applied.Findings)
 	}
-	if !strings.Contains(out, "grants: grants serviceAccount:imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/billing.admin on billing account 012345-6789AB-CDEF01") {
+	if !strings.Contains(out, "IAM: grants serviceAccount:imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com roles/billing.admin on billing account 012345-6789AB-CDEF01") {
 		t.Errorf("the bootstrap did not grant the creating identity billing administration:\n%s", out)
 	}
 
@@ -290,7 +290,7 @@ func TestEngineDrift(t *testing.T) {
 	containsAll(t, got,
 		"secrets: moves the alias current of imr-root-gbl-github-release-key from version 1 to version 2",
 		"zones: in the zone imr-root-gbl-dns-clientbay-example: hands harbor.clientbay.example onward to ns-cloud-c1.googledomains.com., ns-cloud-c2.googledomains.com., ns-cloud-c3.googledomains.com., ns-cloud-c4.googledomains.com.; takes back beacon.clientbay.example",
-		"grants: takes roles/owner off serviceAccount:imr-root-gbl-planner@imr-root-gbl-core-c3d4.iam.gserviceaccount.com on project imr-root-gbl-core-c3d4",
+		"IAM: takes roles/owner off serviceAccount:imr-root-gbl-planner@imr-root-gbl-core-c3d4.iam.gserviceaccount.com on project imr-root-gbl-core-c3d4",
 		"GitHub: brings the default branch's ruleset of imp-example/imr-root-infrastructure to the placement: bypass actors",
 		"GitHub: sets the organization variable CI_LARGE_RUNNER to ci-large (was ci-tiny)",
 	)
@@ -561,6 +561,159 @@ func TestEnginePolicies(t *testing.T) {
 	if len(partial.Changes) != 0 || len(partial.Findings) != 2 {
 		t.Errorf("partial record: changes %v, findings %q", whats(partial), partial.Findings)
 	}
+}
+
+// pushWatch is the Org Policy stand-in of a run that creates rgb: it notes, for each
+// policy the run sets, whether the creation's push had landed by then.
+type pushWatch struct {
+	root.OrgPolicies
+	srv           *githubtest.Server
+	repository    string
+	branch        string
+	before, after []string
+}
+
+// pushed reports whether rgb's repository carries the foundation: placement.json on its
+// default branch, which the creation's push puts there.
+func (p *pushWatch) pushed() bool {
+	var pushed bool
+	p.srv.Update(func() {
+		repo, ok := p.srv.Repos[p.repository]
+		if !ok {
+			return
+		}
+		_, pushed = repo.Files[repo.Trees[repo.Refs["refs/heads/"+p.branch].SHA]+":placement.json"]
+	})
+
+	return pushed
+}
+
+func (p *pushWatch) CreatePolicy(ctx context.Context, parent string, policy *root.Policy) error {
+	if p.pushed() {
+		p.after = append(p.after, policy.Name)
+	} else {
+		p.before = append(p.before, policy.Name)
+	}
+
+	return p.OrgPolicies.CreatePolicy(ctx, parent, policy)
+}
+
+// TestEngineCreationBaseline: an apply that creates a hosting organization sets the
+// organization-policy baseline on the four folders 1-org's first apply made before the
+// creation's push, from which the new organization's own apply trigger applies its
+// layers, and the policies section after the creations sets none of it again. A creation
+// that stopped after its push left the baseline standing, and the run that finishes it
+// reaches the same step and sets nothing again. A folder the creation's record lacks is a
+// finding of the run once, not once from the creation and once from the section.
+func TestEngineCreationBaseline(t *testing.T) {
+	t.Parallel()
+
+	// The baseline on rgb's four folders: each constraint on each, domain-restricted
+	// sharing on the three environment folders, the contact domains on the four.
+	baseline := 4*len(root.Baseline) + 3 + 4
+	onFolders := func(names []string) int {
+		n := 0
+		for _, name := range names {
+			if strings.HasPrefix(name, "folders/90000000002") {
+				n++
+			}
+		}
+
+		return n
+	}
+	start := func(t *testing.T, exec tofu) (*world, *pushWatch, func() (*root.Report, string, error)) {
+		t.Helper()
+
+		w, _, dir := creating(t)
+		w.clients.Create.Exec = exec
+		watch := &pushWatch{OrgPolicies: w.fake, srv: w.srv, repository: w.p.GithubOrganization + "/rgb-infrastructure", branch: w.p.GithubDefaultBranch}
+		w.clients.OrgPolicies = func(context.Context, string) (root.OrgPolicies, error) { return watch, nil }
+		apply := func() (*root.Report, string, error) {
+			var out bytes.Buffer
+			report, err := root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Dir: dir, Mode: root.Apply, Commit: "abc1234", GitHubToken: "test-token"}, &out)
+
+			return report, out.String(), err
+		}
+
+		return w, watch, apply
+	}
+
+	t.Run("a creation that finishes", func(t *testing.T) {
+		t.Parallel()
+
+		_, watch, apply := start(t, tofu{})
+		report, out, err := apply()
+		if err != nil {
+			t.Fatalf("Run() error = %v\n%s", err, out)
+		}
+		if !watch.pushed() {
+			t.Fatalf("the creation pushed no foundation:\n%s", out)
+		}
+		if got := onFolders(watch.before); got != baseline || len(watch.after) != 0 {
+			t.Errorf("%d of the baseline's %d policies on rgb's four folders were set before the creation's push, and %d policies after it: %v", got, baseline, len(watch.after), watch.after)
+		}
+		sets := 0
+		for _, what := range whats(report) {
+			if strings.HasPrefix(what, "organization policies: sets ") && strings.HasSuffix(what, " of rgb") {
+				sets++
+			}
+		}
+		if want := len(root.OrganizationFolderBaseline) + baseline; sets != want {
+			t.Errorf("the report lists %d policies set for rgb, want each of the %d once:\n  %s", sets, want, strings.Join(whats(report), "\n  "))
+		}
+	})
+
+	t.Run("a creation that stopped after its push, and the run that finishes it", func(t *testing.T) {
+		t.Parallel()
+
+		w, watch, apply := start(t, tofu{})
+		// The withdrawal comes after the push.
+		stop := errors.New("refused in this test")
+		w.fake.Refuse["RevokeFolder"] = stop
+		if _, out, err := apply(); !errors.Is(err, stop) {
+			t.Fatalf("Run() of a creation whose withdrawal is refused = %v, want the refusal\n%s", err, out)
+		}
+		if !watch.pushed() {
+			t.Fatal("the creation stopped before its push")
+		}
+		if got := onFolders(watch.before); got != baseline || len(watch.after) != 0 {
+			t.Errorf("the creation that stopped after its push had set %d of the baseline's %d policies on rgb's four folders before the push, and %d policies after it: %v", got, baseline, len(watch.after), watch.after)
+		}
+
+		delete(w.fake.Refuse, "RevokeFolder")
+		set := len(watch.before)
+		report, out, err := apply()
+		if err != nil {
+			t.Fatalf("Run() after the stop error = %v\n%s", err, out)
+		}
+		if len(watch.before) != set || len(watch.after) != 0 || strings.Contains(out, "organization policies: ") {
+			t.Errorf("the run that finished the creation set a policy again (%d before, %d now, %d after the push):\n%s", set, len(watch.before), len(watch.after), out)
+		}
+		if len(report.Created) != 1 || report.Created[0].Prefix != "rgb" || report.Created[0].Already {
+			t.Errorf("the run after the stop created %+v, want rgb, finished by this run", report.Created)
+		}
+	})
+
+	t.Run("a folder the record lacks is a finding once", func(t *testing.T) {
+		t.Parallel()
+
+		folders := rgbFolders()
+		delete(folders, "prd")
+		_, _, apply := start(t, tofu{folders: folders})
+		report, out, err := apply()
+		if err != nil {
+			t.Fatalf("Run() error = %v\n%s", err, out)
+		}
+		lacking := 0
+		for _, f := range report.Findings {
+			if strings.Contains(f, "the record of rgb names no folder prd (folders), so no policy is set on it") {
+				lacking++
+			}
+		}
+		if lacking != 1 {
+			t.Errorf("the finding of the folder rgb's record lacks is listed %d time(s), want once:\n  %s", lacking, strings.Join(report.Findings, "\n  "))
+		}
+	})
 }
 
 // TestEngineHostingMembersStay: a hosting organization's grants on the shared secrets

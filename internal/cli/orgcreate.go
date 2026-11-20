@@ -39,9 +39,11 @@ spanner.config, two regions, teamGroups, contactDomains, entitlementDurations, l
 vanityDomains) and what the root organization supplies filled in by this command (the
 Google Cloud organization and the billing account, the GitHub organization, its Bot
 Account, default branch and apps, the Cloud Build authorization, the break-glass account, the
-bedrock pin, and root, which names this organization). The boot project's suffix is chosen
-here too, so its id is known before anything is made. Without the file, create writes one
-to fill in and stops. With it, create fills it, lists the organization in placement.json
+bedrock pin, and root, which names this organization). A hosting organization is billed to
+this organization's billing account, the one the creating identity administers: a record
+that names another is refused. The boot project's suffix is chosen here too, so its id is
+known before anything is made. Without the file, create writes one to fill in and stops.
+With it, create fills it, lists the organization in placement.json
 (hostingOrganizations: its prefix and its boot project; the folder is recorded by the
 hand-off), renders, and says what the merge creates. Nobody grants anything by hand: the
 creating identity holds Folder Creator at the organization node and Billing Account
@@ -197,12 +199,13 @@ The merge of this pull request creates %s, as the creating identity (%s):
     the apps domain's label onward to its zone (domains), from which the apply writes the
     NS record set.
 Nothing is granted by hand before the merge: the creating identity holds Folder Creator at the
-organization node and Billing Account Administrator on %s since the bootstrap, and it grants
-the new organization's boot and org identities Billing Account User itself and makes its
-spend budget (%d a month in the account's currency, monthlyBudget) on its folder, which the
-apply keeps. After the merge, for the new organization: its consent screen and role groups
-follow as its README says.
-`, h.Prefix, root.CreatingIdentity(), h.Prefix, h.Projects["boot"], h.BillingAccount, h.Prefix, h.StateBucket, h.MonthlyBudget, h.AppsDomain, h.GithubOrganization, h.SourceRepo, h.BillingAccount, h.MonthlyBudget)
+organization node and Billing Account Administrator on this organization's billing account
+(%s), which %s is billed to, since the bootstrap, and it grants the new
+organization's boot and org identities Billing Account User itself and makes its spend
+budget (%d a month in the account's currency, monthlyBudget) on its folder, which the apply
+keeps. After the merge, for the new organization: its consent screen and role groups follow
+as its README says.
+`, h.Prefix, root.CreatingIdentity(), h.Prefix, h.Projects["boot"], root.BillingAccount, h.Prefix, h.StateBucket, h.MonthlyBudget, h.AppsDomain, h.GithubOrganization, h.SourceRepo, root.BillingAccount, h.Prefix, h.MonthlyBudget)
 
 	return b.String()
 }

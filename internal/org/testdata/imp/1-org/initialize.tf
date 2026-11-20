@@ -1,8 +1,8 @@
 terraform {
   # Same bucket as 0-bootstrap, different prefix. A backend block cannot read a
-  # variable, so the bucket name is a placeholder: the creation makes the
-  # bucket and renders the name here (0-bootstrap/README.md, "Created by the
-  # root organization").
+  # variable, so every render writes the bucket's name here, from
+  # placement.json (stateBucket): the bucket the creation's seed made
+  # (0-bootstrap/README.md, "Created by the root organization", step 1).
   backend "gcs" {
     bucket = "imp-boot-gbl-state-a1b2"
     prefix = "1-org"

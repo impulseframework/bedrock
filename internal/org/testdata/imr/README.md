@@ -99,7 +99,14 @@ The one account above the folders is the organization's break-glass account
 (`breakGlassAccount` in `placement.json`, `seed@imp.example`): a Google
 account in the Workspace directory with no person behind it, which ran the
 bootstrap and keeps the administration of the folder Google gives a creator,
-its key for a recovery by hand, and holds nothing else. Beside it, the creating
+its key for a recovery by hand. It holds as well the roles it ran the
+bootstrap with, granted by hand before it and taken off by nothing of
+bedrock's ("Bootstrapped by one command", below): Organization Administrator
+and Folder Creator at the organization node, and Billing Account Administrator
+on the billing account, granted by a billing administrator. On the root
+project it holds BigQuery Admin and Service Usage Consumer, which the apply
+keeps, and on each hosting organization's folder Folder Admin, given by its
+creation. Beside it, the creating
 identity `imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com` holds Folder Creator at the organization node
 and Billing Account Administrator on the billing account, granted by the
 bootstrap: with them it creates each hosting organization under a folder of its
@@ -190,8 +197,10 @@ with `placement.json` and this README as its first commit; then everything the
 apply keeps true ("How the root organization is kept", below), through the
 same engine the apply trigger runs, the zones as the applier, which Google
 holds as the domains' owner, with a Token Creator on it and on the creating
-identity that the run grants itself and takes off at its end; last its own
-Owner off the root project, and the check. No key and no token touches the computer's disk.
+identity that the run grants itself and takes off at its end; last what
+Google gave the account as the creator, Owner on the root project and Folder
+Editor on the folder, off, and the check. No key and no token touches the
+computer's disk.
 
 What it leaves: the break-glass account's Folder Admin on the folder, its
 BigQuery Admin and Service Usage Consumer on the root project (the one for the
@@ -264,8 +273,11 @@ made again by the bootstrap run again.
 
 `bedrock org check`, at a terminal in a clone with the break-glass account's
 credentials, prints the same comparison as information after the README check,
-and lists each grant on the folder or the project to a person, beside the
-break-glass account's Folder Admin. Recovery by hand is `bedrock org bootstrap`
+and lists what a run by hand left: a person's Owner on the root project, each
+role the break-glass account holds on the project or the folder beyond the
+ones it keeps (Folder Admin on the folder; BigQuery Admin and Service Usage
+Consumer on the root project), and each grant on the folder to a principal
+outside this organization. Recovery by hand is `bedrock org bootstrap`
 again, in a clone: it finds everything that stands and makes the rest.
 Destroying the organization, project and all, is `bedrock org destroy`, by
 hand, refused while a hosting organization is recorded as created; it deletes
@@ -414,7 +426,11 @@ and a hosting organization's identities hold their roles under its folder
 alone. So this organization sets the baseline on those folders, as the
 applier, and compares it, as the planner, from each hosting organization's
 record (`organizations/<prefix>/placement.json`): in the creation, right
-after `1-org`'s first apply, and on every apply after. The record carries what
+after `1-org`'s first apply and before the first push of the new
+organization's repository, and on every apply after. The new organization's
+own apply trigger runs on that push, so it applies no layer before the
+baseline stands, and a creation that stops after the push has left the
+baseline standing. The record carries what
 the policies name, written by the creation from `1-org`'s outputs: the folders'
 ids (`folders`) and each environment project's public-invoker tag
 (`publicInvokerTags`). The `terraform` folder gets no policy, so the boot
@@ -708,8 +724,11 @@ grants the new organization's identities their use of the billing account.
    the break-glass account, the bedrock pin, and `root`, which names this
    organization), chooses the boot project's suffix, lists the organization in
    `placement.json` (`hostingOrganizations`: its prefix and its boot project)
-   and renders. The pull request carries both files; its plan says what the
-   merge creates.
+   and renders. A hosting organization is billed to this organization's
+   billing account, the one the creating identity administers: a record that
+   names another is refused, by `bedrock org create` and by the merge's apply
+   before it makes anything. The pull request carries both files; its plan
+   says what the merge creates.
 2. **The merge.** The apply trigger creates each listed organization without a
    folder yet, in order, as the creating identity: the folder at the
    organization node named after the prefix, the `terraform` folder under it,
@@ -724,7 +743,9 @@ grants the new organization's identities their use of the billing account.
    bucket, the first applies of the new organization's two foundation layers,
    `0-bootstrap` and `1-org`, with the projects recorded in its placement, and
    Billing Account User on the billing account for its boot and org identities;
-   then the public zone of its apps domain in its net project, made as the
+   then, as the applier again, the organization-policy baseline on the four
+   folders `1-org` made, before anything is pushed ("The organization-policy
+   baseline"); then the public zone of its apps domain in its net project, made as the
    creating identity (which the apply verified as an owner of the domain,
    "Delegating a domain to this organization") and recorded in its placement
    (`appsZone`), which its `2-net` adopts; then the repository `<prefix>-infrastructure`, private in
@@ -744,9 +765,11 @@ grants the new organization's identities their use of the billing account.
    moves to a fresh commit when what it records changed, and one closed
    unmerged stays as history while another is opened.
 3. **The hand-off.** Its merge records the folder, from which the apply keeps
-   the new boot identity's grants on the shared secrets, and that is the last
-   reach into the new organization: nothing under its folder is this
-   organization's to refresh, and `bedrock org check` there lists any grant on
+   the new boot identity's grant on the shared secrets. Under the new
+   organization's folder the apply here keeps one thing, the
+   organization-policy baseline on its folders, from its record ("The
+   organization-policy baseline"); everything else under the folder is the new
+   organization's own, and `bedrock org check` there lists any grant on
    the folder to a principal outside it. Its spend budget, the amount its
    record names (`monthlyBudget`), stands on its folder since the creation and
    is kept by the apply here ("Spend budgets and the billing export"). Its

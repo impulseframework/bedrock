@@ -88,9 +88,10 @@ their roles, the secrets' aliases and policies, the creating identity's Folder C
 organization node and Billing Account Administrator on the billing account, the zones of the
 domains (--domain) with DNSSEC, the Cloud Build connection, the repository link and the two
 triggers, the GitHub organization's immutable releases, on for every repository, the
-repository's settings and ruleset with the infrastructure app as its bypass actor; last its
-own Owner off the root project, and the check. No terraform: the root organization is
-bedrock's own bookkeeping, kept true by API on every merge.
+repository's settings and ruleset with the infrastructure app as its bypass actor; last what
+Google gave the account as the creator, Owner on the root project and Folder Editor on the
+folder, off, and the check. No terraform: the root organization is bedrock's own
+bookkeeping, kept true by API on every merge.
 
 The discovery decides what the credentials show: whose they are (the break-glass account),
 the one organization and the one open billing account they see, or --organization (its
@@ -622,7 +623,11 @@ Next, each where it happens:
   4. In a terminal, here: bedrock org create <prefix> for the first hosting organization, then
      the pull request; the merge creates it as the creating identity (README.md, "Creating a
      hosting organization").
-The break-glass account keeps Folder Admin on the folder %s alone, its key for a recovery by
-hand, and BigQuery Admin on the root project for the export; nothing else is done by hand.
+The break-glass account keeps Folder Admin on the folder %s, its key for a recovery by hand,
+and on the root project BigQuery Admin, for the export, and Service Usage Consumer, for the
+quota its checks at a terminal bill to the project. It holds as well the roles it ran this
+bootstrap with, which nothing of bedrock's takes off: Organization Administrator and Folder
+Creator at the organization node, and Billing Account Administrator on the billing account
+(README.md, "Several organizations"). Nothing else is done by hand.
 `, where, org.ExportDataset, p.RootProject(), p.Prefix)
 }

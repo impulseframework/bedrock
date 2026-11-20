@@ -1,11 +1,16 @@
 // leftovers.go lists the grants a hand apply leaves a person with and which are
 // removed by hand once the apply trigger applies the layers: Owner on each project it
 // created, which Google gives a project's creator; Folder Admin and Folder Editor on each
-// folder it created, which Google gives a folder's creator; and the roles the seed grants
-// the break-glass account on the organization's folder for the second layer's first
-// apply. The one grant that stays is the break-glass account's Folder Admin on the
-// organization's folder, its key to everything below (0-bootstrap/README.md, "Trimming
-// the break-glass account"), and org check reports every other one until it is removed.
+// folder it created, which Google gives a folder's creator; and each role the
+// break-glass account holds on a project or a folder beyond the ones it keeps. It keeps
+// Folder Admin on the organization's folder, its key to everything below
+// (0-bootstrap/README.md, "Recovery, by hand"), the one grant a hosting organization's
+// creation gives it, in its seed, and a root organization's bootstrap gives it on its
+// own folder; and on a root organization's root project the two roles the apply keeps
+// (BreakGlassProjectRoles). org check reports every other one until it is removed.
+// Nothing above the folder is read: the roles the account ran the root organization's
+// bootstrap with, at the organization node and on the billing account (BootstrapRoles),
+// are granted by hand before it and taken off by nothing of bedrock's.
 // On the organization's folder it reports as well every grant to a principal outside the
 // organization, neither the break-glass account nor an identity in one of its projects:
 // the folder is the whole of the organization's reach, nothing of the organization's
