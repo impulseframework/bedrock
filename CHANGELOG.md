@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.3](https://github.com/impulseframework/bedrock/compare/v0.1.2...v0.1.3) (2026-11-20)
+
+
+### Bug Fixes
+
+* a command that cannot open all of its Google clients closes the ones it had opened: the root organization's run, bootstrap and destroy, and the creation of a hosting organization ([#15](https://github.com/impulseframework/bedrock/issues/15)) ([a61f958](https://github.com/impulseframework/bedrock/commit/a61f958387c7e5190136e2b4cddfbf0b0d04a52c))
+* a rendered value cannot close a heredoc with the text beside it, a name the stack writes bare is held to being one, and a placement's branch, regions and project ids are refused when they are not names ([#15](https://github.com/impulseframework/bedrock/issues/15)) ([a61f958](https://github.com/impulseframework/bedrock/commit/a61f958387c7e5190136e2b4cddfbf0b0d04a52c))
+* a root organization that lists no library bootstraps and applies: its runs no longer stop at the release app's organization secrets, which its infrastructure app holds no permission to read ([#15](https://github.com/impulseframework/bedrock/issues/15)) ([a61f958](https://github.com/impulseframework/bedrock/commit/a61f958387c7e5190136e2b4cddfbf0b0d04a52c))
+* a root organization's plan no longer says to take the organization Secrets permission off the infrastructure app while a former library still reads the release app's key ([#15](https://github.com/impulseframework/bedrock/issues/15)) ([a61f958](https://github.com/impulseframework/bedrock/commit/a61f958387c7e5190136e2b4cddfbf0b0d04a52c))
+* a root organization's plan, apply, check or bootstrap that stops on an error says what it had gathered before the stop, and a stopped plan posts it with the error on the pull request ([#15](https://github.com/impulseframework/bedrock/issues/15)) ([a61f958](https://github.com/impulseframework/bedrock/commit/a61f958387c7e5190136e2b4cddfbf0b0d04a52c))
+* a stack renders as OpenTofu parses it whatever the code's comments and the placement's words hold, and render and check refuse a file that does not parse ([#15](https://github.com/impulseframework/bedrock/issues/15)) ([a61f958](https://github.com/impulseframework/bedrock/commit/a61f958387c7e5190136e2b4cddfbf0b0d04a52c))
+* bedrock domain check says a domain does not resolve and prints the zone's name servers to set, where the failed lookup of a domain whose name servers do not answer ended the check with an error ([#15](https://github.com/impulseframework/bedrock/issues/15)) ([a61f958](https://github.com/impulseframework/bedrock/commit/a61f958387c7e5190136e2b4cddfbf0b0d04a52c))
+* bedrock org create fills in the word the root organization's GitHub Apps' names start with, so a hosting organization is recorded without a hand edit ([#15](https://github.com/impulseframework/bedrock/issues/15)) ([a61f958](https://github.com/impulseframework/bedrock/commit/a61f958387c7e5190136e2b4cddfbf0b0d04a52c))
+* the Dockerfile bedrock render seeds is built on current base images, so a new application's image check passes on the seed, and a workflow scans the seed's base every day at the application's cutoff ([#15](https://github.com/impulseframework/bedrock/issues/15)) ([a61f958](https://github.com/impulseframework/bedrock/commit/a61f958387c7e5190136e2b4cddfbf0b0d04a52c))
+
 ## [0.1.2](https://github.com/impulseframework/bedrock/compare/v0.1.1...v0.1.2) (2026-11-18)
 
 
