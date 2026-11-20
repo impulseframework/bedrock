@@ -201,8 +201,9 @@ resource "google_project_iam_member" "org_tofu_project" {
 
 # roles/billing.user rather than roles/billing.admin:
 # linking a project to the account is all a layer ever does with billing, and
-# the account belongs to CCC rather than to this organization. Gated because
-# only a Billing Account Administrator can apply it; see var.manage_billing_iam.
+# the account is the root organization's unless this organization's record
+# named another (billingAccount in placement.json). Gated because only a
+# Billing Account Administrator can apply it; see var.manage_billing_iam.
 resource "google_billing_account_iam_member" "boot_tofu" {
   count = var.manage_billing_iam ? 1 : 0
 
