@@ -22,7 +22,7 @@ resource "google_tags_tag_key" "public_invoker" {
 
   parent      = "projects/${module.project[each.key].project_number}"
   short_name  = "public-invoker"
-  description = "true on a Cloud Run service that may grant roles/run.invoker to allUsers, for the load balancer; see org-policies.tf."
+  description = "true on a Cloud Run service that may grant roles/run.invoker to allUsers, for the load balancer; the root organization's iam.allowedPolicyMemberDomains policy on the environment's folder names this tag."
 
   depends_on = [time_sleep.apis_ready]
 }
