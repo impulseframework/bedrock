@@ -172,10 +172,17 @@ func NewKeyClientAs(ctx context.Context, identity string) (KeyClient, error) {
 	return newKeyClient(ctx, option.WithTokenSource(source))
 }
 
+// newKeysService is the API Keys service's constructor, as newKeyClient calls it:
+// Google's own, which nothing but a test assigns. NewKeyLister opens with the process's
+// default credentials, which a test has none of: a test of it puts a function in the
+// constructor's place that records the options it is called with, and opens the service
+// at a server of the test's own.
+var newKeysService = apikeys.NewService
+
 // newKeyClient opens the API Keys client with the options given, which a test points at
 // its own server.
 func newKeyClient(ctx context.Context, opts ...option.ClientOption) (KeyClient, error) {
-	service, err := apikeys.NewService(ctx, opts...)
+	service, err := newKeysService(ctx, opts...)
 	if err != nil {
 		return nil, errors.Wrap(err, "apikeys.NewService()")
 	}

@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
@@ -127,6 +129,101 @@ func TestNewSecretManagerAsOpensWithTheIdentityTokenSource(t *testing.T) {
 	// source the impersonation answered.
 	if want := [][]option.ClientOption{{option.WithTokenSource(asked.answers[0])}}; !reflect.DeepEqual(want, *opened) {
 		t.Errorf("NewSecretManagerAs() called the client's constructor with %#v, want one call with the source of the identity's token and nothing else, %#v", *opened, want)
+	}
+}
+
+// TestTheDataStoreAsConstructorsCallAsTheIdentity: the function NewFirestoreAs answers and
+// the one NewSpannerAs answers each ask for the token of the identity they are given,
+// with Cloud Platform's scope and no option, and the client each opens calls with the
+// token it was answered. A client opened as the process's own identity, the deploy
+// identity, holds no role on the environment's data, which shows at a restore's first
+// call alone. The impersonation is the package's variable, which holds a function here
+// that records what the constructor calls it with (recordImpersonations): any option
+// fails the test. The token source it answers asks a stand-in for the IAM Credentials API
+// that refuses every token and says whose it was asked for, so a call of the client ends
+// at that refusal and its own request is never sent. Each client is pointed at a server
+// of the test's own before its call, which counts what reaches it: a client that did not
+// call with the token source would send its request there, and not to Google.
+func TestTheDataStoreAsConstructorsCallAsTheIdentity(t *testing.T) {
+	// The impersonation swapped below is the package's and the variable the process's, so
+	// the test runs alone: t.Setenv forbids t.Parallel.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
+
+	var reached atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(api.Close)
+
+	const scope = "https://www.googleapis.com/auth/cloud-platform"
+	ctx := context.Background()
+	asked := recordImpersonations(t)
+	tests := []struct {
+		name string
+		// open opens the client as the identity, and answers a call of it at the stand-in
+		// for its API.
+		open func() (func() error, error)
+	}{
+		{
+			name: "NewFirestoreAs",
+			open: func() (func() error, error) {
+				opened, err := NewFirestoreAs(io.Discard)(ctx, asIdentity)
+				if err != nil {
+					return nil, err
+				}
+				client, ok := opened.(*firestore)
+				if !ok {
+					return nil, fmt.Errorf("a %T, want the client over the v1 API", opened)
+				}
+				client.base = api.URL
+
+				return func() error {
+					return client.DeleteAllDocuments(ctx, "projects/imr-example-dev-core-9c1d/databases/example")
+				}, nil
+			},
+		},
+		{
+			name: "NewSpannerAs",
+			open: func() (func() error, error) {
+				opened, err := NewSpannerAs(io.Discard)(ctx, asIdentity)
+				if err != nil {
+					return nil, err
+				}
+				client, ok := opened.(*spanner)
+				if !ok {
+					return nil, fmt.Errorf("a %T, want the client over the v1 API", opened)
+				}
+				client.base = api.URL
+
+				return func() error {
+					_, err := client.Databases(ctx, "projects/imr-example-dev-core-9c1d/instances/example")
+
+					return err
+				}, nil
+			},
+		},
+	}
+	for _, tt := range tests {
+		asked.calls, asked.answers = nil, nil
+		reached.Store(0)
+		call, err := tt.open()
+		if err != nil {
+			t.Errorf("%s() = %v", tt.name, err)
+
+			continue
+		}
+		wantAsked := []impersonation{{config: impersonate.CredentialsConfig{TargetPrincipal: asIdentity, Scopes: []string{scope}}}}
+		if diff := cmp.Diff(wantAsked, asked.calls, cmp.AllowUnexported(impersonation{}), cmpopts.EquateEmpty()); diff != "" {
+			t.Errorf("%s() asked for other than that identity's token, once, with Cloud Platform's scope and no option (-want +got):\n%s", tt.name, diff)
+		}
+		want := tokenRefusal(asIdentity, scope)
+		if err := call(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("a call of the client %s() opened = %v, want the refusal %q: the client does not call with the token it asked for", tt.name, err, want)
+		}
+		if n := reached.Load(); n != 0 {
+			t.Errorf("%d request(s) of the client %s() opened reached the API: the client sends without the identity's token", n, tt.name)
+		}
 	}
 }
 

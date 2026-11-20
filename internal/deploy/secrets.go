@@ -65,10 +65,11 @@ func NewSecretManager(ctx context.Context) (Secrets, error) {
 
 // The impersonation and the Secret Manager client's constructor, as the constructors of
 // this package that open a client as an identity call them: NewSecretManagerAs calls
-// both, NewStorageAs and NewStorageAsWriter the impersonation (record.go). Each variable
-// holds Google's own function, and nothing but a test assigns one. A test puts a function
-// in its place that records what the constructor calls it with: the identity a client
-// calls as shows at a call alone, and a call needs credentials a test has none of.
+// both, and NewStorageAs, NewStorageAsWriter, NewFirestoreAs and NewSpannerAs the
+// impersonation (record.go, firestore.go, spanner.go). Each variable holds Google's own
+// function, and nothing but a test assigns one. A test puts a function in its place that
+// records what the constructor calls it with: the identity a client calls as shows at a
+// call alone, and a call needs credentials a test has none of.
 var (
 	impersonatedTokenSource = impersonate.CredentialsTokenSource
 	newSecretManagerClient  = secretmanager.NewClient
