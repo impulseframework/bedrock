@@ -16,9 +16,10 @@
 #
 # What the environment projects owe this layer: roles/compute.loadBalancerServiceUser
 # for this layer's identity, granted there, at project or backend service
-# level. The org policy compute.restrictLoadBalancerCreationForTypes in 1-org
-# allows exactly this load balancer type (GLOBAL_EXTERNAL_MANAGED_HTTP_HTTPS),
-# and run.allowedIngress keeps Cloud Run reachable only through it.
+# level. The org policy compute.restrictLoadBalancerCreationForTypes, of the
+# baseline the root organization sets on this organization's folders, allows
+# exactly this load balancer type (GLOBAL_EXTERNAL_MANAGED_HTTP_HTTPS), and
+# run.allowedIngress keeps Cloud Run reachable only through it.
 #
 # Not here, on purpose: Cloud Armor (opt-in later, attached to backend
 # services by the application layer) and outlier detection (a backend service

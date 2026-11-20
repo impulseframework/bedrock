@@ -33,8 +33,8 @@ locals {
 # The terraform folder sits alongside the environment folders created by 1-org
 # and holds nothing but the automation plane. Keeping it out of the environment
 # hierarchy means an environment folder can be reorganized without touching the
-# identity that provisions it, and the org policies 1-org applies to the
-# environment folders never reach the identities that manage them.
+# identity that provisions it, and the org policies the root organization sets
+# on the environment folders never reach the identities that manage them.
 
 # The organization's folder, named after its prefix, holds everything the
 # layers make under the GCP organization: the terraform folder here, the
@@ -215,8 +215,9 @@ resource "google_billing_account_iam_member" "boot_tofu" {
 # ---------------------------------------------------------------------------
 # Org layer identity
 #
-# 1-org creates folders, projects, org policies, custom roles, a tag key and
-# per-project service accounts. Those grants sit on the organization's folder
+# 1-org creates folders, projects, custom roles, a tag key and per-project
+# service accounts; the org policies on its folders are the root
+# organization's to set. Those grants sit on the organization's folder
 # because the projects they act on do not exist yet, and nowhere higher: the
 # folder is the whole of this organization's reach.
 # ---------------------------------------------------------------------------

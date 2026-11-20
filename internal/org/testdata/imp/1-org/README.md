@@ -1,8 +1,9 @@
 # 1-org
 
-Where the organization is described: folders, the org policy baseline,
-Essential Contacts, every project, and the identities that manage each
-project's own layer. Its first apply is the root organization's creation
+Where the organization is described: folders, Essential Contacts, every
+project, and the identities that manage each project's own layer (the
+organization-policy baseline on the folders is the root organization's:
+"What it creates"). Its first apply is the root organization's creation
 identity's, in the creation (`0-bootstrap/README.md`, "Created by the root
 organization"); from then on the apply trigger applies it as `imp-org-gbl-tofu` and the plan
 trigger plans it on a pull request as `imp-org-gbl-plan`.
@@ -297,8 +298,8 @@ nothing could run it as one. It ran in this directory against the bucket
 infrastructure GitHub App's token as `GITHUB_TOKEN`; `terraform.tfvars` had
 `boot_project_id` from the seed, and the backend block and the read of
 `0-bootstrap`'s state name the bucket from `placement.json`. The layer makes
-folders, org policy, and projects with `deletion_policy = "PREVENT"` and a
-lien each, which are hard to undo; the root organization's pull request is
+folders, and projects with `deletion_policy = "PREVENT"` and a lien each,
+which are hard to undo; the root organization's pull request is
 where a creation is reviewed, its plan saying what the merge creates. The
 init's `.terraform.lock.hcl` came with the first push.
 

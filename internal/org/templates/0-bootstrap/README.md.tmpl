@@ -129,10 +129,15 @@ applies would, and left no person with a grant to trim:
    need the day `1-org` links a project it creates.
 3. **The first apply of `1-org`**, the same way, with the infrastructure
    GitHub App's token for its GitHub provider: the folders, the six projects
-   with their liens, identities, custom roles and org policies. Its
-   `project_ids` and `project_numbers` outputs went into `placement.json`
-   (`projects`, `projectNumbers`) and the layers were rendered again, so every
-   identity is named by its project before anything was pushed.
+   with their liens, identities and custom roles, and the public-invoker
+   tags. Its `project_ids` and `project_numbers` outputs went into
+   `placement.json` (`projects`, `projectNumbers`) and the layers were
+   rendered again, so every identity is named by its project before anything
+   was pushed. No organization policy is this layer's: the root
+   organization's apply set one on the organization's folder before the first
+   applies, and the baseline on the four folders once this apply's outputs
+   had named the folders and the tags (`folders`, `publicInvokerTags` in
+   `placement.json`; `1-org/README.md`, "Organization policies").
 4. **This repository**, made private in the `{{.GithubOrganization}}`
    organization with the rendered foundation as its first push, which the
    apply trigger of step 2 ran on: every layer, as its own identity, in layer
