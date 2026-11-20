@@ -11,9 +11,10 @@ boot_project_id        = "{{.BootProjectID}}"
 organization_folder_id = "{{.OrganizationFolderID}}"
 terraform_folder_id    = "{{.TerraformFolderID}}"
 
-# The two roles/billing.user grants need Billing Account Administrator. A
-# break-glass account that holds only Billing Account User leaves this
-# false and the creation makes the grants, as the root organization's
-# creating identity (README.md, "Created by the root organization", step 2);
-# set it true once the identity applying this layer can manage billing IAM.
+# The two roles/billing.user grants need Billing Account Administrator. The
+# apply trigger applies this layer as the boot layer identity, a Billing
+# Account User, so this is false and the creation makes the grants, as the
+# root organization's creating identity (README.md, "Created by the root
+# organization", step 2); set it true once the identity applying this layer
+# can manage billing IAM.
 manage_billing_iam = false
