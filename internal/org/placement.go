@@ -2,7 +2,8 @@
 // model (the bootstrap, the organization, the shared registry, the shared Spanner
 // instance, the network, and the environments) from an organization placement, the way
 // the application stack is rendered from an application; or, for a root organization
-// (zones.go), the bootstrap and the one layer that holds its DNS zones. The layers' .tf
+// (root.go), its README, journal and ignore rules alone: it has no layers, since bedrock
+// keeps it by API (the package root). The layers' .tf
 // files and their READMEs are owned and rewritten on every render; each layer's
 // terraform.tfvars, the journal and the ignore rules are seeded once and then a person's.
 package org
@@ -30,7 +31,8 @@ const (
 	regionCount = 2
 	// githubLoginLength is the longest login GitHub gives an account.
 	githubLoginLength = 39
-	// replaceMe marks a value only a seed step can supply.
+	// replaceMe stands in a rendered value for an id a render outside a creation does not
+	// have yet: bedrock org create and the creation supply them.
 	replaceMe = "REPLACEME"
 	// defaultApprovingReviews is the approving reviews a pull request needs before it
 	// merges when the placement leaves approvingReviews out.
@@ -109,14 +111,16 @@ type Placement struct {
 	// OrganizationDomain is the Google Cloud organization's domain, which is also the
 	// Workspace domain the directory sign-ins restrict logins to.
 	OrganizationDomain string `json:"organizationDomain"`
-	// OrganizationID is the organization's numeric ID, for the seed steps.
+	// OrganizationID is the Google Cloud organization's numeric ID: the organization's
+	// folder is made under it, by the creation's seed or a root organization's bootstrap.
 	OrganizationID string `json:"organizationId"`
 	// DirectoryCustomerID is the Google Cloud organization's Cloud Identity customer (C and
 	// eight lowercase alphanumerics), which 1-org names in the domain-restricted sharing
-	// policy: recorded with the seed's values in a root organization (gcloud organizations
-	// describe, owner.directoryCustomerId) and copied into each hosting organization's
-	// record by bedrock org create, since an identity of an organization holds no read at
-	// the organization node to look the organization up with.
+	// policy: recorded in a root organization's placement by bedrock org bootstrap, which
+	// reads it of the Google Cloud organization (owner.directoryCustomerId), and copied
+	// into each hosting organization's record by bedrock org create, since an identity of
+	// an organization holds no read at the organization node to look the organization up
+	// with.
 	DirectoryCustomerID string `json:"directoryCustomerId,omitempty"`
 	// BillingAccount is the billing account projects are linked to.
 	BillingAccount string `json:"billingAccount"`
@@ -409,11 +413,14 @@ type Placement struct {
 	// the stack serves and refuses a hostname that is not one label under the apps
 	// domain or that another application serves too.
 	Hostnames map[string]map[string]map[string]string `json:"hostnames,omitempty"`
-	// Projects are the projects by key: boot, the project the seed chose, and shr, net,
-	// spn, tst, stg and prd, the ids 1-org's apply chose (its project_ids output). The
+	// Projects are the projects by key: boot, the id the organization's record names
+	// (bedrock org create chose its suffix where the record named none), with which the
+	// creation's seed made the project, and shr, net, spn, tst, stg and prd, the ids
+	// 1-org's apply chose (its project_ids output). The
 	// environment projects are what the applications' identities and backends are named
 	// under; every project names the layer identities the triggers' runs impersonate.
-	// Absent until the seed or 1-org has run; REPLACEME is rendered in their place.
+	// Absent until bedrock org create (boot) or the creation, after 1-org's first apply
+	// (the others), has recorded them; REPLACEME is rendered in their place.
 	Projects map[string]string `json:"projects,omitempty"`
 	// ProjectNumbers are the projects' numbers by the same keys: boot from the seed, the
 	// rest from 1-org's project_numbers output, recorded beside Projects. 0-bootstrap
@@ -469,7 +476,7 @@ const (
 
 // HostingProjectKeys are the hosting model's projects by key, in layer order: the boot
 // project (the seed's, 0-bootstrap's and 1-org's layers run there), the shared projects,
-// then the environment projects. A root organization has the boot project alone
+// then the environment projects. A root organization has its root project alone
 // (Placement.ProjectKeys).
 var HostingProjectKeys = []string{bootProject, shrProject, netProject, spnProject, tstEnvironment, stgEnvironment, prdEnvironment}
 
@@ -696,7 +703,7 @@ func (p *Placement) validateDirectoryCustomer() error {
 			return nil
 		}
 
-		return errors.New("directoryCustomerId is empty: the Google Cloud organization's Cloud Identity customer (C and eight lowercase alphanumerics), which 1-org names in the domain-restricted sharing policy; bedrock org create copies it from the root organization's placement, where it is recorded with the seed's values (gcloud organizations describe <id> --format='value(owner.directoryCustomerId)')")
+		return errors.New("directoryCustomerId is empty: the Google Cloud organization's Cloud Identity customer (C and eight lowercase alphanumerics), which 1-org names in the domain-restricted sharing policy; bedrock org create copies it from the root organization's placement, where bedrock org bootstrap records it (gcloud organizations describe <id> --format='value(owner.directoryCustomerId)' prints it)")
 	}
 	if !directoryCustomerRE.MatchString(p.DirectoryCustomerID) {
 		return errors.Newf("directoryCustomerId %q is not a Cloud Identity customer id (C and lowercase alphanumerics, C0a1b2c3d for one)", p.DirectoryCustomerID)
@@ -1025,7 +1032,8 @@ func (p *Placement) labelKeys() []string {
 }
 
 // Project is the project id under a key (boot, or an environment or shared project),
-// or the REPLACEME form until the seed or 1-org has run and the placement records it.
+// or the REPLACEME form until the placement records it: bedrock org create records the
+// boot project's, the creation the others', from 1-org's first apply.
 func (p *Placement) Project(key string) string {
 	if id, ok := p.Projects[key]; ok {
 		return id

@@ -445,8 +445,8 @@ func TestBotAccount(t *testing.T) {
 
 // TestGithubAppSteps reads what the READMEs say about the organization's GitHub Apps: all
 // three are the root organization's bootstrap's, their keys live in its root project and
-// are read by alias, nothing is added or pinned here, and the spend budget is the one
-// step a billing administrator takes by hand after the creation.
+// are read by alias, nothing is added or pinned here, and nothing on the billing account
+// stays by hand: the spend budget is the creation's.
 func TestGithubAppSteps(t *testing.T) {
 	t.Parallel()
 

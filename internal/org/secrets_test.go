@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// TestSecretPlace: each key's secret is named as the root organization's 0-bootstrap
-// names it, in the project that holds the keys: a root organization's own boot project,
-// a hosting organization's root.project; a boot project not recorded yet is refused with
+// TestSecretPlace: each key's secret is named as the root organization's bootstrap
+// names it, in the project that holds the keys: a root organization's own root project,
+// a hosting organization's root.project; a root project not recorded yet is refused with
 // the key to record.
 func TestSecretPlace(t *testing.T) {
 	t.Parallel()
@@ -23,7 +23,7 @@ func TestSecretPlace(t *testing.T) {
 		wantErr       string
 	}{
 		{
-			name:          "the infrastructure key, in the root organization's boot project",
+			name:          "the infrastructure key, in the root organization's root project",
 			secret:        InfrastructureKey,
 			placement:     Placement{Kind: RootKind, Prefix: "ex", Projects: map[string]string{"root": "ex-root-gbl-core-a1b2"}},
 			wantProject:   "ex-root-gbl-core-a1b2",
@@ -51,7 +51,7 @@ func TestSecretPlace(t *testing.T) {
 			wantContainer: "ex-root-gbl-github-deployer-key",
 		},
 		{
-			name:      "the boot project not recorded yet",
+			name:      "the root project not recorded yet",
 			secret:    InfrastructureKey,
 			placement: Placement{Kind: RootKind, Prefix: "ex"},
 			wantErr:   "placement.json records no root project (projects.root): bedrock org bootstrap records it, or pass --project",

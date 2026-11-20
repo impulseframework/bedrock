@@ -47,8 +47,8 @@ const (
 	// modelLabelWidth is the width of the model's longest label key,
 	// terraform_source_path, which every labels block aligns to.
 	modelLabelWidth = len("terraform_source_path")
-	// seedLabelCount and blockLineCount are the model's own lines in the seed's label
-	// list and in a labels block (its four labels plus the braces).
+	// seedLabelCount and blockLineCount are the model's own entries in SeedLabels' list
+	// and the model's own lines in a labels block (its four labels plus the braces).
 	seedLabelCount = 5
 	blockLineCount = 6
 )
@@ -98,7 +98,8 @@ type view struct {
 }
 
 // BootProjectID is the boot project's id for a seeded tfvars: the placement's once
-// recorded, else <prefix>-boot-gbl-core-REPLACEME for the seed to fill in.
+// recorded, else <prefix>-boot-gbl-core-REPLACEME, as a render outside a creation has
+// it: bedrock org create chooses the suffix in the organization's record (Fill).
 func (v *view) BootProjectID() string {
 	if id := v.Projects[bootProject]; id != "" {
 		return id
@@ -789,7 +790,9 @@ func (v *view) ExtraLabelKeys() string {
 	return strings.Join(parts, ", ")
 }
 
-// SeedLabels is the label list the seed step's gcloud commands pass.
+// SeedLabels is the boot project's labels as one comma-separated key=value list, the
+// form a gcloud command takes. No template takes it: the creation's seed labels the boot
+// project by API (ProjectLabels).
 func (v *view) SeedLabels() string {
 	keys := v.labelKeys()
 	parts := make([]string, 0, seedLabelCount+len(keys))
