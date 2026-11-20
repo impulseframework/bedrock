@@ -622,7 +622,11 @@ Next, each where it happens:
   4. In a terminal, here: bedrock org create <prefix> for the first hosting organization, then
      the pull request; the merge creates it as the creating identity (README.md, "Creating a
      hosting organization").
-The break-glass account keeps Folder Admin on the folder %s alone, its key for a recovery by
-hand, and BigQuery Admin on the root project for the export; nothing else is done by hand.
+The break-glass account keeps Folder Admin on the folder %s, its key for a recovery by hand,
+and on the root project BigQuery Admin, for the export, and Service Usage Consumer, for the
+quota its checks at a terminal bill to the project. It holds as well the roles it ran this
+bootstrap with, which nothing of bedrock's takes off: Organization Administrator and Folder
+Creator at the organization node, and Billing Account Administrator on the billing account
+(README.md, "Several organizations"). Nothing else is done by hand.
 `, where, org.ExportDataset, p.RootProject(), p.Prefix)
 }
