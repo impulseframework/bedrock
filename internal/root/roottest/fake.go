@@ -6,6 +6,7 @@ package roottest
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"slices"
 	"sort"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/go-playground/errors/v5"
 
+	"google.golang.org/api/googleapi"
 	"google.golang.org/grpc/codes"
 
 	"google.golang.org/grpc/status"
@@ -66,6 +68,14 @@ type Fake struct {
 	Links              map[string]string
 	Triggers           map[string]*root.Trigger
 	ConnectionPolicies map[string][]org.Binding
+	// Caller is the member the triggers are created and changed as. When it is set the
+	// stand-in keeps Cloud Build's rule for a trigger that runs as a service account:
+	// the caller holds Service Account User on that account (Policies), or the change is
+	// refused with the 403 Cloud Build answers. Unapplied is how many more such changes
+	// are refused although the caller holds the role: a grant made moments ago, which
+	// IAM has not applied yet.
+	Caller    string
+	Unapplied int
 
 	// Roles by "project/id"; Policies by resource (projects/P, folders/F,
 	// organizations/O, billingAccounts/B, serviceAccounts/E); BucketPolicies by bucket;
@@ -654,6 +664,9 @@ func (f *Fake) CreateTrigger(_ context.Context, project, location string, t *roo
 	if err := f.call("CreateTrigger", t.Name); err != nil {
 		return err
 	}
+	if err := f.actAs(t, "Create"); err != nil {
+		return err
+	}
 	f.next++
 	copied := *t
 	copied.ID = fmt.Sprintf("trigger-%d", f.next)
@@ -669,10 +682,37 @@ func (f *Fake) UpdateTrigger(_ context.Context, project, location string, t *roo
 	if err := f.call("UpdateTrigger", t.Name); err != nil {
 		return err
 	}
+	if err := f.actAs(t, "Patch"); err != nil {
+		return err
+	}
 	copied := *t
 	f.Triggers[project+"/"+location+"/"+t.Name] = &copied
 
 	return nil
+}
+
+// actAs keeps Cloud Build's rule for the caller of a trigger's creation or change (call:
+// the API method, Create or Patch). With no Caller named there is none. With one, the
+// caller holds Service Account User on the account the trigger runs as and IAM has
+// applied the grant (Unapplied, counted down by each change refused for it), or the
+// answer is the 403 Cloud Build gives, which names neither the permission nor the
+// account.
+func (f *Fake) actAs(t *root.Trigger, call string) error {
+	if f.Caller == "" {
+		return nil
+	}
+	account := t.ServiceAccount[strings.LastIndex(t.ServiceAccount, "/")+1:]
+	held := slices.ContainsFunc(f.Policies["serviceAccounts/"+account], func(b org.Binding) bool {
+		return b.Role == "roles/iam.serviceAccountUser" && slices.Contains(b.Members, f.Caller)
+	})
+	if held && f.Unapplied == 0 {
+		return nil
+	}
+	if held {
+		f.Unapplied--
+	}
+
+	return errors.Wrapf(&googleapi.Error{Code: http.StatusForbidden, Message: "The caller does not have permission"}, "cloudbuild.ProjectsLocationsTriggersService.%s(): %s", call, t.Name)
 }
 
 // ConnectionPolicy is the connection's bindings.

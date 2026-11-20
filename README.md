@@ -2675,7 +2675,9 @@ What the apply keeps true, from `placement.json`, section by section: the root p
 APIs; the runner identities `<prefix>-root-gbl-planner` and `<prefix>-root-gbl-applier`
 and the creating identity, with their roles on the root project and read roles on the
 folder, nothing higher (the applier impersonates the creating identity for a creation
-alone); the four secrets, `<prefix>-root-gbl-github-<app>-key` for each app and
+alone, and holds Service Account User on the two runners, which Cloud Build asks of
+whoever creates or changes a trigger that runs as them); the four secrets,
+`<prefix>-root-gbl-github-<app>-key` for each app and
 `<prefix>-root-gbl-github-token`, each one's alias `current` at the version the placement
 pins (`githubInfrastructureKeyVersion`, the two other keys' and `githubTokenVersion`), and
 their policies: the key

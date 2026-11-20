@@ -234,7 +234,9 @@ pull request changes what the steps read, never what they do. A run fetches
 the bedrock `placement.json` pins (`bedrockVersion`, moved by `bedrock
 upgrade`), checks, and only then plans or applies. The runners hold their
 roles on the root project and read roles on the folder; the apply impersonates
-the creating identity for a creation alone.
+the creating identity for a creation alone, and its identity holds Service
+Account User on the two runners, which Cloud Build asks of whoever creates or
+changes a trigger that runs as them.
 
 The steps follow the kind of the pin: a release pin has the fetch step alone, a
 pin at a commit adds the step that builds it with `go install`. No file here
