@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.4](https://github.com/impulseframework/bedrock/compare/v0.1.3...v0.1.4) (2026-11-20)
+
+
+### Bug Fixes
+
+* 0-bootstrap's billing grants variable and the seeded terraform.tfvars say the root organization's creating identity makes the billing grants, in step 2 of its creation; they said a billing administrator makes them by hand, named another step, and named a company's billing account ([#17](https://github.com/impulseframework/bedrock/issues/17)) ([ceaaaee](https://github.com/impulseframework/bedrock/commit/ceaaaee6ef325dfa4300217d42756fd61de5f11e))
+* a hosting organization's README and its 0-bootstrap files say that 0-bootstrap's first apply runs against the state bucket, with no local state to migrate, and that `manage_billing_iam` is false because the apply trigger applies the layer as the boot layer identity, a Billing Account User; the break-glass account holds Billing Account Administrator on the root organization's billing account ([#17](https://github.com/impulseframework/bedrock/issues/17)) ([ceaaaee](https://github.com/impulseframework/bedrock/commit/ceaaaee6ef325dfa4300217d42756fd61de5f11e))
+* a root organization's apply brings its plan and apply triggers to the steps of a new pin, where it stopped with "Error 403: The caller does not have permission": the applier holds Service Account User on the planner and on itself, which Cloud Build asks of whoever creates or changes a trigger that runs as them; the bootstrap makes the two grants, every apply keeps them, a plan lists one that is missing, and an apply that has just made a grant waits up to 7 minutes for IAM to apply it before a trigger change fails ([#17](https://github.com/impulseframework/bedrock/issues/17)) ([ceaaaee](https://github.com/impulseframework/bedrock/commit/ceaaaee6ef325dfa4300217d42756fd61de5f11e))
+* bedrock upgrade's help says why it applies 0-bootstrap itself when the pin changes kind: the apply trigger applies 0-bootstrap like every layer, but its steps in the release shape refuse a commit pin, so after a move from a release to a commit no run would reach the layer; the help said that no trigger applies 0-bootstrap ([#17](https://github.com/impulseframework/bedrock/issues/17)) ([ceaaaee](https://github.com/impulseframework/bedrock/commit/ceaaaee6ef325dfa4300217d42756fd61de5f11e))
+
 ## [0.1.3](https://github.com/impulseframework/bedrock/compare/v0.1.2...v0.1.3) (2026-11-20)
 
 
