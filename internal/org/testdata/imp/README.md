@@ -175,7 +175,8 @@ the apply trigger ran on, every layer as its own identity. The creating
 identity took its own grants off everything it made and holds nothing here.
 Since then the root organization's apply keeps, by API (a root organization
 has no layers), the organization-policy baseline on this organization's
-folders, from its record of this organization; and, from its record of the
+folders, which it set in the creation before that first push, from its
+record of this organization; and, from its record of the
 folder (`hostingOrganizations` in its `placement.json`), this organization's
 boot identity's grant on the shared secrets
 ([`0-bootstrap/README.md`](0-bootstrap/README.md), "Created by the root

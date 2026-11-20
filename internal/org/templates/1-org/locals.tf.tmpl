@@ -26,8 +26,8 @@ locals {
   # folder from 0-bootstrap. The folders exist ahead of the projects that will
   # fill them: they are where Essential Contacts attach and where the root
   # organization sets the org policy baseline, once this layer's first apply
-  # has made them, so a project takes both from its folder and none is set
-  # project by project.
+  # has made them and before this repository's first push, so a project takes
+  # both from its folder and none is set project by project.
   folders = {
     shared = "shared"
     tst    = "tst"

@@ -17,9 +17,11 @@ trigger plans it on a pull request as `{{.Prefix}}-org-gbl-plan`.
 - Not the organization-policy baseline on those folders: Google grants
   Organization Policy Administrator at the organization node and nowhere
   lower, and no identity of this organization holds a role there, so the root
-  organization `{{.RootOrganization}}` sets the baseline on the four folders
-  from this organization's record and keeps it true on every apply of its own
-  (its `README.md`, "The organization-policy baseline"). This layer records
+  organization `{{.RootOrganization}}` set the baseline on the four folders
+  from this organization's record, in the creation, right after this layer's
+  first apply and before this repository's first push, and keeps it true on
+  every apply of its own (its `README.md`, "The organization-policy
+  baseline"). This layer records
   what those policies name: the folders' ids and each environment project's
   public-invoker tag (`folder_ids`, `public_invoker_tag_key`,
   `public_invoker_tag_value`), which the creation writes into `placement.json`.
@@ -570,8 +572,11 @@ sharing with the public-invoker exception, the allowed contact domains) is
 the root organization `{{.RootOrganization}}`'s to set and to keep, since the
 role that sets an organization policy exists at the organization node alone;
 its `README.md` ("The organization-policy baseline") lists every constraint
-and its shape. Nothing of it is in this layer, and `tofu plan` here never
-shows a policy.
+and its shape. It set the baseline in the creation, once this layer's first
+apply had made the folders and before this repository's first push, so the
+apply trigger applied no layer here before the baseline stood, and its apply
+compares it on every run since. Nothing of it is in this layer, and
+`tofu plan` here never shows a policy.
 
 ## Central logging
 

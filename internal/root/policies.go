@@ -4,12 +4,13 @@
 // there (the root README, "Several organizations"), so the hosting organization's 1-org
 // makes the folders and the root organization's apply, whose applier holds the role (and
 // whose planner holds Organization Policy Viewer, both granted by the bootstrap), sets the
-// policies on them: in the creation, right after 1-org's first apply, and on every apply
-// after, from the organization's record (organizations/<prefix>/placement.json), which
-// the creation filled with the folders' ids and each environment project's public-invoker
-// tag (folders, publicInvokerTags). One constraint is set earlier and higher, on the
-// organization's own folder right after the seed (OrganizationFolderBaseline), so that
-// 1-org's first apply already runs under it.
+// policies on them: in the creation, right after 1-org's first apply and before the push
+// the organization's own apply trigger applies every layer on (create.Request.Organized),
+// and on every apply after, from the organization's record
+// (organizations/<prefix>/placement.json), which the creation filled with the folders'
+// ids and each environment project's public-invoker tag (folders, publicInvokerTags). One
+// constraint is set earlier and higher, on the organization's own folder right after the
+// seed (OrganizationFolderBaseline), so that 1-org's first apply already runs under it.
 
 package root
 

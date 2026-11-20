@@ -43,7 +43,11 @@ type Clients struct {
 
 // Request is one creation: the root organization's placement and checkout, the
 // organization to create (a record without a folder), the infrastructure app's token
-// for the repositories, and the commit the run builds.
+// for the repositories, the commit the run builds, and what the root organization's
+// apply runs at the two steps the organization policies are due, which are the applier's
+// to set and not the creating identity's: the one on the organization's folder once the
+// seed stands, before the first applies (Seeded), and the baseline on the four folders
+// once 1-org's first apply has made them, before the push (Organized).
 type Request struct {
 	Root    *org.Placement
 	RootDir string
@@ -167,9 +171,9 @@ const (
 // has, since a folder's administrator creates no project: Project Creator for the boot
 // project and 1-org's projects, and Tag Administrator for the tag keys 1-org makes in the
 // environment projects. Its Folder Admin, a creator's, covers the rest; the withdrawal
-// takes all of it off. The organization policies on the folder are not the creating
-// identity's to set: the root organization's apply sets them as the applier
-// (Request.Seeded).
+// takes all of it off. The organization policies on the folder and on the four folders
+// 1-org makes beneath it are not the creating identity's to set: the root organization's
+// apply sets them as the applier (Request.Seeded, Request.Organized).
 var creatingFolderRoles = []string{bootProjectRoleCreator, tagAdminRole}
 
 // services are the APIs the creation enables in a boot project before its 0-bootstrap
@@ -387,9 +391,13 @@ func (f *creation) seed(ctx context.Context, g Google, h *org.Placement) (*org.S
 }
 
 // establish builds the foundation on the seed: the rendered repository, the repository
-// on GitHub, the first applies of 0-bootstrap and 1-org, the render again with the
-// projects 1-org made, the push, the creating identity's withdrawal, the marker and the
-// hand-off.
+// on GitHub, the first applies of 0-bootstrap and 1-org, the organization-policy baseline
+// on the folders 1-org made (set by the root organization's apply, Request.Organized), the
+// apps domain's zone, the render again with the projects 1-org made, the push, the
+// creating identity's withdrawal, the marker and the hand-off. The baseline comes before
+// the push because the organization's own apply trigger applies every layer from the push
+// on; a creation that stopped and runs again reaches the step again, where a policy that
+// stands is left as it is.
 func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, seed *org.Seed, number string) (*Result, error) {
 	dir, err := os.MkdirTemp("", "bedrock-create-"+h.Prefix+"-")
 	if err != nil {
