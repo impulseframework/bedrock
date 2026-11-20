@@ -64,7 +64,9 @@ type BootstrapResult struct {
 	Report    *Report
 }
 
-// The roles the bootstrap grants by hand's measure and takes off.
+// The break-glass account's roles the bootstrap names itself: Folder Admin, which it
+// grants the account on the organization's folder and leaves, and Owner, which Google
+// gave the account as the root project's creator and the withdrawal takes off.
 const (
 	folderAdminRole = "roles/resourcemanager.folderAdmin"
 	ownerRole       = "roles/owner"
