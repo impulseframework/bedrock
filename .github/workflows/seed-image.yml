@@ -1,0 +1,76 @@
+# The seeded Dockerfile's last stage: what every new application's image is built on
+# (internal/render/templates/root/Dockerfile.tmpl, the image its last FROM names). bedrock
+# render writes that Dockerfile once, with the digests this repository carries, and an
+# application's CI scans its image on every pull request and fails at a finding of
+# severity high or above (the image check of the ci.yml the framework renders, a required
+# check). The base's packages are in that image, so a base that has gone stale here fails
+# the first pull request of every new application, on the seed alone.
+#
+# This scans that base as an application's image check scans the image, with the same
+# action and the same inputs: on every pull request, a release's among them, on a push to
+# master, every day and on demand. The pin fixes the engine, not what it knows: Grype
+# downloads its vulnerability database when the job runs, so a run finds what was published
+# since the digest was written. The fix for a finding is the digest the base's tag has that
+# day, written in the template with the goldens and the fixtures that repeat it (README.md,
+# "Development"). A test holds the template's last FROM, the lines that read and tag it
+# here, the triggers and the scan's inputs to the framework's (internal/render,
+# TestSeedImageScan); the action's own pin is this repository's, which dependabot moves.
+#
+# What this does not see: the other stages' images (Go, bun, node) build the application
+# and are not in its image, so they are not scanned. The Go stage's toolchain does reach
+# the image, as the standard library inside the binaries, which an application's scan
+# reads by its Go version: a Go release that fixes a finding of severity high is taken up
+# by a new digest of the Go image, in the template and in goImage (README.md,
+# "Development"), and nothing here says when.
+name: seed image
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [master]
+  schedule:
+    - cron: '30 13 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: seed-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  base:
+    name: the seeded image's base
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The image the seeded Dockerfile's last stage is built on
+        # The last FROM of the template, which names the image by digest and nothing else
+        # (no stage name, no template action), pulled and tagged so the scan below reads a
+        # local image by name, as an application's image check does.
+        run: |
+          set -euo pipefail
+          image="$(awk '$1 == "FROM" { image = $2 } END { print image }' internal/render/templates/root/Dockerfile.tmpl)"
+          case "$image" in
+            *@sha256:*) ;;
+            *)
+              echo "::error::the last FROM of the seeded Dockerfile's template names no image by digest: '$image'"
+              exit 1
+              ;;
+          esac
+          echo "The seeded image's base: $image"
+          docker pull "$image"
+          docker tag "$image" seed-base:ci
+      - name: Grype
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: seed-base:ci
+          fail-build: true
+          severity-cutoff: high
+          output-format: table

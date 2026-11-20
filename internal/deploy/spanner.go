@@ -123,7 +123,7 @@ func NewSpanner(out io.Writer) SpannerFunc {
 // it sends again after a transient answer (retry.go).
 func NewSpannerAs(out io.Writer) SpannerAsFunc {
 	return func(ctx context.Context, identity string) (Spanner, error) {
-		source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
+		source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{
 			TargetPrincipal: identity,
 			Scopes:          []string{cloudPlatformScope},
 		})

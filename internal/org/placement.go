@@ -176,8 +176,9 @@ type Placement struct {
 	// GithubAppPrefix is the word the three GitHub Apps' names start with
 	// (<word>-infrastructure, <word>-deployer, <word>-release), when it is not the GitHub
 	// organization's login: for a login that would make a name longer than GitHub's 34
-	// characters, or names that are taken. A root organization's, which makes the apps;
-	// left out otherwise.
+	// characters, or names that are taken. A root organization's, which makes the apps; a
+	// hosting organization's placement carries its root organization's, filled in with
+	// the App IDs when the organization is recorded (Fill), since the apps are the same.
 	GithubAppPrefix string `json:"githubAppPrefix,omitempty"`
 	// GithubReleaseAppID is the App ID of the release GitHub App, the only actor that
 	// creates, moves or deletes a release tag of an application's repository: digits,
@@ -588,9 +589,19 @@ func (p *Placement) Validate() error {
 	if !githubLoginRE.MatchString(p.GithubOrganization) {
 		return errors.Newf("githubOrganization %q is not a GitHub organization's login", p.GithubOrganization)
 	}
-	for _, r := range p.Regions {
+	// The branch is written as it is into the root organization's workflow, the triggers
+	// and every application's placement (register), whose operations workflow writes it too.
+	if err := derive.ValidateBranch("githubDefaultBranch", p.GithubDefaultBranch); err != nil {
+		return err
+	}
+	for i, r := range p.Regions {
 		if r.Name == "" || !regionCodeRE.MatchString(r.Code) {
 			return errors.Newf("region %q needs a name and a three-character code", r.Name)
+		}
+		// An application's placement takes the organization's regions (register), and
+		// its operations workflow writes the primary's name as it is.
+		if err := derive.ValidateRegionName(fmt.Sprintf("regions[%d].name", i), r.Name); err != nil {
+			return err
 		}
 	}
 	for _, validate := range validators {

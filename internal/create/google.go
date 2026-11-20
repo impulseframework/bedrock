@@ -126,13 +126,56 @@ type google struct {
 	secrets      *secretmanager.Client
 	dns          *dns.Service
 	budgets      budgets.Client
-	opts         []option.ClientOption
-	regional     map[string]*secretmanager.Client
+	// secretOpts are the options the Secret Manager client opened with; a regional one
+	// opens with them too.
+	secretOpts []option.ClientOption
+	regional   map[string]*secretmanager.Client
 }
+
+// googleOptions are the options each client opens with, client by client. The exported
+// constructors give every client the same ones, the storage client apart
+// (NewGoogleBilledTo says why). A test gives each client that holds a connection one of
+// its own, and reads from it whether the client was closed: each gRPC client a gRPC
+// connection, the storage client an HTTP client. The REST clients hold no connection and
+// are given none. A test makes one opening fail by giving that client options Google's
+// transport refuses.
+type googleOptions struct {
+	folders, projects, iam, billing, services, servicesBeta, storage, secrets, dns, budgets []option.ClientOption
+}
+
+// optionsForAll gives every client opts, and the storage client storageOpts. A client
+// left out of it would open with the process's own credentials where the others open as
+// the identity the options name.
+func optionsForAll(opts, storageOpts []option.ClientOption) *googleOptions {
+	return &googleOptions{
+		folders: opts, projects: opts, iam: opts, billing: opts, services: opts, servicesBeta: opts,
+		storage: storageOpts, secrets: opts, dns: opts, budgets: opts,
+	}
+}
+
+// The impersonation and the constructors of the set's ten clients, as NewGoogleAs, the
+// set's opening and a regional secret's client call them. Each variable holds Google's or
+// the module's constructor itself, and nothing but a test assigns one. A test puts a
+// function in its place that records what it is called with: the identity, the scopes and
+// the options a client opens with show at a call alone, and a call needs credentials a
+// test has none of.
+var (
+	impersonatedTokenSource = impersonate.CredentialsTokenSource
+	newFoldersClient        = resourcemanager.NewFoldersClient
+	newProjectsClient       = resourcemanager.NewProjectsClient
+	newIAMAdminClient       = admin.NewIamClient
+	newBillingService       = cloudbilling.NewService
+	newServiceUsageService  = serviceusage.NewService
+	newServiceUsageBeta     = serviceusagebeta.NewService
+	newStorageClient        = storage.NewClient
+	newSecretManagerClient  = secretmanager.NewClient
+	newDNSService           = dns.NewService
+	newBudgetsClient        = budgets.New
+)
 
 // NewGoogleAs opens the Google clients as the identity.
 func NewGoogleAs(ctx context.Context, identity string) (Google, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
+	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
@@ -143,7 +186,7 @@ func NewGoogleAs(ctx context.Context, identity string) (Google, error) {
 // NewGoogle opens the Google clients with the process's default credentials, or with the
 // options given (a token source); the root organization's engine builds on it.
 func NewGoogle(ctx context.Context, opts ...option.ClientOption) (Google, error) {
-	return newGoogle(ctx, opts, opts)
+	return newGoogle(ctx, optionsForAll(opts, opts))
 }
 
 // NewGoogleBilledTo opens the Google clients with the process's default credentials,
@@ -153,49 +196,70 @@ func NewGoogle(ctx context.Context, opts ...option.ClientOption) (Google, error)
 // it appends an HTTP client of its own to the options, which Google's transport refuses
 // beside a quota project, and Cloud Storage asks a person's credentials for none.
 func NewGoogleBilledTo(ctx context.Context, quotaProject string) (Google, error) {
-	if quotaProject == "" {
-		return NewGoogle(ctx)
-	}
-
-	return newGoogle(ctx, []option.ClientOption{option.WithQuotaProject(quotaProject)}, nil)
+	return newGoogle(ctx, billedToOptions(quotaProject))
 }
 
-// newGoogle opens the clients, the storage client with its own options.
-func newGoogle(ctx context.Context, opts, storageOpts []option.ClientOption) (Google, error) {
-	g := &google{opts: opts, regional: map[string]*secretmanager.Client{}}
-	var err error
-	if g.folders, err = resourcemanager.NewFoldersClient(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "resourcemanager.NewFoldersClient()")
+// billedToOptions are the options NewGoogleBilledTo opens each client with: the quota
+// project for every client but the storage client, which is handed nothing, and nothing
+// for any client when there is no quota project.
+func billedToOptions(quotaProject string) *googleOptions {
+	if quotaProject == "" {
+		return optionsForAll(nil, nil)
 	}
-	if g.projects, err = resourcemanager.NewProjectsClient(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "resourcemanager.NewProjectsClient()")
-	}
-	if g.iam, err = admin.NewIamClient(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "admin.NewIamClient()")
-	}
-	if g.billing, err = cloudbilling.NewService(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "cloudbilling.NewService()")
-	}
-	if g.services, err = serviceusage.NewService(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "serviceusage.NewService()")
-	}
-	if g.servicesBeta, err = serviceusagebeta.NewService(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "serviceusagebeta.NewService()")
-	}
-	if g.storage, err = storage.NewClient(ctx, storageOpts...); err != nil {
-		return nil, errors.Wrap(err, "storage.NewClient()")
-	}
-	if g.secrets, err = secretmanager.NewClient(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "secretmanager.NewClient()")
-	}
-	if g.dns, err = dns.NewService(ctx, opts...); err != nil {
-		return nil, errors.Wrap(err, "dns.NewService()")
-	}
-	if g.budgets, err = budgets.New(ctx, opts...); err != nil {
+
+	return optionsForAll([]option.ClientOption{option.WithQuotaProject(quotaProject)}, nil)
+}
+
+// newGoogle opens the clients, each with its own options. When one of them cannot be
+// opened, the ones opened before it are closed: the caller is answered no client beside
+// the error, and could close none.
+func newGoogle(ctx context.Context, opts *googleOptions) (Google, error) {
+	g := &google{secretOpts: opts.secrets, regional: map[string]*secretmanager.Client{}}
+	if err := g.open(ctx, opts); err != nil {
+		_ = g.Close()
+
 		return nil, err
 	}
 
 	return g, nil
+}
+
+// open opens the clients in turn, each with its own options, and stops at the first that
+// cannot be opened, which leaves the ones before it open and the ones after it nil.
+func (g *google) open(ctx context.Context, opts *googleOptions) error {
+	var err error
+	if g.folders, err = newFoldersClient(ctx, opts.folders...); err != nil {
+		return errors.Wrap(err, "resourcemanager.NewFoldersClient()")
+	}
+	if g.projects, err = newProjectsClient(ctx, opts.projects...); err != nil {
+		return errors.Wrap(err, "resourcemanager.NewProjectsClient()")
+	}
+	if g.iam, err = newIAMAdminClient(ctx, opts.iam...); err != nil {
+		return errors.Wrap(err, "admin.NewIamClient()")
+	}
+	if g.billing, err = newBillingService(ctx, opts.billing...); err != nil {
+		return errors.Wrap(err, "cloudbilling.NewService()")
+	}
+	if g.services, err = newServiceUsageService(ctx, opts.services...); err != nil {
+		return errors.Wrap(err, "serviceusage.NewService()")
+	}
+	if g.servicesBeta, err = newServiceUsageBeta(ctx, opts.servicesBeta...); err != nil {
+		return errors.Wrap(err, "serviceusagebeta.NewService()")
+	}
+	if g.storage, err = newStorageClient(ctx, opts.storage...); err != nil {
+		return errors.Wrap(err, "storage.NewClient()")
+	}
+	if g.secrets, err = newSecretManagerClient(ctx, opts.secrets...); err != nil {
+		return errors.Wrap(err, "secretmanager.NewClient()")
+	}
+	if g.dns, err = newDNSService(ctx, opts.dns...); err != nil {
+		return errors.Wrap(err, "dns.NewService()")
+	}
+	if g.budgets, err = newBudgetsClient(ctx, opts.budgets...); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Budgets lists the billing account's budgets.
@@ -621,8 +685,8 @@ func (g *google) secretClient(ctx context.Context, secret string) (*secretmanage
 	if client, ok := g.regional[location]; ok {
 		return client, nil
 	}
-	opts := append([]option.ClientOption{option.WithEndpoint("secretmanager." + location + ".rep.googleapis.com:443")}, g.opts...)
-	client, err := secretmanager.NewClient(ctx, opts...)
+	opts := append([]option.ClientOption{option.WithEndpoint("secretmanager." + location + ".rep.googleapis.com:443")}, g.secretOpts...)
+	client, err := newSecretManagerClient(ctx, opts...)
 	if err != nil {
 		return nil, errors.Wrapf(err, "secretmanager.NewClient(): %s", location)
 	}
@@ -631,14 +695,28 @@ func (g *google) secretClient(ctx context.Context, secret string) (*secretmanage
 	return client, nil
 }
 
+// Close closes the clients that hold a connection: the regional Secret Manager clients,
+// then the rest, the last opened first. A client that was never opened, in a set whose
+// opening failed before it, is nil and is passed over.
 func (g *google) Close() error {
 	for _, c := range g.regional {
 		_ = c.Close()
 	}
-	_ = g.secrets.Close()
-	_ = g.storage.Close()
-	_ = g.iam.Close()
-	_ = g.projects.Close()
+	if g.secrets != nil {
+		_ = g.secrets.Close()
+	}
+	if g.storage != nil {
+		_ = g.storage.Close()
+	}
+	if g.iam != nil {
+		_ = g.iam.Close()
+	}
+	if g.projects != nil {
+		_ = g.projects.Close()
+	}
+	if g.folders == nil {
+		return nil
+	}
 	if err := g.folders.Close(); err != nil {
 		return errors.Wrap(err, "resourcemanager.FoldersClient.Close()")
 	}

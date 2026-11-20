@@ -2,15 +2,20 @@ package org
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"google.golang.org/api/apikeys/v2"
 	"google.golang.org/api/option"
 )
 
@@ -254,6 +259,76 @@ func TestUnrestrictedKeys(t *testing.T) {
 				t.Errorf("%d project(s) read, want %d", len(fake.billing), len(Environments)-len(tt.unrecord))
 			}
 		})
+	}
+}
+
+// TestNewKeyListerBillsEachListToTheProjectItReads: NewKeyLister opens the API Keys
+// service with no option, so with the process's default credentials, and each list of
+// the client it answers arrives with the project it reads in the header that names a
+// call's quota project, the project the list is billed to. The service's constructor is
+// the package's variable, which holds a function here that records the options
+// NewKeyLister's client calls it with, and opens the service at a server of the test's
+// own, which records each list's path and that header. Two projects are listed, so a
+// header that named one project for every list would show. The process's default
+// credentials are named by a file that is not there, so a client opened by any other way
+// than the variable cannot be opened at all.
+func TestNewKeyListerBillsEachListToTheProjectItReads(t *testing.T) {
+	// The constructor swapped below is the package's and the variable the process's, so
+	// the test runs alone: t.Setenv forbids t.Parallel.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
+
+	type list struct {
+		path, billedTo string
+	}
+	var (
+		mu    sync.Mutex
+		lists []list
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		lists = append(lists, list{path: r.URL.Path, billedTo: r.Header.Get("X-Goog-User-Project")})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	t.Cleanup(srv.Close)
+
+	library := newKeysService
+	var opened [][]option.ClientOption
+	newKeysService = func(ctx context.Context, opts ...option.ClientOption) (*apikeys.Service, error) {
+		opened = append(opened, opts)
+
+		return library(ctx, option.WithEndpoint(srv.URL), option.WithoutAuthentication(), option.WithHTTPClient(srv.Client()))
+	}
+	t.Cleanup(func() {
+		newKeysService = library
+	})
+
+	lister, err := NewKeyLister(t.Context())
+	if err != nil {
+		t.Fatalf("NewKeyLister() = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = lister.Close()
+	})
+	if diff := cmp.Diff([][]option.ClientOption{nil}, opened, cmpopts.EquateEmpty()); diff != "" {
+		t.Errorf("NewKeyLister() opened the API Keys service other than once, with no option (-want +got):\n%s", diff)
+	}
+
+	const dev, tst = "imr-example-dev-core-9c1d", "imr-example-tst-core-4e2a"
+	for _, project := range []string{dev, tst} {
+		if _, err := lister.ProjectKeys(t.Context(), project); err != nil {
+			t.Fatalf("ProjectKeys(%s) = %v", project, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []list{
+		{path: "/v2/projects/" + dev + "/locations/global/keys", billedTo: dev},
+		{path: "/v2/projects/" + tst + "/locations/global/keys", billedTo: tst},
+	}
+	if diff := cmp.Diff(want, lists, cmp.AllowUnexported(list{})); diff != "" {
+		t.Errorf("the lists of the client NewKeyLister() opened arrived other than each billed to the project it reads (-want +got):\n%s", diff)
 	}
 }
 

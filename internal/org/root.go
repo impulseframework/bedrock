@@ -199,6 +199,9 @@ func (p *Placement) ValidateDraft() error {
 			return errors.Newf("%s is empty", name)
 		}
 	}
+	if err := derive.ValidateBranch("githubDefaultBranch", p.GithubDefaultBranch); err != nil {
+		return err
+	}
 	if !projectNumberRE.MatchString(p.OrganizationID) {
 		return errors.Newf("organizationId %q is not an organization's numeric id", p.OrganizationID)
 	}
@@ -210,6 +213,9 @@ func (p *Placement) ValidateDraft() error {
 	}
 	if len(p.Regions) != 1 || p.Regions[0].Name == "" || !regionCodeRE.MatchString(p.Regions[0].Code) {
 		return errors.New("regions needs one entry, the region the connection, the triggers and the state bucket are in, with its name and a three-character code (us-central1, uc1)")
+	}
+	if err := derive.ValidateRegionName("regions[0].name", p.Regions[0].Name); err != nil {
+		return err
 	}
 	for _, validate := range []func() error{p.validateDirectoryCustomer, p.validateAppNames, p.validateApprovingReviews, p.validateKeyHolding, p.validateCiLargeRunner, p.validateDomains, p.validateMonthlyBudget} {
 		if err := validate(); err != nil {

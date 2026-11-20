@@ -58,14 +58,16 @@ func (zonesByName) Close() error {
 	return nil
 }
 
-// world answers name servers and CNAMEs from maps; a name a map lacks is not found.
+// world answers name servers and CNAMEs from maps; a name a map lacks is not found. The
+// check asks each name with its trailing dot; the name servers are keyed without it, and
+// the CNAMEs with it, as a zone spells a record's name.
 type world struct {
 	ns    map[string]string
 	cname map[string]string
 }
 
 func (w world) LookupNS(_ context.Context, name string) ([]*net.NS, error) {
-	if host, ok := w.ns[name]; ok {
+	if host, ok := w.ns[strings.TrimSuffix(name, ".")]; ok {
 		return []*net.NS{{Host: host}}, nil
 	}
 

@@ -526,15 +526,23 @@ func NewStorageAsWriter(ctx context.Context, identity string) (Store, error) {
 	return storageAs(ctx, identity, "https://www.googleapis.com/auth/devstorage.read_write")
 }
 
+// newStorageClient is the Cloud Storage client's constructor, as storageAs calls it:
+// Google's own, which nothing but a test assigns. A test puts a function in its place
+// that records the options NewStorageAs and NewStorageAsWriter open their client with:
+// an option beside the identity's token source could send the client's calls somewhere
+// else, which a call in a test, ended at the refusal of the token, does not show.
+var newStorageClient = storage.NewClient
+
+// storageAs opens Cloud Storage as the identity, whose token is asked for with the scope.
 func storageAs(ctx context.Context, identity, scope string) (Store, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
+	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{
 		TargetPrincipal: identity,
 		Scopes:          []string{scope},
 	})
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
-	client, err := storage.NewClient(ctx, option.WithTokenSource(source))
+	client, err := newStorageClient(ctx, option.WithTokenSource(source))
 	if err != nil {
 		return nil, errors.Wrap(err, "storage.NewClient()")
 	}

@@ -171,7 +171,7 @@ func TestEngineImmutableReleasesRefused(t *testing.T) {
 			w := newGitHubWorld(t, libraryPlacement(t))
 			clients := w.refusing(t, map[string]int{tt.refused: http.StatusForbidden})
 			var out bytes.Buffer
-			report, err := root.Run(context.Background(), clients, &root.Request{Placement: w.p, Mode: tt.mode, GitHubToken: "test-token", SealKeys: w.keys}, &out)
+			_, err := root.Run(context.Background(), clients, &root.Request{Placement: w.p, Mode: tt.mode, GitHubToken: "test-token", SealKeys: w.keys}, &out)
 			if err == nil {
 				t.Fatalf("Run() error = nil, want the refusal:\n%s", out.String())
 			}
@@ -180,7 +180,7 @@ func TestEngineImmutableReleasesRefused(t *testing.T) {
 					t.Errorf("Run() error = %v, want it to say %q", err, want)
 				}
 			}
-			if report != nil && report.Applied != 0 {
+			if report := stoppedReport(t, err); report.Applied != 0 {
 				t.Errorf("the run applied %d change(s) before the refusal, want none", report.Applied)
 			}
 			if got := w.policy(); got != "" {

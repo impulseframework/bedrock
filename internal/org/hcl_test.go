@@ -10,10 +10,13 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/zclconf/go-cty/cty"
+
+	"github.com/impulseframework/bedrock/internal/render"
 )
 
-// TestRenderedOrganizationParsesAsHCL parses every rendered .tf file of the organization's layers under
-// testdata, so a template whose rendering is not valid HCL fails here and not in an apply.
+// TestRenderedOrganizationParsesAsHCL parses every rendered .tf and .tfvars file of the organization's
+// layers under testdata, so a template whose rendering is not valid HCL fails here and not in an apply.
 func TestRenderedOrganizationParsesAsHCL(t *testing.T) {
 	t.Parallel()
 
@@ -36,7 +39,7 @@ func TestRenderedOrganizationParsesAsHCL(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if !d.IsDir() && strings.HasSuffix(path, ".tf") {
+				if !d.IsDir() && render.IsHCL(path) {
 					files = append(files, path)
 				}
 
@@ -213,6 +216,74 @@ func findLifecycle(t *testing.T, body *hclsyntax.Body, address string) *hclsynta
 		return nil
 	}
 	t.Fatalf("no resource %s", address)
+
+	return nil
+}
+
+// TestPlacementWordsInTheLayers: what the placement says in its own words reaches the
+// layers as it was written. A label's value and a contact domain that hold a character
+// a string literal escapes (a double quote, a backslash, an interpolation) are the same
+// text in the rendered locals and variables, and every rendered file parses, which the
+// render itself holds its files to.
+func TestPlacementWordsInTheLayers(t *testing.T) {
+	t.Parallel()
+
+	texts := map[string]string{
+		"a double quote":   `the "platform" team`,
+		"a backslash":      `kept under C:\keys`,
+		"an interpolation": "billed to ${var.cost_center} and %{ if true }more%{ endif }",
+		"a line break":     "the first line\nand the second",
+	}
+	for name, text := range texts {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			p := testPlacement(t)
+			p.Labels = map[string]string{"note": text}
+			p.ContactDomains = []string{"@" + text}
+			files, err := Render(p)
+			if err != nil {
+				t.Fatalf("Render() error = %v", err)
+			}
+			contents := map[string][]byte{}
+			for _, f := range files {
+				contents[f.Path] = f.Content
+				if err := render.Parses(f.Path, f.Content); err != nil {
+					t.Errorf("%v", err)
+				}
+			}
+			labels := layerAttribute(t, contents, "2-shr/locals.tf", "locals", "labels")
+			value, diags := labels.Value(&hcl.EvalContext{Variables: map[string]cty.Value{"local": cty.ObjectVal(map[string]cty.Value{"environment": cty.StringVal("shr")})}})
+			if diags.HasErrors() || value.AsValueMap()["note"].AsString() != text {
+				t.Errorf("2-shr's labels.note = %#v (%s), want %q", value, diags.Error(), text)
+			}
+			value, diags = layerAttribute(t, contents, "1-org/variables.tf", "variable", "default").Value(nil)
+			if diags.HasErrors() || value.LengthInt() != 1 || value.AsValueSlice()[0].AsString() != "@"+text {
+				t.Errorf("1-org's allowed_contact_domains default = %#v (%s), want %q alone", value, diags.Error(), "@"+text)
+			}
+		})
+	}
+}
+
+// layerAttribute is the expression of the attribute in the first block of the type that
+// holds it in the rendered file.
+func layerAttribute(t *testing.T, contents map[string][]byte, path, blockType, name string) hclsyntax.Expression {
+	t.Helper()
+
+	file, diags := hclsyntax.ParseConfig(contents[path], path, hcl.InitialPos)
+	if diags.HasErrors() {
+		t.Fatalf("%s: %s", path, diags.Error())
+	}
+	body, ok := file.Body.(*hclsyntax.Body)
+	if !ok {
+		t.Fatalf("%s is not native HCL syntax", path)
+	}
+	for _, block := range body.Blocks {
+		if attr, ok := block.Body.Attributes[name]; ok && block.Type == blockType {
+			return attr.Expr
+		}
+	}
+	t.Fatalf("%s holds no %s in a %s block", path, name, blockType)
 
 	return nil
 }

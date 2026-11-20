@@ -203,7 +203,10 @@ and what its absence means:
   restores them from production's backups. From the organization's promotion order. Absent,
   the last of `environments`.
 - `regions`: the Cloud Run regions, each a `name` and the `code` regional resources are
-  named by; the first is the primary. From the organization's `regions`. Required.
+  named by; the first is the primary. From the organization's `regions`. Required. A
+  `name` is a region's name (lowercase letters, digits and dashes, a letter first, a
+  letter or a digit last): the operations workflow writes the primary's as it is, and an
+  organization's `regions` are held to the same.
 - `appsDomain`: the domain the application's hostnames are under: `<label>-<env>.<domain>`,
   and `<label>.<domain>` in production, the label being the site's (`hostnames`, below; the
   code by default). From the organization's `appsDomain`. Required.
@@ -252,7 +255,10 @@ and what its absence means:
   below); a placement written before that image names Cloud Run's public sample,
   `us-docker.pkg.dev/cloudrun/container/hello`, and keeps it. Required.
 - `defaultBranch`: the branch pull requests target and releases are cut on. From the
-  organization's `githubDefaultBranch`. Required.
+  organization's `githubDefaultBranch`. Required, and a name the workflows hold between
+  quotes and in a command line as it is: letters, digits, dots, dashes, underscores and
+  slashes, a letter or a digit first. A placement whose branch is anything else is refused
+  when it is read, as an organization's `githubDefaultBranch` is.
 - `repository`: the application repository's name, the `source_repo` label every
   resource carries: the last segment of the application's module path (a module under
   `github.com/<organization>` is its repository), the name `1-org` creates the repository
@@ -282,7 +288,9 @@ and what its absence means:
   `bedrock rollback`, `bedrock backups`, `bedrock maintenance`),
   names the environment's identity provider and operations identity. From the organization's
   `projects` and `projectNumbers`, 1-org's outputs. An environment without an entry
-  cannot be operated from GitHub.
+  cannot be operated from GitHub. An `id` is a project's id (lowercase letters, digits and
+  dashes, a letter first, a letter or a digit last) and a `number` is digits: the workflow
+  writes both as they are.
 - `approvals`: the environments whose release waits for a person's approval in Cloud
   Build. Not written. Absent, every environment but the first.
 - `maintenance`: each environment's maintenance window, the time it may take a release
@@ -450,6 +458,23 @@ application repository's `infrastructure` directory, or the one application laye
 `3-app` of an infrastructure root; `--out` overrides. The application is read from the
 repository root when the stack is in its infrastructure directory, else from the working
 directory; `--app` overrides.
+
+Words that come from the code or from the placement (a field's doc comment, which is a
+secret's purpose; a label; a reason) are written into the `.tf` and `.tfvars` files as the
+place they land in takes them. In a string they are an OpenTofu string literal's text
+whatever they hold: a double quote, a backslash, a line break, `${` and `%{` each arrive
+as text. In a comment they stay in the comment: in a line comment a line break is written
+as a space, and in a block comment nothing they hold closes it. In a heredoc they are its
+text, and one that would leave a line that is the heredoc's end word is refused. A word
+the stack writes as a name is held to being one before any file is rendered: a variable's
+name, and the names an auth and its sign-in registrations give their variables (a letter
+or an underscore first, then letters, digits, underscores and dashes). An outlet's prefix
+or a route in a Cloud Armor expression holds no single quote, backslash or control
+character. Every
+such file is then parsed as OpenTofu parses it, before anything is written: a file that
+does not parse is refused with its name, the line and the parser's own sentence, by
+`render` and by `check` alike, since `check` renders the same files, and by `org render`
+and `org check` for an organization's layers.
 
 The render ends by reading the schema migrations, and the seed directory beside them, by
 the sequence rule the migrate command needs (`bedrock migration check`, below). The stack
@@ -2602,7 +2627,11 @@ like every later one. The root organization is bedrock's own bookkeeping: its
 through the engine the bootstrap made it with (`org plan` on a pull request, which says
 what the merge would change; `org apply` on the merge, which makes it so and creates the
 hosting organizations recorded), where a hosting organization's triggers plan and apply
-OpenTofu layers.
+OpenTofu layers. A run of that engine that stops on an error (a plan, an apply, a check,
+the bootstrap) first says what it had gathered before the stop, as incomplete (the changes
+it had listed, the findings and the notes, and for an apply how many changes it had made),
+and then the error. A plan that stops puts the same, with the error, into its comment on
+the pull request, where a finished plan's would stand.
 
 `org bootstrap <dir>` makes the root organization, placement and files, in one run at a
 terminal with the break-glass account's Application Default Credentials (`gcloud auth
@@ -2685,7 +2714,8 @@ what is the new organization's own to decide (`appsDomain`, `spanner.config`, tw
 with the primary the root organization's, `teamGroups`, `contactDomains`, and
 `entitlementDurations`, `labels` and `vanityDomains` as wanted); run again, it fills in
 what the root organization supplies (the Google Cloud organization and billing account,
-the GitHub organization with its Bot Account, default branch and three App IDs, the
+the GitHub organization with its Bot Account, default branch, three App IDs and, where the
+root organization names one, the word the Apps' names start with (`githubAppPrefix`), the
 Cloud Build authorization, the break-glass account, the bedrock pin and `root`), chooses
 the boot project's four-hex suffix, lists the organization in `placement.json`
 (`hostingOrganizations`) and renders, printing what the merge creates. The merge's `org
@@ -3535,3 +3565,25 @@ command surface. `welcome` is the welcome image's program, a second command of t
 module that imports the standard library alone (The welcome image, above). Every rendered file carries a comment naming what it comes from; a
 change to a template is a change to the goldens, and the render test reads every golden
 file, comments included.
+
+The seeded Dockerfile names its base images by digest
+(`internal/render/templates/root/Dockerfile.tmpl`), and nothing moves a digest but a
+change to that file: `cgr.dev/chainguard/go:latest` (also the image a commit pin is built
+in, `goImage`, one digest for both), `docker.io/oven/bun:1`, `docker.io/library/node:24`
+and `cgr.dev/chainguard/static:latest`. The last is what the application's image is built
+on, so its packages are in the image, and an application's CI fails its image check at a
+finding of severity high or above: a base gone stale here fails every new application's
+first pull request, on the seed alone. The `seed image` workflow
+(`.github/workflows/seed-image.yml`) scans that base with Grype at the same cutoff on
+every pull request, on a push to master, every day and on demand. The fix for a finding is
+the digest the tag has that day, written in the template, then
+`go test ./internal/render -update` for the goldens and the same digest in the fixture
+applications' Dockerfiles (`internal/derive/testdata`), which a test holds to the
+template's. The Go, bun and static pins are the digest of the tag's linux/amd64 image, and
+the node pin is the tag's own, an index: `skopeo inspect --raw
+docker://cgr.dev/chainguard/static:latest` lists the tag's images with no credentials, and
+the same command piped to `sha256sum` gives the tag's own digest. The workflow does not see
+the Go stage's toolchain, which reaches the image as the standard library inside the
+binaries: a Go release that fixes a finding of severity high is taken up by a new digest of
+the Go image, in the template and in `goImage`. An application seeded earlier keeps its
+Dockerfile, which is its own, and moves a digest there by hand.

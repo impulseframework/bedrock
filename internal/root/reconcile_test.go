@@ -94,6 +94,23 @@ func whats(r *root.Report) []string {
 	return out
 }
 
+// stoppedReport is the report of what a run had gathered before it stopped in one of its
+// sections, which the run's error carries; it fails the test on an error that carries
+// none.
+func stoppedReport(t *testing.T, err error) *root.Report {
+	t.Helper()
+
+	var stopped *root.StoppedError
+	if !errors.As(err, &stopped) {
+		t.Fatalf("Run() error = %v, want the error of a run that stopped in a section, which carries its report", err)
+	}
+	if stopped.Report == nil {
+		t.Fatal("the stopped run's error carries no report, and what the run had gathered is lost")
+	}
+
+	return stopped.Report
+}
+
 func containsAll(t *testing.T, got []string, wants ...string) {
 	t.Helper()
 
@@ -342,6 +359,100 @@ func TestEngineRefusals(t *testing.T) {
 	unrecorded.Projects = map[string]string{}
 	if _, err := root.Run(context.Background(), w.clients, &root.Request{Placement: &unrecorded, Mode: root.Check}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "placement.json records no root project (projects.root): bedrock org bootstrap records it") {
 		t.Errorf("no project: error = %v", err)
+	}
+}
+
+// TestEngineClosesWhatItOpened: a run refused while it opens its clients closes the ones
+// it had opened before the refusal, each once, and passes over the ones it never opened.
+func TestEngineClosesWhatItOpened(t *testing.T) {
+	t.Parallel()
+
+	refusal := errors.New("refused in this test")
+	tests := []struct {
+		name    string
+		arrange func(c *root.Clients)
+		// want is how many clients the run had opened when it was refused.
+		want int
+	}{
+		{
+			name: "the first client cannot be opened",
+			arrange: func(c *root.Clients) {
+				c.Google = func(context.Context, string) (create.Google, error) { return nil, refusal }
+			},
+			want: 0,
+		},
+		{
+			name:    "the second client is not wired",
+			arrange: func(c *root.Clients) { c.OrgPolicies = nil },
+			want:    1,
+		},
+		{
+			// Google Cloud, the organization policies, the secrets, Cloud DNS, Cloud Build,
+			// IAM and the budgets are open by then.
+			name: "the last client cannot be opened",
+			arrange: func(c *root.Clients) {
+				c.Datasets = func(context.Context) (root.Datasets, error) { return nil, refusal }
+			},
+			want: 7,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newWorld(t)
+			tt.arrange(w.clients)
+			if _, err := root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Dir: w.dir, Mode: root.Check, Commit: "abc1234", GitHubToken: "test-token"}, &bytes.Buffer{}); err == nil {
+				t.Fatal("Run() error = nil, want the refusal of a run that cannot open its clients")
+			}
+			if w.fake.Closed != tt.want {
+				t.Errorf("the refused run closed %d client(s), want the %d it had opened", w.fake.Closed, tt.want)
+			}
+		})
+	}
+}
+
+// TestEngineClosesWhenTheRunEnds: a run that opened all of its clients closes the eight of
+// them (Google Cloud, the organization policies, the secrets, Cloud DNS, Cloud Build, IAM,
+// the budgets and BigQuery), each once, whether it finishes or stops in a section. The
+// count is exact for a check alone: the stand-in counts every seam it is closed as, and a
+// check closes it as nothing but the engine's eight clients. Its verifier is a stand-in of
+// its own, and it takes no lock, writes no marker and creates nothing.
+func TestEngineClosesWhenTheRunEnds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		arrange func(w *world)
+		// stops is whether the run ends on a section's error.
+		stops bool
+	}{
+		{
+			name:    "a check that finishes",
+			arrange: func(*world) {},
+		},
+		{
+			// The billing export is the last section: every section before it has run.
+			name:    "a check that stops in its last section",
+			arrange: func(w *world) { w.fake.Refuse["Dataset"] = errors.New("refused in this test") },
+			stops:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newWorld(t)
+			tt.arrange(w)
+			_, err := root.Run(context.Background(), w.clients, &root.Request{Placement: w.p, Dir: w.dir, Mode: root.Check, Commit: "abc1234", GitHubToken: "test-token"}, &bytes.Buffer{})
+			var stopped *root.StoppedError
+			if stops := errors.As(err, &stopped); stops != tt.stops || (err != nil) != tt.stops {
+				t.Fatalf("Run() error = %v, want a run that stops in a section: %t", err, tt.stops)
+			}
+			if w.fake.Closed != 8 {
+				t.Errorf("the run closed %d client(s), want the 8 it had opened", w.fake.Closed)
+			}
+		})
 	}
 }
 

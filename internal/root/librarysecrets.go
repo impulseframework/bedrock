@@ -21,16 +21,55 @@ import (
 	"github.com/impulseframework/bedrock/internal/org"
 )
 
-// releaseSecrets keeps the two organization secrets: sealed when they are missing and the
+// releaseSecrets keeps the two organization secrets (bringSecrets), and holds back the
+// finding that tells a person to take the infrastructure app's permission on them off
+// while the engine still has work for it. The apps section reports that finding as soon
+// as the declaration no longer names the permission, which in a root organization with a
+// cloud is when the last library leaves the placement, and that is before the apply has
+// taken the former libraries off the secrets: with the permission taken off first, a
+// former library would go on reading the release app's key, and no later run could see
+// it. So while the secrets leave anything to change or to report, the finding is taken
+// out of the report; it stands again on the first run that finds nothing left for the
+// permission to do. A run that stops before it has found that, here or in a section
+// before this one, leaves the finding out of the report it is printed with too
+// (engine.stopped).
+func (e *engine) releaseSecrets(ctx context.Context) error {
+	changes, findings := len(e.report.Changes), len(e.report.Findings)
+	if err := e.bringSecrets(ctx); err != nil {
+		return err
+	}
+	e.secretsSettled = true
+	if len(e.report.Changes) != changes || len(e.report.Findings) != findings {
+		e.holdSecretsFinding()
+	}
+
+	return nil
+}
+
+// holdSecretsFinding takes out of the report the finding that the infrastructure app
+// holds the organization's Secrets permission without need, as the apps section words it
+// at either level an app holds the permission; where the declaration names the permission
+// there is none to take out.
+func (e *engine) holdSecretsFinding() {
+	m := e.p.AppManifest(org.InfrastructureApp)
+	held := []string{m.Unneeded(org.PermissionOrgSecrets, org.LevelRead), m.Unneeded(org.PermissionOrgSecrets, org.LevelWrite)}
+	e.report.Findings = slices.DeleteFunc(e.report.Findings, func(f string) bool {
+		return slices.Contains(held, f)
+	})
+}
+
+// bringSecrets keeps the two organization secrets: sealed when they are missing and the
 // run can reach their values, their readers brought to the libraries listed. A repository
 // that reads the key and is no longer listed is a library taken off the list: a finding,
 // and the apply takes the key from it; the repository itself is never deleted here. The
 // readers are narrowed whether or not the placement still records the release app; a
-// sealing needs the app.
-func (e *engine) releaseSecrets(ctx context.Context) error {
+// sealing needs the app. A read GitHub refuses for want of the permission on the
+// organization's secrets is judged by refusedSecrets: nothing to keep where the
+// infrastructure app is declared none, the run's error where it is declared it.
+func (e *engine) bringSecrets(ctx context.Context) error {
 	key, err := e.orgSecret(ctx, org.ReleaseKeyOrgSecret)
 	if err != nil {
-		return err
+		return e.refusedSecrets(err)
 	}
 	clientID, err := e.orgSecret(ctx, org.ReleaseClientIDOrgSecret)
 	if err != nil {
@@ -112,6 +151,29 @@ func (e *engine) releaseClientID(ctx context.Context, seal *keySource) (string, 
 	}
 
 	return "", errors.Wrapf(err, "reading the release app's record (%s) for its client ID; bedrock secret add %s --from-file <the file> seals the app's key and sets the client ID with it", e.p.ReleaseAppSlug(), org.ReleaseKey)
+}
+
+// refusedSecrets judges the error of the first read of the organization's secrets. GitHub
+// answers a token that lacks the permission on them the same refusal for every secret,
+// whether it stands or not, and the infrastructure app is declared that permission in a
+// root organization that lists a library and in every one without a cloud
+// (org.Placement.AppManifest). Where the app is declared none, the refusal is the app as
+// it is declared and there is nothing here for it to keep: the answer is nil, and the run
+// goes on with no change and no finding. An app that still holds the permission from when
+// the placement listed a library is not refused, and the former libraries are taken off
+// the secrets. Where the app is declared the permission, the refusal is the run's error,
+// in a sentence that names the permission: the run stops here, and the report printed
+// before the error carries the apps section's finding that the app lacks it. Any other
+// error is answered as it came.
+func (e *engine) refusedSecrets(err error) error {
+	if !github.NotAccessible(err) {
+		return err
+	}
+	if _, declared := e.p.AppManifest(org.InfrastructureApp).Permissions[org.PermissionOrgSecrets]; !declared {
+		return nil
+	}
+
+	return errors.Newf("this token cannot read the %s organization's secrets (%v): the infrastructure app reads them with the Secrets (organization) permission (write); add it on the app's settings page (Permissions & events), then accept the new permission on the organization's installation of the app (the organization's settings, GitHub Apps)", e.p.GithubOrganization, errors.Cause(err))
 }
 
 // orgSecret reads the organization's secret, nil when there is none.

@@ -154,11 +154,17 @@ func NewKeyLister(ctx context.Context) (KeyLister, error) {
 	return newKeyClient(ctx)
 }
 
+// impersonatedTokenSource is the impersonation, as NewKeyClientAs calls it: Google's own,
+// which nothing but a test assigns. A test puts a function in its place that records what
+// NewKeyClientAs calls it with: the identity a client calls as shows at a call alone, and
+// a call needs credentials a test has none of.
+var impersonatedTokenSource = impersonate.CredentialsTokenSource
+
 // NewKeyClientAs opens the API Keys client as the identity, impersonated with the
 // process's default credentials: bedrock org apply restricts Firebase's browser key as
 // the environment's layer identity.
 func NewKeyClientAs(ctx context.Context, identity string) (KeyClient, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
+	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
@@ -166,10 +172,20 @@ func NewKeyClientAs(ctx context.Context, identity string) (KeyClient, error) {
 	return newKeyClient(ctx, option.WithTokenSource(source))
 }
 
+// newKeysService is the API Keys service's constructor, as newKeyClient calls it:
+// Google's own, which nothing but a test assigns. NewKeyLister opens with the process's
+// default credentials, which a test has none of: a test of it puts a function in the
+// constructor's place that records the options it is called with, and opens the service
+// at a server of the test's own. A test of NewKeyClientAs puts one there that records the
+// options and opens the service with them: an option beside the identity's token source
+// could send the client's calls somewhere else or bill them to another project, which a
+// call in a test, ended at the refusal of the token, does not show.
+var newKeysService = apikeys.NewService
+
 // newKeyClient opens the API Keys client with the options given, which a test points at
 // its own server.
 func newKeyClient(ctx context.Context, opts ...option.ClientOption) (KeyClient, error) {
-	service, err := apikeys.NewService(ctx, opts...)
+	service, err := newKeysService(ctx, opts...)
 	if err != nil {
 		return nil, errors.Wrap(err, "apikeys.NewService()")
 	}

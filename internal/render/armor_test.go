@@ -54,8 +54,8 @@ func TestHclQuote(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := hclQuote(tt.s); got != tt.want {
-				t.Errorf("hclQuote(%q) = %s, want %s", tt.s, got, tt.want)
+			if got := Quote(tt.s); got != tt.want {
+				t.Errorf("Quote(%q) = %s, want %s", tt.s, got, tt.want)
 			}
 		})
 	}
@@ -217,7 +217,7 @@ func TestArmorView(t *testing.T) {
 				t.Errorf("Exclusions mismatch (-want +got):\n%s", diff)
 			}
 			for _, r := range v.Rules {
-				if r.Description != hclQuote(fitDescription(r.Text)) {
+				if r.Description != Quote(fitDescription(r.Text)) {
 					t.Errorf("rule %d: Description = %s, want the text within the limit, quoted", r.Priority, r.Description)
 				}
 				if n := len(fitDescription(r.Text)); n > armorDescriptionLimit {

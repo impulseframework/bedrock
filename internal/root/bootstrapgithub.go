@@ -53,22 +53,19 @@ func (b *bootstrap) withoutCloud(ctx context.Context) (*BootstrapResult, error) 
 	// the environment the workflow's jobs run in and rules the branch, so the workflow
 	// the first commit carries starts in an organization that is ready for it.
 	fmt.Fprintf(b.out, "=== making the root organization as placement.json says ===\n")
-	applied, err := Run(ctx, b.clients, &Request{Placement: b.p, Dir: b.req.Dir, Mode: Apply, GitHubToken: token, Bootstrap: true, SealKeys: keys}, b.out)
-	if err != nil {
+	if _, err := runAndReport(ctx, b.clients, &Request{Placement: b.p, Dir: b.req.Dir, Mode: Apply, GitHubToken: token, Bootstrap: true, SealKeys: keys}, b.out); err != nil {
 		return nil, err
 	}
-	applied.Write(b.out, Apply)
 	commit, err := b.foundation(ctx, gh, "chore: the "+b.p.Prefix+" root organization, bootstrapped by bedrock org bootstrap\n\nRendered from placement.json. The workflow in "+org.WorkflowFile+" plans every pull request into "+b.p.GithubDefaultBranch+" and makes the organization as the placement says on every merge.")
 	if err != nil {
 		return nil, err
 	}
 	cloned := b.clone(ctx, commit, token)
 	fmt.Fprintf(b.out, "=== checking ===\n")
-	report, err := Run(ctx, b.clients, &Request{Placement: b.p, Dir: b.req.Dir, Mode: Check, Commit: commit, GitHubToken: token}, b.out)
+	report, err := runAndReport(ctx, b.clients, &Request{Placement: b.p, Dir: b.req.Dir, Mode: Check, Commit: commit, GitHubToken: token}, b.out)
 	if err != nil {
 		return nil, err
 	}
-	report.Write(b.out, Check)
 	fmt.Fprintf(b.out, "Bootstrapped the %s root organization on GitHub alone: repository %s/%s at %s; the apps are %s.\n", b.p.Prefix, b.p.GithubOrganization, b.p.SourceRepo, short(commit), b.appIDs())
 
 	return &BootstrapResult{Placement: b.p, Commit: commit, Cloned: cloned, Report: report}, nil

@@ -57,15 +57,15 @@ func releaseServer(t *testing.T) (src *release.Source, sum string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/impulseframework/bedrock/releases", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") != "1" {
-			_, _ = w.Write([]byte("[]"))
+			answerWith(w, "[]")
 
 			return
 		}
-		_, _ = w.Write([]byte(`[{"tag_name":"v0.5.0-rc.1","prerelease":true},{"tag_name":"v0.4.0"},{"tag_name":"v0.3.0"}]`))
+		answerWith(w, `[{"tag_name":"v0.5.0-rc.1","prerelease":true},{"tag_name":"v0.4.0"},{"tag_name":"v0.3.0"}]`)
 	})
 	for name, content := range assets {
 		mux.HandleFunc("/impulseframework/bedrock/releases/download/v0.4.0/"+name, func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(content))
+			answerWith(w, content)
 		})
 	}
 	proxyRoutes(mux)
@@ -73,6 +73,18 @@ func releaseServer(t *testing.T) (src *release.Source, sum string) {
 	t.Cleanup(srv.Close)
 
 	return &release.Source{Base: srv.URL, API: srv.URL, Proxy: srv.URL, HTTP: srv.Client()}, sum
+}
+
+// answerWith writes the body as the test server's answer. Every answer of the server in
+// this file that is not an error is written through it, so that write is marked in one
+// place; an error is answered with http.Error.
+func answerWith(w http.ResponseWriter, body string) {
+	// The audit is of an HTML page that writes what a user sent. This server stands in for
+	// GitHub and the Go module proxy: it answers what those would (JSON, a release's files,
+	// a go.mod) to the command under test, from the test's own tables, and no browser
+	// reads them.
+	// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter
+	_, _ = w.Write([]byte(body))
 }
 
 // proxyRoutes add the Go module proxy's answers for the bedrock module (.info and .mod)
@@ -89,22 +101,22 @@ func proxyRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/github.com/impulseframework/bedrock/@v/", func(w http.ResponseWriter, r *http.Request) {
 		file := strings.TrimPrefix(r.URL.Path, "/github.com/impulseframework/bedrock/@v/")
 		if rev, ok := strings.CutSuffix(file, ".info"); ok && infos[rev] != "" {
-			_, _ = fmt.Fprintf(w, `{"Version":%q}`, infos[rev])
+			answerWith(w, fmt.Sprintf(`{"Version":%q}`, infos[rev]))
 
 			return
 		}
 		if version, ok := strings.CutSuffix(file, ".mod"); ok && mods[version] != "" {
-			_, _ = w.Write([]byte(mods[version]))
+			answerWith(w, mods[version])
 
 			return
 		}
 		http.Error(w, "not found: unknown revision", http.StatusNotFound)
 	})
 	mux.HandleFunc("/repos/impulseframework/bedrock/git/ref/heads/feature/abac-implementation", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprintf(w, `{"object":{"sha":%q}}`, headCommit)
+		answerWith(w, fmt.Sprintf(`{"object":{"sha":%q}}`, headCommit))
 	})
 	mux.HandleFunc("/repos/impulseframework/bedrock/branches", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprintf(w, `[{"name":"feature/abac-implementation","commit":{"sha":%q}},{"name":"feature/other","commit":{"sha":%q}}]`, headCommit, otherCommit)
+		answerWith(w, fmt.Sprintf(`[{"name":"feature/abac-implementation","commit":{"sha":%q}},{"name":"feature/other","commit":{"sha":%q}}]`, headCommit, otherCommit))
 	})
 }
 

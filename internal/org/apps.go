@@ -279,7 +279,7 @@ func (m AppManifest) Verify(app *github.App, installations []github.Installation
 	}
 	for _, name := range sortedKeys(app.Permissions) {
 		if _, declared := m.Permissions[name]; !declared {
-			findings = append(findings, fmt.Sprintf("%s holds the %s permission (%s), which it does not need: take it off on the app's settings page", m.Role.Title(), permissionTitle(name), app.Permissions[name]))
+			findings = append(findings, m.Unneeded(name, app.Permissions[name]))
 		}
 	}
 	i := slices.IndexFunc(installations, func(in github.Installation) bool { return in.Account.Login == organization })
@@ -291,6 +291,12 @@ func (m AppManifest) Verify(app *github.App, installations []github.Installation
 	}
 
 	return findings
+}
+
+// Unneeded is the finding about a permission the app holds, at the level held, that its
+// declaration does not name: Verify's sentence for it.
+func (m AppManifest) Unneeded(permission, held string) string {
+	return fmt.Sprintf("%s holds the %s permission (%s), which it does not need: take it off on the app's settings page", m.Role.Title(), permissionTitle(permission), held)
 }
 
 // level ranks a permission's level: read below write below admin.
@@ -338,13 +344,19 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // validateAppNames refuses a prefix that makes an app's name longer than GitHub allows,
-// or that is not a word GitHub takes in a name.
+// or that is not a word GitHub takes in a name. A root organization chooses the word; a
+// hosting organization's placement is told to carry its root organization's, since the
+// apps are that organization's and any other word names apps that do not exist.
 func (p *Placement) validateAppNames() error {
 	if p.GithubAppPrefix != "" && !githubLoginRE.MatchString(p.GithubAppPrefix) {
 		return errors.Newf("githubAppPrefix %q is not a word the GitHub Apps' names can start with (letters, digits and hyphens)", p.GithubAppPrefix)
 	}
 	for _, role := range p.Apps() {
 		if name := p.AppName(role); len(name) > maxAppNameLength {
+			if !p.IsRoot() {
+				return errors.Newf("the GitHub App name %s is %d characters, and GitHub allows %d: the three apps are the root organization's, so set githubAppPrefix to the word their names start with in the root organization's placement.json (its githubAppPrefix), which bedrock org create fills in", name, len(name), maxAppNameLength)
+			}
+
 			return errors.Newf("the GitHub App name %s is %d characters, and GitHub allows %d: set githubAppPrefix to a shorter word than %s for the apps' names", name, len(name), maxAppNameLength, p.AppNamePrefix())
 		}
 	}

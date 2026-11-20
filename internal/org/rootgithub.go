@@ -9,6 +9,10 @@ package org
 import (
 	"bytes"
 	"strings"
+
+	// The template executed here is a GitHub Actions workflow, never HTML:
+	// html/template's escaping would corrupt it.
+	// nosemgrep: go.lang.security.audit.xss.import-text-template.import-text-template
 	"text/template"
 
 	"github.com/go-playground/errors/v5"

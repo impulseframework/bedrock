@@ -59,9 +59,9 @@ RUN go build -trimpath -ldflags="-s -w" -o /build/app . && \
 # bun installs the workspace from web/bun.lock and runs its scripts; Angular's CLI itself
 # runs under Node, so the builder is a node image with bun's pinned binary copied in from
 # bun's own image. Nothing else of that image is used.
-FROM docker.io/oven/bun@sha256:296a79bbc988bb0a91ef11099af70a78a8cba98b73fd53f7b2a7715b7c86ced2 AS bun-binary
+FROM docker.io/oven/bun@sha256:3f23864d3e8c923975c61971cabe67ee3d5a728f1e25a559256b95af719a3478 AS bun-binary
 
-FROM docker.io/library/node@sha256:392e1e23f34da768d8d1f4e502b64f200d3be3465934d4b7930f57d7e2fc1989 AS web-build-env
+FROM docker.io/library/node@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496 AS web-build-env
 
 COPY --from=bun-binary /usr/local/bin/bun /usr/local/bin/bun
 
@@ -82,7 +82,7 @@ RUN bun install --frozen-lockfile && \
     bun run build
 
 # ---- Runtime: a static image with the two binaries, the bundles, and the schema -----------
-FROM cgr.dev/chainguard/static@sha256:1fe35025bd06652914560fd01af12a705c645c5566a8d40766b2a4769f33a824
+FROM cgr.dev/chainguard/static@sha256:939754fefdbdb198356dc3187310417777d4dd8561be000885e224d49a4ce727
 
 ARG VERSION
 ARG COMMIT

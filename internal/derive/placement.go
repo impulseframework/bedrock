@@ -349,7 +349,57 @@ var (
 	codeRE   = regexp.MustCompile(`^[a-z][a-z0-9]{1,3}$`)
 	sha256RE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	numberRE = regexp.MustCompile(`^\d+$`)
+	// branchRE and cloudNameRE are the names the render writes as they are into the
+	// operations workflow (its YAML, where the branch stands between the template's
+	// quotes and the others plain, and its shell), the triggers and the commands: a
+	// branch, and a region's name or a project's id.
+	branchRE    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
+	cloudNameRE = regexp.MustCompile(`^[a-z]([a-z0-9-]*[a-z0-9])?$`)
 )
+
+// ValidateBranch refuses a default branch that is not a name bedrock can write as it is:
+// the workflows hold it between double quotes and in a command line, where a space, a
+// quote, a backslash or a line break would end it or start something else. field is the
+// placement's field, which the refusal names.
+func ValidateBranch(field, branch string) error {
+	if !branchRE.MatchString(branch) {
+		return errors.Newf("%s %q is not a branch name bedrock can write into a workflow and a trigger: letters, digits, dots, dashes, underscores and slashes, starting with a letter or a digit", field, branch)
+	}
+
+	return nil
+}
+
+// ValidateRegionName refuses a region's name that is not one: the operations workflow
+// writes the primary region's as a plain word. field is the placement's field, which the
+// refusal names.
+func ValidateRegionName(field, name string) error {
+	if !cloudNameRE.MatchString(name) {
+		return errors.Newf("%s %q is not a region's name: lowercase letters, digits and dashes, starting with a letter and ending in a letter or a digit (us-central1)", field, name)
+	}
+
+	return nil
+}
+
+// validateWrittenNames holds the placement's names the render writes as they are to
+// being names: the default branch, every region's name and every environment project's
+// id, each refused with its field.
+func (p *Placement) validateWrittenNames() error {
+	if err := ValidateBranch("defaultBranch", p.DefaultBranch); err != nil {
+		return err
+	}
+	for i, r := range p.Regions {
+		if err := ValidateRegionName(fmt.Sprintf("regions[%d].name", i), r.Name); err != nil {
+			return err
+		}
+	}
+	for _, env := range slices.Sorted(maps.Keys(p.Projects)) {
+		if id := p.Projects[env].ID; !cloudNameRE.MatchString(id) {
+			return errors.Newf("projects.%s.id %q is not a project's id: lowercase letters, digits and dashes, starting with a letter and ending in a letter or a digit", env, id)
+		}
+	}
+
+	return nil
+}
 
 // The two restores a run makes: an empty database the migrations and the seed then
 // fill, and production's most recent backup, for the environment on production's
@@ -450,6 +500,9 @@ func (p *Placement) Validate() error {
 		if strings.TrimSpace(value) == "" {
 			return errors.Newf("%s is empty", name)
 		}
+	}
+	if err := p.validateWrittenNames(); err != nil {
+		return err
 	}
 
 	return p.validatePin()

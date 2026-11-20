@@ -69,11 +69,14 @@ func TestAppManifests(t *testing.T) {
 
 // TestAppNamesValidate: a prefix that makes a name longer than GitHub's limit, or that is
 // not a login's shape, is refused; the organization's login stands in when none is set.
+// A hosting organization's placement is held to the same names, takes its root
+// organization's word, and is told to carry that word, never to choose one.
 func TestAppNamesValidate(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
+		hosting bool
 		mutate  func(p *Placement)
 		wantErr string
 	}{
@@ -89,12 +92,28 @@ func TestAppNamesValidate(t *testing.T) {
 			mutate:  func(p *Placement) { p.GithubAppPrefix = "imr apps" },
 			wantErr: `githubAppPrefix "imr apps" is not a word the GitHub Apps' names can start with (letters, digits and hyphens)`,
 		},
+		{
+			name:    "a hosting organization with its root organization's word",
+			hosting: true,
+			mutate: func(p *Placement) {
+				p.GithubOrganization, p.GithubAppPrefix = "an-organization-with-a-long-login", "imr"
+			},
+		},
+		{
+			name:    "a hosting organization without the word, its login too long for the names",
+			hosting: true,
+			mutate:  func(p *Placement) { p.GithubOrganization = "an-organization-with-a-long-login" },
+			wantErr: "the GitHub App name an-organization-with-a-long-login-infrastructure is 48 characters, and GitHub allows 34: the three apps are the root organization's, so set githubAppPrefix to the word their names start with in the root organization's placement.json (its githubAppPrefix), which bedrock org create fills in",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			p := rootPlacement(t)
+			if tt.hosting {
+				p = testPlacement(t)
+			}
 			tt.mutate(p)
 			err := p.Validate()
 			if tt.wantErr == "" {

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-playground/errors/v5"
+
 	"github.com/impulseframework/bedrock/internal/deploy"
 	"github.com/impulseframework/bedrock/internal/domain"
 	"github.com/impulseframework/bedrock/internal/github"
@@ -220,6 +222,68 @@ func TestRootOrgCheckEngine(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("printed:\n%s\nwant it to contain %q", out, want)
 		}
+	}
+}
+
+// TestRootOrgCheckEngineStopped: when the engine's comparison ends on an error, org check
+// says so and goes on to its verdict on the render, which is all it gates on. A
+// comparison that stopped after sections that had listed something prints them as
+// incomplete and says the organization was compared in part; one that stopped at its
+// first read, and one refused before its first section, which has no report, say that
+// the organization was not compared, with the error alone.
+func TestRootOrgCheckEngineStopped(t *testing.T) {
+	t.Parallel()
+
+	stop := errors.New("refused in this test")
+	tests := []struct {
+		name    string
+		arrange func(d deps, fake *roottest.Fake)
+		want    []string
+		wantNot string
+	}{
+		{
+			name:    "a read after sections that listed changes",
+			arrange: func(_ deps, fake *roottest.Fake) { fake.Refuse["Budgets"] = stop },
+			want: []string{
+				"The run stopped before it finished, at the error below: what it had gathered before the stop follows, and it is incomplete.\n",
+				"identities: the apply creates the identity imr-root-gbl-planner@imr-root-gbl-core-c3d4.iam.gserviceaccount.com\n",
+				"\nBefore the stop: ",
+				"\nThe root organization was compared with Google Cloud only in part: refused in this test\n",
+			},
+			wantNot: "was not compared with Google Cloud",
+		},
+		{
+			name:    "the first read of the first section",
+			arrange: func(_ deps, fake *roottest.Fake) { fake.Refuse["EnabledServices"] = stop },
+			want:    []string{"The root organization was not compared with Google Cloud: refused in this test\n"},
+			wantNot: "stopped",
+		},
+		{
+			name:    "a client that is not wired, before the first section",
+			arrange: func(d deps, _ *roottest.Fake) { d.org.root.OrgPolicies = nil },
+			want:    []string{"The root organization was not compared with Google Cloud: no Org Policy client is wired: the root organization sets the organization policies of its hosting organizations\n"},
+			wantNot: "stopped",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			d, fake, _, dir := rootWorld(t)
+			tt.arrange(d, fake)
+			out, err := execute(d, "", "org", "check", "--dir", dir)
+			if err != nil {
+				t.Fatalf("org check = %v; printed:\n%s", err, out)
+			}
+			for _, want := range append(tt.want, "owned file(s) match the placement") {
+				if !strings.Contains(out, want) {
+					t.Errorf("printed:\n%s\nwant it to contain %q", out, want)
+				}
+			}
+			if strings.Contains(out, tt.wantNot) {
+				t.Errorf("printed:\n%s\nwant nothing of %q", out, tt.wantNot)
+			}
+		})
 	}
 }
 
@@ -447,7 +511,8 @@ type labelWorld struct {
 	lame map[string]bool
 }
 
-func (w labelWorld) LookupNS(ctx context.Context, name string) ([]*net.NS, error) {
+func (w labelWorld) LookupNS(ctx context.Context, asked string) ([]*net.NS, error) {
+	name := strings.TrimSuffix(asked, ".")
 	if hosts, ok := w.sets[name]; ok {
 		ns := make([]*net.NS, 0, len(hosts))
 		for _, h := range hosts {
@@ -457,10 +522,10 @@ func (w labelWorld) LookupNS(ctx context.Context, name string) ([]*net.NS, error
 		return ns, nil
 	}
 	if w.lame[name] {
-		return nil, &net.DNSError{Err: "server misbehaving", Name: name, IsTemporary: true}
+		return nil, &net.DNSError{Err: "server misbehaving", Name: asked, IsTemporary: true}
 	}
 
-	return w.world.LookupNS(ctx, name)
+	return w.world.LookupNS(ctx, asked)
 }
 
 // rootCheckRepo is a root organization repository whose placement holds the domains
@@ -487,9 +552,10 @@ func rootCheckRepo(t *testing.T, recorded bool, domains map[string]org.Domain) s
 // TestRootDomainCheck runs domain check over a root organization: each domain's zone in
 // the boot project, the delegation as the world sees it, then each label handed onward,
 // passing when every domain is delegated and every label answers its servers; exit 1
-// with the registrar step and the labels waiting on an undelegated domain, or with a
-// label whose servers do not answer for it; nothing to check without a domain; and a
-// refusal before the boot project is recorded.
+// with the registrar step and the labels waiting on an undelegated domain, the same for
+// a domain whose registration names servers that do not answer for it, or with a label
+// whose servers do not answer for it; nothing to check without a domain; and a refusal
+// before the boot project is recorded.
 func TestRootDomainCheck(t *testing.T) {
 	t.Parallel()
 
@@ -544,6 +610,20 @@ func TestRootDomainCheck(t *testing.T) {
 			wantCode: 1,
 			wantOut: []string{
 				"clientbay.example does not answer the zone's name servers (it answers none).",
+				"At the registrar where clientbay.example is registered: set its name servers to the zone's 1 below",
+				"\n" + strings.TrimSuffix(checkServer, ".") + "\n",
+				"The 2 name(s) handed onward under clientbay.example resolve once the domain is delegated here.",
+			},
+			absent: []string{"bedrock domain add", "is handed to"},
+		},
+		{
+			name:     "a domain whose registration names servers that do not answer for it exits 1 with the registrar step, as an undelegated one",
+			recorded: true,
+			domains:  handed,
+			world:    labelWorld{lame: map[string]bool{clientbay: true}},
+			wantCode: 1,
+			wantOut: []string{
+				"clientbay.example does not answer the zone's name servers (it does not resolve, as when the name servers it is delegated to do not answer for it).",
 				"At the registrar where clientbay.example is registered: set its name servers to the zone's 1 below",
 				"\n" + strings.TrimSuffix(checkServer, ".") + "\n",
 				"The 2 name(s) handed onward under clientbay.example resolve once the domain is delegated here.",

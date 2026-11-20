@@ -112,7 +112,7 @@ type registrations struct {
 // Credentials, billing its calls to the project (the quota project): the network project,
 // where the registrations are and the layer enables the API.
 func NewRegistrationReader(ctx context.Context, project string) (RegistrationReader, error) {
-	client, err := domains.NewClient(ctx, option.WithQuotaProject(project))
+	client, err := newDomainsClient(ctx, option.WithQuotaProject(project))
 	if err != nil {
 		return nil, errors.Wrap(err, "domains.NewClient()")
 	}

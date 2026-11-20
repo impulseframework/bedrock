@@ -37,6 +37,9 @@ type Fake struct {
 	// RefuseOnce refuses the next call of the name with the error, then forgets it: an API
 	// that is not serving yet, a write that fails once.
 	RefuseOnce map[string]error
+	// Closed counts the clients closed: every seam opened as the stand-in closes the one
+	// stand-in, so a run that closes what it opened counts as many as it opened.
+	Closed int
 
 	// Secrets by resource name (projects/P/secrets/N); Versions by resource name, oldest
 	// first; Payloads by version name; SecretPolicies by resource name.
@@ -309,8 +312,12 @@ func (f *Fake) call(name string, args ...string) error {
 	return nil
 }
 
-// Close releases nothing.
-func (*Fake) Close() error {
+// Close releases nothing, and counts the client closed.
+func (f *Fake) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Closed++
+
 	return nil
 }
 

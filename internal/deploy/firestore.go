@@ -34,7 +34,7 @@ type FirestoreAsFunc func(ctx context.Context, identity string) (Firestore, erro
 // call it sends again after a transient answer (retry.go).
 func NewFirestoreAs(out io.Writer) FirestoreAsFunc {
 	return func(ctx context.Context, identity string) (Firestore, error) {
-		source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
+		source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{
 			TargetPrincipal: identity,
 			Scopes:          []string{cloudPlatformScope},
 		})

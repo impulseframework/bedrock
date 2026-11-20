@@ -3,7 +3,6 @@
 package org
 
 import (
-	"bytes"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -13,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/go-playground/errors/v5"
@@ -218,11 +216,11 @@ func (v *view) HostRows() []HostRow {
 			}
 			hosts := v.ApplicationHosts(app, env)
 			for _, host := range SortedHosts(hosts) {
-				rows = append(rows, HostRow{Key: `"` + host + `"`, Value: hosts[host]})
+				rows = append(rows, HostRow{Key: render.Quote(host), Value: hosts[host]})
 			}
 		}
 	}
-	rows = append(rows, HostRow{Key: `"*.` + v.AppsDomain + `"`, Value: v.PullRequestBackend()})
+	rows = append(rows, HostRow{Key: render.Quote("*." + v.AppsDomain), Value: v.PullRequestBackend()})
 
 	width := 0
 	for _, row := range rows {
@@ -349,7 +347,7 @@ func hclStringOrNull(value string) string {
 		return hclNull
 	}
 
-	return strconv.Quote(value)
+	return render.Quote(value)
 }
 
 // EnvironmentProjectNumbersHCL is the environment projects' numbers the placement
@@ -359,7 +357,7 @@ func (v *view) EnvironmentProjectNumbersHCL() string {
 	var lines []string
 	for _, env := range Environments {
 		if number, ok := v.ProjectNumbers[env]; ok {
-			lines = append(lines, fmt.Sprintf("    %s = %q", env, number))
+			lines = append(lines, fmt.Sprintf("    %s = %s", env, render.Quote(number)))
 		}
 	}
 	if len(lines) == 0 {
@@ -537,7 +535,7 @@ func (v *view) ApprovalEnvironmentsProse() string {
 func (v *view) TeamGroupLines() string {
 	lines := make([]string, 0, len(Environments))
 	for _, env := range Environments {
-		lines = append(lines, fmt.Sprintf("    %s = %q", env, v.TeamGroupAddress(env)))
+		lines = append(lines, fmt.Sprintf("    %s = %s", env, render.Quote(v.TeamGroupAddress(env))))
 	}
 
 	return strings.Join(lines, "\n")
@@ -561,7 +559,7 @@ func (v *view) EnvironmentEntitlementLines() string {
 func (v *view) entitlementLines(envs []string) string {
 	lines := make([]string, 0, len(envs))
 	for _, env := range envs {
-		lines = append(lines, fmt.Sprintf("    %s = { group = %q, approval = %t }", env, v.TeamGroupAddress(env), slices.Contains(v.ApprovalEnvironments(), env)))
+		lines = append(lines, fmt.Sprintf("    %s = { group = %s, approval = %t }", env, render.Quote(v.TeamGroupAddress(env)), slices.Contains(v.ApprovalEnvironments(), env)))
 	}
 
 	return strings.Join(lines, "\n")
@@ -619,7 +617,7 @@ func hclList(items []string) string {
 		return emptyHCLList
 	}
 
-	return `["` + strings.Join(items, `", "`) + `"]`
+	return render.QuoteList(items)
 }
 
 // emptyHCLMap is an HCL map with nothing in it, and emptyHCLList a list.
@@ -634,7 +632,7 @@ func (v *view) ApplicationsList() string {
 		return emptyHCLList
 	}
 
-	return `["` + strings.Join(v.Codes(), `", "`) + `"]`
+	return render.QuoteList(v.Codes())
 }
 
 // AdoptedList is the codes of the applications whose repositories exist on GitHub
@@ -657,7 +655,7 @@ func (v *view) ApplicationRepositoriesHCL() string {
 	var b strings.Builder
 	b.WriteString("{\n")
 	for _, a := range v.Applications {
-		fmt.Fprintf(&b, "  %-*s = %q\n", width, a.Code, a.Repository)
+		fmt.Fprintf(&b, "  %-*s = %s\n", width, a.Code, render.Quote(a.Repository))
 	}
 	b.WriteString("}")
 
@@ -701,7 +699,7 @@ func (v *view) AppliedList() string {
 		return emptyHCLList
 	}
 
-	return `["` + strings.Join(served, `", "`) + `"]`
+	return render.QuoteList(served)
 }
 
 // ExampleApp is the application the layers' examples name: the first one, or app.
@@ -812,14 +810,14 @@ func (v *view) LabelsBlock(layer, environment string) string {
 	lines := make([]string, 0, blockLineCount+len(keys))
 	lines = append(lines,
 		"  labels = {",
-		fmt.Sprintf("    %-*s = %q", width, "terraform", "true"),
-		fmt.Sprintf("    %-*s = %q", width, "terraform_source_path", layer),
-		fmt.Sprintf("    %-*s = %q", width, "source_repo", v.SourceRepo),
-		fmt.Sprintf("    %-*s = %q", width, "organization", v.Prefix),
+		fmt.Sprintf("    %-*s = %s", width, "terraform", render.Quote("true")),
+		fmt.Sprintf("    %-*s = %s", width, "terraform_source_path", render.Quote(layer)),
+		fmt.Sprintf("    %-*s = %s", width, "source_repo", render.Quote(v.SourceRepo)),
+		fmt.Sprintf("    %-*s = %s", width, "organization", render.Quote(v.Prefix)),
 		fmt.Sprintf("    %-*s = %s", width, "environment", environment),
 	)
 	for _, k := range keys {
-		lines = append(lines, fmt.Sprintf("    %-*s = %q", width, k, v.Labels[k]))
+		lines = append(lines, fmt.Sprintf("    %-*s = %s", width, render.Key(k), render.Quote(v.Labels[k])))
 	}
 	lines = append(lines, "  }")
 
@@ -828,7 +826,7 @@ func (v *view) LabelsBlock(layer, environment string) string {
 
 // LabelsBlockQuoted is a layer's labels block, the environment given as a value.
 func (v *view) LabelsBlockQuoted(layer, environment string) string {
-	return v.LabelsBlock(layer, fmt.Sprintf("%q", environment))
+	return v.LabelsBlock(layer, render.Quote(environment))
 }
 
 // DomainsProse names a root organization's domains for a README, each in backticks,
@@ -932,19 +930,15 @@ func renderDir(dir, prefix string, v *view) ([]render.File, error) {
 		if err != nil {
 			return nil, errors.Wrapf(err, "embed.FS.ReadFile(): %s", entry.Name())
 		}
-		t, err := template.New(entry.Name()).Option("missingkey=error").Parse(string(src))
+		content, err := render.Execute(prefix+name, src, v)
 		if err != nil {
-			return nil, errors.Wrapf(err, "template.Parse(): %s", entry.Name())
-		}
-		var buf bytes.Buffer
-		if err := t.Execute(&buf, v); err != nil {
-			return nil, errors.Wrapf(err, "template.Execute(): %s%s", prefix, name)
+			return nil, err
 		}
 		tier := render.Owned
 		if seeded[name] {
 			tier = render.Seeded
 		}
-		files = append(files, render.File{Path: prefix + name, Tier: tier, Content: render.Formatted(name, buf.Bytes())})
+		files = append(files, render.File{Path: prefix + name, Tier: tier, Content: content})
 	}
 
 	return files, nil

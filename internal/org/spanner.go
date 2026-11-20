@@ -9,10 +9,11 @@ package org
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/go-playground/errors/v5"
+
+	"github.com/impulseframework/bedrock/internal/render"
 )
 
 // regionalPrefix starts a regional instance configuration's name: regional-<region>.
@@ -100,7 +101,7 @@ func (p *Placement) OwnInstanceConfigs() []string {
 func (p *Placement) OwnInstanceConfigList() string {
 	quoted := make([]string, 0, len(p.OwnInstanceConfigs()))
 	for _, c := range p.OwnInstanceConfigs() {
-		quoted = append(quoted, strconv.Quote(c))
+		quoted = append(quoted, render.Quote(c))
 	}
 
 	return "[" + strings.Join(quoted, ", ") + "]"

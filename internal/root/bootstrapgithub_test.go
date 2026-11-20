@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -280,6 +281,71 @@ func TestBootstrapWithoutCloudRefusals(t *testing.T) {
 			_, err := root.Bootstrap(context.Background(), clients, &root.BootstrapRequest{Placement: p, Dir: t.TempDir(), Brought: tt.brought}, &out)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("Bootstrap() error = %v, want it to say %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestBootstrapWithoutCloudStopped: without a cloud too, either run of the engine the
+// bootstrap makes that stops on an error says what it had gathered before the stop: the
+// apply the changes it made before GitHub failed the read of the release app's key's
+// secret, and the check, after an apply that passed, the pattern a person added to the
+// environment since.
+func TestBootstrapWithoutCloudStopped(t *testing.T) {
+	t.Parallel()
+
+	const read = "GET /orgs/imp-example/actions/secrets/RELEASE_PLEASE_APP_PEM"
+	tests := []struct {
+		name string
+		// arrange makes GitHub fail the read: at once, or once the apply has passed and
+		// the directory is being made a clone, when a pattern is added to the environment.
+		arrange func(srv *githubtest.Server, clients *root.Clients)
+		under   string
+		want    string
+	}{
+		{
+			name: "making the organization",
+			arrange: func(srv *githubtest.Server, _ *root.Clients) {
+				srv.Update(func() { srv.Failing[read] = http.StatusInternalServerError })
+			},
+			under: "=== making the root organization as placement.json says ===\n",
+			want:  " change(s) before the stop; 0 finding(s).\n",
+		},
+		{
+			name: "checking it",
+			arrange: func(srv *githubtest.Server, clients *root.Clients) {
+				clients.Clone = func(context.Context, string, string, string, string, string) error {
+					srv.Update(func() {
+						srv.Failing[read] = http.StatusInternalServerError
+						env := srv.Repos["imp-example/imf-root-infrastructure"].Environments[org.RootEnvironment]
+						env.Branches = append(env.Branches, "release/*")
+					})
+
+					return nil
+				}
+			},
+			under: "=== checking ===\n",
+			want:  "finding: the environment bedrock of imp-example/imf-root-infrastructure admits release/* beside master",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv, clients := githubRootWorld(t)
+			p := githubRootDraft()
+			tt.arrange(srv, clients)
+			var out bytes.Buffer
+			_, err := root.Bootstrap(context.Background(), clients, &root.BootstrapRequest{Placement: p, Dir: t.TempDir(), OpenURL: makeInBrowser(t, srv, p.AppManifests(), 6000), FlowTimeout: time.Minute}, &out)
+			if want := "GitHub " + read + " answered 500: failing in this test"; err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Bootstrap() = %v, want %q\n%s", err, want, out.String())
+			}
+			_, run, found := strings.Cut(out.String(), tt.under)
+			if !found || !strings.Contains(run, stoppedLine) || !strings.Contains(run, tt.want) {
+				t.Errorf("after %q the output lacks the stopped run's report (%q, then %q):\n%s", tt.under, stoppedLine, tt.want, out.String())
+			}
+			if verdict := finishedVerdict.FindString(run); verdict != "" {
+				t.Errorf("the stopped run printed a finished run's verdict (%s):\n%s", verdict, out.String())
 			}
 		})
 	}

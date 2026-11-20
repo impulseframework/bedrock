@@ -140,6 +140,24 @@ func NotFound(err error) bool {
 	return false
 }
 
+// notAccessible opens GitHub's message to a token that lacks the permission a request
+// takes: Resource not accessible by integration to an app's token, by personal access
+// token to a person's.
+const notAccessible = "Resource not accessible by"
+
+// NotAccessible reports whether the error is GitHub's refusal of a token that lacks the
+// permission a request takes: a 403 whose message says so. GitHub gives that answer
+// before it looks for what the request names, so it says nothing of whether that stands.
+// A 403 for another reason (a rate limit, an organization's single sign-on) is not one.
+func NotAccessible(err error) bool {
+	var apiErr *Error
+	if errors.As(err, &apiErr) {
+		return apiErr.Status == http.StatusForbidden && strings.HasPrefix(apiErr.Message, notAccessible)
+	}
+
+	return false
+}
+
 // Moved reports whether the error is the API's redirect (301 for a repository renamed
 // away from the name asked for, whose old name GitHub forwards until a new repository
 // takes it). The client follows no redirect, so a renamed repository is never mistaken for

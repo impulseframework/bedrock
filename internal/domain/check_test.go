@@ -58,36 +58,59 @@ func (*fakeZones) Close() error {
 	return nil
 }
 
-// fakeResolver answers from maps; a name a map lacks is not found, a name in fails fails
-// the lookup outright, and a name in servfail is answered SERVFAIL, as the Go resolver
-// reports it, the answer a delegation to servers that do not serve the zone gets.
+// fakeResolver answers from maps, keyed by a name without its trailing dot, or with it as
+// a zone spells a record's. A name a map lacks is not found; a name in fails fails the
+// lookup outright; a name in servfail is answered SERVFAIL, as the Go resolver reports it,
+// the answer a delegation to servers that do not serve the zone gets; a name in timeout is
+// not answered in time, as when those servers are gone; and a name in refused is refused
+// by the resolver itself, which the Go resolver words as it words SERVFAIL, without the
+// temporary mark. A name in nsServfail is answered SERVFAIL for its name servers alone:
+// one lookup that failed, of a domain that answers its other questions. A name asked
+// without its trailing dot fails the lookup: the real resolver would try it with the
+// machine's search list, and answer for the last name tried.
 type fakeResolver struct {
-	ns       map[string][]string
-	hosts    map[string][]string
-	mx       map[string][]*net.MX
-	cname    map[string]string
-	fails    string
-	servfail map[string]bool
+	ns         map[string][]string
+	hosts      map[string][]string
+	mx         map[string][]*net.MX
+	cname      map[string]string
+	fails      string
+	servfail   map[string]bool
+	timeout    map[string]bool
+	refused    map[string]bool
+	nsServfail map[string]bool
 }
 
 // lookup answers one question from its map: the answer, not found, or the failure.
-func lookup[T any](f *fakeResolver, answers map[string]T, name string) (T, error) {
+func lookup[T any](f *fakeResolver, answers map[string]T, asked string) (T, error) {
 	var zero T
-	if name == f.fails {
+	name, isRooted := strings.CutSuffix(asked, ".")
+	if !isRooted {
+		return zero, errors.Newf("%s was asked without its trailing dot", asked)
+	}
+	switch {
+	case name == f.fails:
 		return zero, errors.New("connection refused")
+	case f.servfail[name] || f.servfail[asked]:
+		return zero, &net.DNSError{Err: serverMisbehaving, Name: asked, Server: "127.0.0.53:53", IsTemporary: true}
+	case f.timeout[name] || f.timeout[asked]:
+		return zero, &net.DNSError{Err: "i/o timeout", Name: asked, Server: "127.0.0.53:53", IsTimeout: true, IsTemporary: true}
+	case f.refused[name]:
+		return zero, &net.DNSError{Err: serverMisbehaving, Name: asked, Server: "127.0.0.53:53"}
 	}
-	if f.servfail[name] {
-		return zero, &net.DNSError{Err: serverMisbehaving, Name: name, IsTemporary: true}
+	if v, ok := answers[asked]; ok {
+		return v, nil
 	}
-	v, ok := answers[name]
-	if !ok {
-		return zero, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+	if v, ok := answers[name]; ok {
+		return v, nil
 	}
 
-	return v, nil
+	return zero, &net.DNSError{Err: "no such host", Name: asked, IsNotFound: true}
 }
 
 func (f *fakeResolver) LookupNS(_ context.Context, name string) ([]*net.NS, error) {
+	if f.nsServfail[strings.TrimSuffix(name, ".")] {
+		return nil, &net.DNSError{Err: serverMisbehaving, Name: name, Server: "127.0.0.53:53", IsTemporary: true}
+	}
 	hosts, err := lookup(f, f.ns, name)
 	ns := make([]*net.NS, 0, len(hosts))
 	for _, h := range hosts {
@@ -407,17 +430,115 @@ func TestCheck(t *testing.T) {
 			},
 			want: Repoint,
 			wantLines: []string{
-				"example.app does not answer the zone's name servers (the name servers it is delegated to do not answer for it).",
+				"example.app does not answer the zone's name servers (it does not resolve, as when the name servers it is delegated to do not answer for it).",
 				"gcloud domains registrations configure dns example.app --cloud-dns-zone=ex-net-gbl-dns-apps --project=ex-net-gbl-core-1a2b",
 				authLine("example.app"),
 			},
 			wantAbsent: []string{"the apply sets", "the apply that registers it gives"},
 		},
 		{
-			name:     "servers that do not answer for a domain not registered here stop the check",
+			name:     "an apex not registered here, the servers its registrar names not answering for it: the registrar step",
 			domain:   "example.dev",
 			zones:    zoneFor("example.dev"),
-			resolver: &fakeResolver{servfail: map[string]bool{"example.dev": true}},
+			resolver: &fakeResolver{servfail: map[string]bool{"example.dev": true, authName("example.dev"): true}},
+			want:     ApexUndelegated,
+			wantLines: append(append([]string{
+				"example.dev does not answer the zone's name servers (it does not resolve, as when the name servers it is delegated to do not answer for it).",
+				"At the registrar where example.dev is registered: set its name servers to the zone's 4 below, in place of the ones it has. " + squarespacePath,
+			}, bare()...),
+				"The certificate is still waiting on the authorization record below, which the zone holds and which resolves once the delegation is in place.",
+				authLine("example.dev"),
+			),
+			wantAbsent: []string{"answers no name servers at all", "bedrock domain add", "add it now at the DNS provider"},
+		},
+		{
+			name:     "an apex not registered here whose lookup is not answered in time: the registrar step",
+			domain:   "example.dev",
+			zones:    zoneFor("example.dev"),
+			resolver: &fakeResolver{timeout: map[string]bool{"example.dev": true, authName("example.dev"): true}},
+			want:     ApexUndelegated,
+			wantLines: append([]string{
+				"example.dev does not answer the zone's name servers (it does not resolve, as when the name servers it is delegated to do not answer for it).",
+				"At the registrar where example.dev is registered: set its name servers to the zone's 4 below, in place of the ones it has. " + squarespacePath,
+			}, bare()...),
+			wantAbsent: []string{"answers no name servers at all", "bedrock domain add"},
+		},
+		{
+			name:   "a label whose parent hands it to servers that do not answer for it: the NS records at the parent's DNS provider",
+			domain: "apps.example.com",
+			zones:  zoneFor("apps.example.com"),
+			resolver: &fakeResolver{
+				hosts:    map[string][]string{"example.com": {"192.0.2.80"}},
+				servfail: map[string]bool{"apps.example.com": true, authName("apps.example.com"): true},
+			},
+			want: LabelUndelegated,
+			wantLines: append(append([]string{
+				"apps.example.com does not answer the zone's name servers (it does not resolve, as when the name servers it is delegated to do not answer for it).",
+				"At the DNS provider that serves example.com: add NS records for apps pointing at the zone's name servers, in place of any it has, one record per line below as the provider's form takes it (host, type, value: the host relative to example.com, the value without the trailing dot a zone file writes). The other records of example.com stay as they are.",
+			}, formed("apps NS ")...),
+				"The certificate is still waiting on the authorization record below, which the zone holds and which resolves once the delegation is in place.",
+				authLine("apps.example.com"),
+			),
+			wantAbsent: []string{"add it now at the DNS provider"},
+		},
+		{
+			name:       "a root organization's domain whose registration names servers that do not answer for it: the registrar step, the label waiting",
+			domain:     "clientbay.example",
+			zones:      &fakeZones{zone: &Zone{DNSName: "clientbay.example.", NameServers: zoneServers}},
+			resolver:   &fakeResolver{servfail: map[string]bool{"clientbay.example": true, "harbor.clientbay.example": true}},
+			delegating: true,
+			labels:     []Label{{Name: "harbor", Organization: "imp", NameServers: movedServers}},
+			want:       ApexUndelegated,
+			wantLines: append(append([]string{
+				"clientbay.example does not answer the zone's name servers (it does not resolve, as when the name servers it is delegated to do not answer for it).",
+				"At the registrar where clientbay.example is registered: set its name servers to the zone's 4 below, in place of the ones it has. " + squarespacePath,
+			}, bare()...),
+				"The 1 name(s) handed onward under clientbay.example resolve once the domain is delegated here.",
+			),
+			wantAbsent: []string{"bedrock domain add", "is handed to", "certificate"},
+		},
+		{
+			name:   "registered here, the lookup of its name servers not answered in time: the step in Cloud Domains",
+			domain: "example.app",
+			zones:  zoneFor("example.app"),
+			resolver: &fakeResolver{
+				timeout: map[string]bool{"example.app": true},
+			},
+			want: Repoint,
+			wantLines: []string{
+				"example.app does not answer the zone's name servers (it does not resolve, as when the name servers it is delegated to do not answer for it).",
+				"gcloud domains registrations configure dns example.app --cloud-dns-zone=ex-net-gbl-dns-apps --project=ex-net-gbl-core-1a2b",
+				authLine("example.app"),
+			},
+		},
+		{
+			name:       "a label handed onward whose lookup is not answered in time",
+			domain:     "clientbay.example",
+			zones:      &fakeZones{zone: &Zone{DNSName: "clientbay.example.", NameServers: zoneServers}},
+			resolver:   &fakeResolver{ns: map[string][]string{"clientbay.example": zoneServers}, timeout: map[string]bool{"harbor.clientbay.example": true}},
+			delegating: true,
+			labels:     []Label{{Name: "harbor", Organization: "imp", NameServers: movedServers}},
+			want:       Delegated,
+			wantLines: []string{
+				"harbor.clientbay.example is handed to imp, and the name servers it is handed to do not answer for it: the application's zone in imp is not applied yet, or the servers recorded here (" + strings.Join(movedServers, ", ") + ") are not that zone's; bedrock domain check in imp's infrastructure repository prints them.",
+			},
+		},
+		{
+			name:   "a domain that answers an address resolves: a failed lookup of its name servers stops the check",
+			domain: "example.dev",
+			zones:  zoneFor("example.dev"),
+			resolver: &fakeResolver{
+				nsServfail: map[string]bool{"example.dev": true},
+				hosts:      map[string][]string{"example.dev": {"192.0.2.80"}},
+				mx:         map[string][]*net.MX{"example.dev": {{Host: "mail.example.net.", Pref: 10}}},
+			},
+			wantErr: "resolving the name servers of example.dev",
+		},
+		{
+			name:     "the resolver's own refusal of the question stops the check",
+			domain:   "example.dev",
+			zones:    zoneFor("example.dev"),
+			resolver: &fakeResolver{refused: map[string]bool{"example.dev": true}},
 			wantErr:  "resolving the name servers of example.dev",
 		},
 		{

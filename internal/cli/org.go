@@ -571,7 +571,8 @@ func (d deps) writeGitHubCheck(ctx context.Context, p *org.Placement, dir string
 // engine the triggers run, and prints what the apply would change, the findings and the
 // notes. It is information, like the leftover grants: the check gates the triggers' runs
 // on the render alone, and the plan says the same on the pull request. Without the
-// clients, or when the comparison fails, it says so.
+// clients, or when the comparison fails, it says so; a comparison that stopped part of
+// the way prints what it had gathered before the stop, as incomplete.
 func rootEngineReport(ctx context.Context, d deps, p *org.Placement, dir string, out io.Writer) {
 	with := "Google Cloud"
 	if !p.HasCloud() {
@@ -591,7 +592,15 @@ func rootEngineReport(ctx context.Context, d deps, p *org.Placement, dir string,
 	}
 	report, err := rootorg.Run(ctx, clients, &rootorg.Request{Placement: p, Dir: dir, Mode: rootorg.Check, GitHubToken: token}, out)
 	if err != nil {
-		fmt.Fprintf(out, "The root organization was not compared with %s: %v\n", with, errors.Cause(err))
+		// A comparison that stopped in one of the engine's sections carries in its error
+		// what it had gathered; one refused before the first section read nothing.
+		var stopped *rootorg.StoppedError
+		if errors.As(err, &stopped) && stopped.Report.Gathered() {
+			stopped.Report.WriteStopped(out, rootorg.Check)
+			fmt.Fprintf(out, "The root organization was compared with %s only in part: %v\n", with, errors.Cause(err))
+		} else {
+			fmt.Fprintf(out, "The root organization was not compared with %s: %v\n", with, errors.Cause(err))
+		}
 
 		return
 	}

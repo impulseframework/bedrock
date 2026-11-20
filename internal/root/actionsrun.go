@@ -75,7 +75,8 @@ func actions(ctx context.Context, clients *Clients, req *ActionsRequest, command
 
 // ActionsPlan is bedrock org plan in the workflow: it says what the pull request's merge
 // would change, in the log and in one comment on the pull request as the infrastructure
-// app, and exits well whatever it found; a change that cannot be read is the error.
+// app, and exits well whatever it found; a change that cannot be read is the error, and
+// the plan that stopped at it says what it had gathered in both places (stoppedPlan).
 func ActionsPlan(ctx context.Context, clients *Clients, req *ActionsRequest, out io.Writer) error {
 	p, token, err := actions(ctx, clients, req, org.PlanCommand)
 	if err != nil {
@@ -87,7 +88,9 @@ func ActionsPlan(ctx context.Context, clients *Clients, req *ActionsRequest, out
 	}
 	report, err := Run(ctx, clients, &Request{Placement: p, Dir: req.Dir, Mode: Plan, Commit: req.Commit, GitHubToken: token}, out)
 	if err != nil {
-		return err
+		return stoppedPlan(err, req.Commit, p, out, func(body string) error {
+			return postPlan(ctx, clients.GitHub(token), p, number, body, org.InfrastructureApp.Title(), out)
+		})
 	}
 	report.Write(out, Plan)
 
@@ -101,13 +104,9 @@ func ActionsApply(ctx context.Context, clients *Clients, req *ActionsRequest, ou
 	if err != nil {
 		return err
 	}
-	report, err := Run(ctx, clients, &Request{Placement: p, Dir: req.Dir, Mode: Apply, Commit: req.Commit, GitHubToken: token}, out)
-	if err != nil {
-		return err
-	}
-	report.Write(out, Apply)
+	_, err = runAndReport(ctx, clients, &Request{Placement: p, Dir: req.Dir, Mode: Apply, Commit: req.Commit, GitHubToken: token}, out)
 
-	return nil
+	return err
 }
 
 // ActionsCheck is the weekly check: it compares the organization with the placement and
@@ -119,11 +118,12 @@ func ActionsCheck(ctx context.Context, clients *Clients, req *ActionsRequest, ou
 	if err != nil {
 		return err
 	}
-	report, err := Run(ctx, clients, &Request{Placement: p, Dir: req.Dir, Mode: Check, Commit: req.Commit, GitHubToken: token}, out)
+	report, err := runAndReport(ctx, clients, &Request{Placement: p, Dir: req.Dir, Mode: Check, Commit: req.Commit, GitHubToken: token}, out)
 	if err != nil {
+		// What the check had gathered is in the run's log; the issue is kept by a check
+		// that finished alone, since half a comparison would open it or close it wrongly.
 		return err
 	}
-	report.Write(out, Check)
 	gh := clients.GitHub(token)
 	owner, repo := p.GithubOrganization, p.SourceRepo
 	open, err := gh.OpenIssue(ctx, owner, repo, checkIssueTitle)

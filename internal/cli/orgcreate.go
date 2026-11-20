@@ -146,7 +146,7 @@ func writeSkeleton(root *org.Placement, prefix, path string, out io.Writer) erro
 	h.OrganizationDomain, h.OrganizationID, h.BillingAccount = root.OrganizationDomain, root.OrganizationID, root.BillingAccount
 	h.GithubOrganization, h.GithubBotAccount, h.GithubDefaultBranch = root.GithubOrganization, root.GithubBotAccount, root.GithubDefaultBranch
 	h.GithubInfrastructureAppID, h.GithubDeployerAppID, h.GithubReleaseAppID = root.GithubInfrastructureAppID, root.GithubDeployerAppID, root.GithubReleaseAppID
-	h.GithubReleaseAppSlug = root.ReleaseAppSlug()
+	h.GithubAppPrefix, h.GithubReleaseAppSlug = root.GithubAppPrefix, root.ReleaseAppSlug()
 	h.BreakGlassAccount = root.BreakGlassAccount
 	h.SourceRepo = prefix + "-infrastructure"
 	h.Root = &org.RootPlace{Organization: root.Prefix, Project: root.RootProject()}

@@ -63,18 +63,30 @@ func NewSecretManager(ctx context.Context) (Secrets, error) {
 	return &secretManager{client: client}, nil
 }
 
+// The impersonation and the Secret Manager client's constructor, as the constructors of
+// this package that open a client as an identity call them: NewSecretManagerAs calls
+// both, and NewStorageAs, NewStorageAsWriter, NewFirestoreAs and NewSpannerAs the
+// impersonation (record.go, firestore.go, spanner.go). Each variable holds Google's own
+// function, and nothing but a test assigns one. A test puts a function in its place that
+// records what the constructor calls it with: the identity a client calls as shows at a
+// call alone, and a call needs credentials a test has none of.
+var (
+	impersonatedTokenSource = impersonate.CredentialsTokenSource
+	newSecretManagerClient  = secretmanager.NewClient
+)
+
 // NewSecretManagerAs opens Secret Manager as the identity, impersonated with the process's
 // default credentials: the plan's tests read a version's state as the identity the plan
 // ran as, which may read what the deploy identity may not.
 func NewSecretManagerAs(ctx context.Context, identity string) (Secrets, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
+	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{
 		TargetPrincipal: identity,
 		Scopes:          []string{"https://www.googleapis.com/auth/cloud-platform"},
 	})
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
-	client, err := secretmanager.NewClient(ctx, option.WithTokenSource(source))
+	client, err := newSecretManagerClient(ctx, option.WithTokenSource(source))
 	if err != nil {
 		return nil, errors.Wrap(err, "secretmanager.NewClient()")
 	}

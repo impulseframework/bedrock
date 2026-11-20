@@ -1,42 +1,22 @@
-# Semgrep path exclusions for the bedrock module scan (see the repository root's
-# .semgrepignore for the same entries under their root-relative paths).
+# Semgrep path exclusions for the bedrock module scan. A path listed here is left out of
+# the scan whole: no rule reads the file, so a finding of any rule in it is never
+# reported, not only a finding of the audit its reason names. So a finding that belongs to
+# one line is not entered here. It is marked in the file, with a nosemgrep comment on the
+# line above the finding that names the one rule, under the reason the rule does not
+# apply there, and every other rule still reads the file.
 #
-# bedrock renders Terraform, YAML and Markdown from text/template: html/template's contextual
-# escaping would corrupt that output, so the renderers (the application's stack, the
-# organization's foundation, and the workflow of a root organization without a cloud) are
-# excluded from the text-template audit rather than marked inline. The GitHub test fake answers JSON to the client under
-# test, so the direct-write audit (an HTML page writing user data) does not apply to it.
-internal/render/render.go
-internal/org/render.go
-internal/org/rootgithub.go
-internal/github/githubtest/server.go
-# The migration renumber runs git with the repository's own paths (the default branch's
-# tree, the tracked files, git mv), which is its purpose; the dangerous-exec audit does
-# not apply to it.
-internal/migration/git.go
-# upgrade runs go install for a commit pin (the Go checksum database verifies the module),
-# then runs the bedrock it installed, or the release it fetched and verified against the
-# release's checksums file, with the render's own paths: running a program whose path it
-# computed is the command's purpose; the dangerous-exec audit does not apply to it.
-internal/cli/upgrade.go
-# The test servers standing in for GitHub in the release package's and the upgrade
-# command's tests answer JSON and a script to the client under test, as the GitHub test
-# fake does; the direct-write audit (an HTML page writing user data) does not apply.
-internal/release/release_test.go
-internal/cli/upgrade_test.go
-# The deploy steps' runner runs the programs a step drives (tofu, docker, an
-# application's hook script through bash) with arguments the step builds: that is its
-# purpose, so it is excluded from the dangerous-exec audit. git names a blob by the SHA-1
-# of its content, and the migration guard computes that name to compare a file with the
-# committed one: naming, not cryptography, so the weak-hash audit does not apply.
-internal/deploy/exec.go
-internal/migration/sequence.go
+# The two paths left are two of the three files the welcome image is made of:
+# welcome/VERSION records the hash of welcome/Dockerfile, welcome/main.go and
+# welcome/page.html together. Each of the two has one finding, and a comment added to
+# either would change the image: a published version is never made of other files, and a
+# changed hash takes the next version, which the merge then publishes. The reason above
+# each path says which audit found what, and why that audit does not apply.
+#
 # The welcome image's program answers every request with its one page, a file embedded at
 # build time that holds nothing a request sent, so the direct-write audit (an HTML page
-# writing user data) does not apply. The page's one link is its icon, written into the
-# link itself as a data address: nothing is fetched, so there is nothing for an integrity
-# attribute to check. Its test starts the test binary itself as the program, with the
-# arguments a Cloud Run service would pass it; the dangerous-exec audit does not apply.
+# writing user data), which finds the write at the end of the handler, does not apply.
 welcome/main.go
+# The page's one link is its icon, written into the link itself as a data address:
+# nothing is fetched, so there is nothing for an integrity attribute to check, and the
+# missing-integrity audit, which finds that link, does not apply.
 welcome/page.html
-welcome/main_test.go

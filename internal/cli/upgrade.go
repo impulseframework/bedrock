@@ -495,6 +495,11 @@ func pinName(version string) string {
 func renderWith(cmd *cobra.Command, bin, version string, args []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Rendering with bedrock %s (%s):\n", version, bin)
+	// The program is the bedrock this command put there itself: the one go install built
+	// for a commit pin, which the Go checksum database verifies, or the release it fetched
+	// and held to the release's checksums file. The arguments are the render's own.
+	// Running a program whose path it computed is what the command is for.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	render := exec.CommandContext(cmd.Context(), bin, args...)
 	render.Stdout, render.Stderr = out, cmd.ErrOrStderr()
 	if err := render.Run(); err != nil {

@@ -8,8 +8,10 @@ package render
 import (
 	"fmt"
 	"path"
-	"strconv"
 	"strings"
+	"unicode"
+
+	"github.com/go-playground/errors/v5"
 
 	"github.com/impulseframework/bedrock/internal/derive"
 )
@@ -116,6 +118,59 @@ type armorExclusion struct {
 	RuleProse  string
 }
 
+// armorWord is a word the policy writes between single quotes in an expression, and
+// where it comes from.
+type armorWord struct {
+	value, from string
+}
+
+// armorWords holds every word of the code's and the placement's that the policy writes
+// between single quotes in a Cloud Armor expression to standing there as itself: an
+// outlet's prefix, a route's method and path (the generated router's file routes and
+// sign-in routes, the placement's bypasses) and a rule set's name. A single quote ends
+// the expression's string, a backslash acts on what follows it, and a control character
+// is in no path a route is written with, so a word that holds one is refused with where
+// it comes from: bedrock writes no escape into an expression. The file routes, the
+// bypasses and the rule sets are held to their own shapes where they are read; an
+// outlet's prefix and a sign-in route are held here alone. What a word means as a regular
+// expression, where the policy matches a path against one, is not judged here.
+func armorWords(m *derive.Model) error {
+	policy := m.Placement.Armor()
+	sets := policy.RuleSets()
+	words := make([]armorWord, 0, len(m.Outlets)+2*len(m.FileRoutes)+2*len(policy.Bypasses)+len(sets)+2*len(m.SignInRoutes))
+	for _, o := range m.Outlets {
+		words = append(words, armorWord{value: o.Prefix, from: "the " + o.Name + " outlet's prefix"})
+	}
+	for i := range m.FileRoutes {
+		r := &m.FileRoutes[i]
+		words = append(words, armorWord{value: r.Method, from: "the method of " + r.Declaration()}, armorWord{value: r.Path, from: "the route of " + r.Declaration()})
+	}
+	for i := range policy.Bypasses {
+		b := &policy.Bypasses[i]
+		words = append(words, armorWord{value: b.Method, from: "a method of placement.json cloudArmor.bypasses"}, armorWord{value: b.Path, from: "a path of placement.json cloudArmor.bypasses"})
+	}
+	for _, s := range sets {
+		words = append(words, armorWord{value: s.Name, from: "a rule set's name"})
+	}
+	for i := range m.SignInRoutes {
+		r := &m.SignInRoutes[i]
+		words = append(words, armorWord{value: r.Method, from: "the method of " + r.Declaration()}, armorWord{value: r.Path, from: "the route of " + r.Declaration()})
+	}
+	for _, w := range words {
+		if strings.ContainsFunc(w.value, armorBreaks) {
+			return errors.Newf("%s, %q, holds a single quote, a backslash or a control character, which a Cloud Armor expression's string does not hold as itself: the policy matches requests against the word as it is written", w.from, w.value)
+		}
+	}
+
+	return nil
+}
+
+// armorBreaks reports a character that does not stand for itself between an expression's
+// single quotes.
+func armorBreaks(r rune) bool {
+	return r == '\'' || r == '\\' || unicode.IsControl(r)
+}
+
 // newArmorView prepares the policy: the leading sets on every path, the bypasses from
 // the generated router and the placement, the trailing sets on the outlets' routes, and
 // the sign-in throttles on the routes the generated router takes a credential at.
@@ -183,8 +238,8 @@ func (v *armorView) add(priority int, action, what, source, expression string, e
 		What:        what,
 		Source:      source,
 		Text:        text,
-		Description: hclQuote(fitDescription(text)),
-		Expression:  hclQuote(expression),
+		Description: Quote(fitDescription(text)),
+		Expression:  Quote(expression),
 		Exclusions:  exclusions,
 	})
 }
@@ -254,7 +309,7 @@ func (v *armorView) exclusionsOf(set string) []armorExclusion {
 func newArmorExclusion(e *derive.FieldExclusion) armorExclusion {
 	out := armorExclusion{FieldExclusion: *e, Operator: e.OperatorName(), Block: e.Block()}
 	if e.Value != "" {
-		out.Value = hclQuote(e.Value)
+		out.Value = Quote(e.Value)
 	}
 	kind := map[string]string{derive.FieldHeader: "header", derive.FieldCookie: "cookie", derive.FieldQueryParam: "query parameter", derive.FieldURI: "path"}[e.Field]
 	switch e.OperatorName() {
@@ -270,7 +325,7 @@ func newArmorExclusion(e *derive.FieldExclusion) armorExclusion {
 		quoted := make([]string, 0, len(e.Rules))
 		ticked := make([]string, 0, len(e.Rules))
 		for _, id := range e.Rules {
-			quoted = append(quoted, strconv.Quote(id))
+			quoted = append(quoted, Quote(id))
 			ticked = append(ticked, "`"+id+"`")
 		}
 		out.RuleIDList = "[" + strings.Join(quoted, ", ") + "]"
@@ -311,10 +366,4 @@ func fileRouteReason(r *derive.FileRoute) string {
 	}
 
 	return "its answer is the stored object"
-}
-
-// hclQuote writes s as an HCL string literal: backslashes, quotes and newlines escaped,
-// and the template sequences ${ and %{ written so HCL reads them as text.
-func hclQuote(s string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "${", "$${", "%{", "%%{").Replace(s) + `"`
 }

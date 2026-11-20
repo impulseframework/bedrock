@@ -35,7 +35,7 @@ func runWithoutCloud(ctx context.Context, clients *Clients, req *Request, out io
 	e.gh = clients.GitHub(req.GitHubToken)
 	for _, section := range []func(ctx context.Context) error{e.githubSection, e.rootEnvironment, e.listedApps, e.libraries} {
 		if err := section(ctx); err != nil {
-			return e.report, err
+			return nil, e.stopped(err)
 		}
 	}
 

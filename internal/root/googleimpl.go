@@ -53,6 +53,29 @@ import (
 // ErrLocked is Lock's answer when the lock object is there already.
 var ErrLocked = errors.New("the lock is held")
 
+// The constructors an exported constructor of this file calls with an identity, a
+// project or options of its choosing: the impersonation, the Org Policy client, the
+// Budgets client (the module's own constructor of it), the Cloud DNS service and the
+// Site Verification service as NewDNSAs and NewVerifierAs open them, and the seven
+// clients NewIAM opens. Each variable holds Google's or the module's constructor itself,
+// and nothing but a test assigns one. A test puts a function in its place that records
+// what the exported constructor calls it with: the identity and the project a client
+// calls as show at a call alone, and a call needs credentials a test has none of.
+var (
+	impersonatedTokenSource    = impersonate.CredentialsTokenSource
+	newOrgPolicyClient         = orgpolicy.NewClient
+	newBudgetsClient           = budgets.New
+	newDNSService              = dns.NewService
+	newSiteVerificationService = siteverification.NewService
+	newIAMAdminClient          = admin.NewIamClient
+	newProjectsClient          = resourcemanager.NewProjectsClient
+	newFoldersClient           = resourcemanager.NewFoldersClient
+	newOrganizationsClient     = resourcemanager.NewOrganizationsClient
+	newBillingService          = cloudbilling.NewService
+	newStorageClient           = storage.NewClient
+	newServiceUsageService     = serviceusage.NewService
+)
+
 // operationPoll is how often a long-running operation is asked after.
 const operationPoll = 5 * time.Second
 
@@ -230,11 +253,11 @@ func NewDNS(ctx context.Context) (DNS, error) {
 // NewDNSAs opens Cloud DNS as the identity, impersonated by the process's credentials:
 // the bootstrap makes the zones as the applier.
 func NewDNSAs(ctx context.Context, identity string) (DNS, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
+	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
-	service, err := dns.NewService(ctx, option.WithTokenSource(source))
+	service, err := newDNSService(ctx, option.WithTokenSource(source))
 	if err != nil {
 		return nil, errors.Wrapf(err, "dns.NewService(): as %s", identity)
 	}
@@ -247,11 +270,11 @@ func NewDNSAs(ctx context.Context, identity string) (DNS, error) {
 // creating identity, and itself, since a token for a Google API outside Cloud Platform's
 // scope comes from IAM Credentials and not from the build's own credentials.
 func NewVerifierAs(ctx context.Context, identity string) (Verifier, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope, siteverification.SiteverificationScope}})
+	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope, siteverification.SiteverificationScope}})
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
-	service, err := siteverification.NewService(ctx, option.WithTokenSource(source))
+	service, err := newSiteVerificationService(ctx, option.WithTokenSource(source))
 	if err != nil {
 		return nil, errors.Wrapf(err, "siteverification.NewService(): as %s", identity)
 	}
@@ -654,34 +677,64 @@ type iamClients struct {
 	services      *serviceusage.Service
 }
 
+// iamOptions are the options each client of the set opens with, client by client. NewIAM
+// gives none, so each client opens with the process's default credentials and bills its
+// calls where those say. A test gives each client that holds a connection one of its
+// own, and reads from it whether the client was closed: each gRPC client a gRPC
+// connection, the storage client an HTTP client. The two REST clients, Cloud Billing's
+// and Service Usage's, hold no connection and are given none. A test makes one opening
+// fail by giving that client options Google's transport refuses.
+type iamOptions struct {
+	admin, projects, folders, organizations, billing, storage, services []option.ClientOption
+}
+
 // NewIAM opens IAM's role administration, Cloud Resource Manager, Cloud Billing, Cloud
-// Storage and Service Usage.
+// Storage and Service Usage. When one of them cannot be opened, the ones opened before it
+// are closed: the caller is answered no client beside the error, and could close none.
 func NewIAM(ctx context.Context) (IAM, error) {
+	return newIAM(ctx, &iamOptions{})
+}
+
+// newIAM opens the clients, each with its own options, and closes the ones it had opened
+// when one of them cannot be opened.
+func newIAM(ctx context.Context, opts *iamOptions) (IAM, error) {
 	c := &iamClients{}
-	var err error
-	if c.admin, err = admin.NewIamClient(ctx); err != nil {
-		return nil, errors.Wrap(err, "admin.NewIamClient()")
-	}
-	if c.projects, err = resourcemanager.NewProjectsClient(ctx); err != nil {
-		return nil, errors.Wrap(err, "resourcemanager.NewProjectsClient()")
-	}
-	if c.folders, err = resourcemanager.NewFoldersClient(ctx); err != nil {
-		return nil, errors.Wrap(err, "resourcemanager.NewFoldersClient()")
-	}
-	if c.organizations, err = resourcemanager.NewOrganizationsClient(ctx); err != nil {
-		return nil, errors.Wrap(err, "resourcemanager.NewOrganizationsClient()")
-	}
-	if c.billing, err = cloudbilling.NewService(ctx); err != nil {
-		return nil, errors.Wrap(err, "cloudbilling.NewService()")
-	}
-	if c.storage, err = storage.NewClient(ctx); err != nil {
-		return nil, errors.Wrap(err, "storage.NewClient()")
-	}
-	if c.services, err = serviceusage.NewService(ctx); err != nil {
-		return nil, errors.Wrap(err, "serviceusage.NewService()")
+	if err := c.open(ctx, opts); err != nil {
+		_ = c.Close()
+
+		return nil, err
 	}
 
 	return c, nil
+}
+
+// open opens the clients in turn and stops at the first that cannot be opened, which
+// leaves the ones before it open and the ones after it nil.
+func (c *iamClients) open(ctx context.Context, opts *iamOptions) error {
+	var err error
+	if c.admin, err = newIAMAdminClient(ctx, opts.admin...); err != nil {
+		return errors.Wrap(err, "admin.NewIamClient()")
+	}
+	if c.projects, err = newProjectsClient(ctx, opts.projects...); err != nil {
+		return errors.Wrap(err, "resourcemanager.NewProjectsClient()")
+	}
+	if c.folders, err = newFoldersClient(ctx, opts.folders...); err != nil {
+		return errors.Wrap(err, "resourcemanager.NewFoldersClient()")
+	}
+	if c.organizations, err = newOrganizationsClient(ctx, opts.organizations...); err != nil {
+		return errors.Wrap(err, "resourcemanager.NewOrganizationsClient()")
+	}
+	if c.billing, err = newBillingService(ctx, opts.billing...); err != nil {
+		return errors.Wrap(err, "cloudbilling.NewService()")
+	}
+	if c.storage, err = newStorageClient(ctx, opts.storage...); err != nil {
+		return errors.Wrap(err, "storage.NewClient()")
+	}
+	if c.services, err = newServiceUsageService(ctx, opts.services...); err != nil {
+		return errors.Wrap(err, "serviceusage.NewService()")
+	}
+
+	return nil
 }
 
 func (c *iamClients) Role(ctx context.Context, project, id string) (*Role, error) {
@@ -1088,11 +1141,24 @@ func (c *iamClients) DeleteFolder(ctx context.Context, folder string) error {
 	return nil
 }
 
+// Close closes the clients that hold a connection, the last opened first. A client that
+// was never opened, in a set whose opening failed before it, is nil and is passed over.
 func (c *iamClients) Close() error {
-	_ = c.storage.Close()
-	_ = c.organizations.Close()
-	_ = c.folders.Close()
-	_ = c.projects.Close()
+	if c.storage != nil {
+		_ = c.storage.Close()
+	}
+	if c.organizations != nil {
+		_ = c.organizations.Close()
+	}
+	if c.folders != nil {
+		_ = c.folders.Close()
+	}
+	if c.projects != nil {
+		_ = c.projects.Close()
+	}
+	if c.admin == nil {
+		return nil
+	}
 	if err := c.admin.Close(); err != nil {
 		return errors.Wrap(err, "admin.IamClient.Close()")
 	}
@@ -1193,7 +1259,7 @@ func wrapf(err error, format string, args ...any) error {
 
 // NewOrgPolicies opens the Org Policy client with the application default credentials.
 func NewOrgPolicies(ctx context.Context, quotaProject string) (OrgPolicies, error) {
-	c, err := orgpolicy.NewClient(ctx, option.WithQuotaProject(quotaProject))
+	c, err := newOrgPolicyClient(ctx, option.WithQuotaProject(quotaProject))
 	if err != nil {
 		return nil, errors.Wrap(err, "orgpolicy.NewClient()")
 	}
@@ -1300,18 +1366,18 @@ func policyFromProto(p *orgpolicypb.Policy) *Policy {
 // NewBudgets opens the Budgets API with the run's credentials, billing its calls to the
 // root project: a person's application default credentials name no project of their own.
 func NewBudgets(ctx context.Context, quotaProject string) (budgets.Client, error) {
-	return budgets.New(ctx, option.WithQuotaProject(quotaProject))
+	return newBudgetsClient(ctx, option.WithQuotaProject(quotaProject))
 }
 
 // NewBudgetsAs opens the Budgets API as the identity the credentials impersonate: the
 // applier as the creating identity, which holds Billing Account Administrator.
 func NewBudgetsAs(ctx context.Context, identity string) (budgets.Client, error) {
-	source, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
+	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
 
-	return budgets.New(ctx, option.WithTokenSource(source))
+	return newBudgetsClient(ctx, option.WithTokenSource(source))
 }
 
 // NewDatasets opens BigQuery.

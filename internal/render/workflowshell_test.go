@@ -3,6 +3,7 @@ package render
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -132,6 +133,10 @@ func (s *workflowStep) run(t *testing.T, r *stepRun) *stepResult {
 	if r.bin != "" {
 		path = r.bin + string(os.PathListSeparator) + path
 	}
+	// The program is the bash found on the PATH, and the script is a step of the rendered
+	// workflow, written into the test's own temporary directory; no input but the test's
+	// reaches it.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(t.Context(), bash, "-e", script)
 	cmd.Dir = dir
 	cmd.Env = []string{"PATH=" + path, "HOME=" + dir, "GITHUB_OUTPUT=" + output, "GITHUB_STEP_SUMMARY=" + summary}
@@ -395,7 +400,44 @@ case "$1 $2 $3" in
 esac
 `
 
-// standIn makes a directory holding the stand-in for gcloud, the records the bucket holds
+// gcloudProgram is the stand-in for gcloud on disk, written once by TestMain before any
+// test runs. No test writes a program that it, or a step it runs, then starts: while one
+// test's write of a file is open, another test that starts a child (bash, git) copies
+// the open file into that child for a moment, and a program something holds open for
+// writing cannot be started (ETXTBSY, "text file busy"). That is how a step's call of
+// gcloud failed on a loaded machine when each test wrote its own. A program written
+// before the tests start is held open by nobody, and each test links it into a directory
+// of its own, where it keeps what it is told beside the link (standIn).
+var gcloudProgram string
+
+// TestMain writes the programs the tests' steps start, then runs the tests.
+func TestMain(m *testing.M) {
+	os.Exit(withPrograms(m))
+}
+
+// withPrograms runs the tests with gcloudProgram on disk, and removes it after them.
+func withPrograms(m *testing.M) int {
+	dir, err := os.MkdirTemp("", "bedrock-render-programs")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "the directory for the tests' programs: %v\n", err)
+
+		return 1
+	}
+	defer func() {
+		_ = os.RemoveAll(dir)
+	}()
+	gcloudProgram = filepath.Join(dir, "gcloud")
+	if err := os.WriteFile(gcloudProgram, []byte(gcloudStandIn), 0o700); err != nil { //nolint:gosec // the stand-in is run
+		fmt.Fprintf(os.Stderr, "the stand-in for gcloud: %v\n", err)
+
+		return 1
+	}
+
+	return m.Run()
+}
+
+// standIn makes a directory holding the stand-in for gcloud (a link to gcloudProgram,
+// which finds its files beside the name it was started by), the records the bucket holds
 // before the build and the ones the build writes (each by its build's id), and the
 // build's last status, and answers the directory.
 func standIn(t *testing.T, before, written map[string]string, status string) string {
@@ -405,7 +447,10 @@ func standIn(t *testing.T, before, written map[string]string, status string) str
 		t.Fatalf("no jq to run the workflow's step with: %v (the step reads the deployment records with it)", err)
 	}
 	bin := t.TempDir()
-	files := map[string]string{"gcloud": gcloudStandIn, "status": status + "\n", "calls": ""}
+	if err := os.Symlink(gcloudProgram, filepath.Join(bin, "gcloud")); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{"status": status + "\n", "calls": ""}
 	for build, record := range before {
 		files[filepath.Join("records", build+".json")] = record + "\n"
 	}
@@ -418,12 +463,40 @@ func standIn(t *testing.T, before, written map[string]string, status string) str
 		}
 	}
 	for name, content := range files {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(content), 0o700); err != nil { //nolint:gosec // the stand-in is run
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	return bin
+}
+
+// TestStandInIsWrittenBeforeTheTests holds the rule gcloudProgram states: the gcloud a
+// test puts on a step's PATH is a link to the one program TestMain wrote, never a file the
+// test wrote, and started through the link it keeps its calls in the test's own directory.
+func TestStandInIsWrittenBeforeTheTests(t *testing.T) {
+	t.Parallel()
+
+	bin := standIn(t, nil, nil, "SUCCESS")
+	link := filepath.Join(bin, "gcloud")
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("os.Lstat() error = %v", err)
+	}
+	if target, _ := os.Readlink(link); info.Mode()&os.ModeSymlink == 0 || target != gcloudProgram {
+		t.Fatalf("%s is %v to %q, want a link to %s: a program a test writes can be busy when its step starts it", link, info.Mode(), target, gcloudProgram)
+	}
+	// The program is the stand-in TestMain wrote, started through the link this test made
+	// in its own temporary directory, with arguments the test names; no input but the
+	// test's reaches it.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+	out, err := exec.CommandContext(t.Context(), link, "builds", "describe", "b-1").CombinedOutput()
+	if err != nil || string(out) != "SUCCESS\n" {
+		t.Errorf("the stand-in started through its link printed %q (%v), want the status beside the link", out, err)
+	}
+	if got := calls(t, bin); got != "builds describe b-1\n" {
+		t.Errorf("the calls beside the link = %q, want the one call", got)
+	}
 }
 
 // calls are the stand-in's calls so far, one a line.

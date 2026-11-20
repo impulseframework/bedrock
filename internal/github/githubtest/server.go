@@ -205,6 +205,17 @@ type Server struct {
 	// the API, with their ids.
 	OrgSecrets  map[string]map[string]*OrgSecret
 	OrgRulesets map[string][]*github.Ruleset
+	// An organization in OrgSecretsRefused answers every request about its Actions
+	// secrets 403, Resource not accessible by integration, whether the secret named
+	// stands or not: GitHub's answer to an app that does not hold the organization's
+	// Secrets permission.
+	OrgSecretsRefused map[string]bool
+	// Failing answers a request made with the token, by its method and path (GET
+	// /repos/o/r/issues/7/comments), with the status named, before the token's routes
+	// look at it: a call GitHub fails, for a test of what a run does when one does. The
+	// routes an app's JWT opens (/app/...) and a manifest's conversion are served before
+	// it and never fail by it. Set under Update once the server serves.
+	Failing map[string]int
 	// ImmutableReleases are the organizations' policies on immutable releases, by
 	// organization: all, none or selected, none for an organization that never set one.
 	// An organization in ImmutableReleasesHidden answers not found to the read and the
@@ -318,7 +329,8 @@ func New(t *testing.T) *Server {
 		Variables: map[string]map[string]github.Variable{}, RunnerGroups: map[string][]*github.RunnerGroup{}, HostedRunners: map[string][]*github.HostedRunner{},
 		PublicApps: map[string]github.App{}, OrgInstallations: map[string][]github.OrgInstallation{}, Memberships: map[string]string{},
 		DefaultBranch: "main",
-		OrgSecrets:    map[string]map[string]*OrgSecret{}, OrgRulesets: map[string][]*github.Ruleset{},
+		OrgSecrets:    map[string]map[string]*OrgSecret{}, OrgRulesets: map[string][]*github.Ruleset{}, OrgSecretsRefused: map[string]bool{},
+		Failing:           map[string]int{},
 		ImmutableReleases: map[string]string{}, ImmutableReleasesHidden: map[string]bool{},
 		secretsPublic: public, secretsPrivate: private,
 	}
@@ -592,14 +604,20 @@ var routes = []route{
 	{envSecretRE, func(s *Server, w http.ResponseWriter, r *http.Request, m []string) {
 		s.environmentSecret(w, r, m[1]+"/"+m[2], m[3], m[4])
 	}},
-	{secretsKeyRE, func(s *Server, w http.ResponseWriter, _ *http.Request, _ []string) {
-		s.secretsKey(w)
+	{secretsKeyRE, func(s *Server, w http.ResponseWriter, _ *http.Request, m []string) {
+		if !s.secretsRefused(w, m[1]) {
+			s.secretsKey(w)
+		}
 	}},
 	{orgSecretRE, func(s *Server, w http.ResponseWriter, r *http.Request, m []string) {
-		s.orgSecret(w, r, m[1], m[2])
+		if !s.secretsRefused(w, m[1]) {
+			s.orgSecret(w, r, m[1], m[2])
+		}
 	}},
 	{orgSecretReposRE, func(s *Server, w http.ResponseWriter, r *http.Request, m []string) {
-		s.orgSecretRepositories(w, r, m[1], m[2])
+		if !s.secretsRefused(w, m[1]) {
+			s.orgSecretRepositories(w, r, m[1], m[2])
+		}
 	}},
 	{immutableRE, func(s *Server, w http.ResponseWriter, r *http.Request, m []string) {
 		s.immutableReleases(w, r, m[1])
@@ -720,6 +738,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Header.Get("Authorization") != "Bearer test-token" {
 		reply(w, http.StatusUnauthorized, map[string]string{messageKey: "Bad credentials"})
+
+		return
+	}
+	if status, failing := s.Failing[r.Method+" "+path]; failing {
+		reply(w, status, map[string]string{messageKey: "failing in this test"})
 
 		return
 	}
@@ -1641,7 +1664,11 @@ func reply(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(body); err != nil {
-		// The client reads a truncated answer; the test then fails on it.
+		// The client reads a truncated answer; the test then fails on it. The audit is of
+		// an HTML page that writes what a user sent: this is the test fake of GitHub's API,
+		// it answers the client under test, and what it writes here is its own encoder's
+		// error under a JSON content type.
+		// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter
 		_, _ = w.Write([]byte(strings.TrimSpace(err.Error())))
 	}
 }
@@ -2118,6 +2145,19 @@ func (s *Server) environmentBranches(w http.ResponseWriter, r *http.Request, key
 	default:
 		reply(w, http.StatusMethodNotAllowed, map[string]string{messageKey: r.Method})
 	}
+}
+
+// secretsRefused answers 403 for an organization that refuses its Actions secrets
+// (OrgSecretsRefused), and says whether it did: GitHub refuses an app without the
+// permission before it looks for the secret, so the answer is the same for one that
+// stands and one that does not.
+func (s *Server) secretsRefused(w http.ResponseWriter, org string) bool {
+	if !s.OrgSecretsRefused[org] {
+		return false
+	}
+	reply(w, http.StatusForbidden, map[string]string{messageKey: "Resource not accessible by integration"})
+
+	return true
 }
 
 // orgSecret describes the organization's secret, never with its value (GET), puts it

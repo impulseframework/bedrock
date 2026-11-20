@@ -937,6 +937,143 @@ func TestGoImage(t *testing.T) {
 	}
 }
 
+// seedImageWorkflow is the workflow of this repository that scans what the seeded
+// Dockerfile's last stage is built on, and seedBaseTag the local name it scans it under.
+const (
+	seedImageWorkflow = "../../.github/workflows/seed-image.yml"
+	seedBaseTag       = "seed-base:ci"
+)
+
+// TestSeedImageScan holds the seeded Dockerfile's last stage and the workflow that scans
+// its base together. That base is the one image of the seed whose packages are in every
+// new application's image, and the application's CI fails its image check at a finding of
+// the framework's cutoff, so a base gone stale here fails every new application's first
+// pull request. The workflow reads the image off the template's last FROM with awk: the
+// line names an image by digest and nothing else, and every golden's seeded Dockerfile
+// and every fixture application's own ends on it. The workflow pulls that image, scans it
+// under a local name, and its scan step is the framework's image check's: the same action
+// and the same inputs, with no key of its own. The workflow names a pull request, a push,
+// a schedule and a dispatch. What the test does not hold: the job around the step (a
+// condition, continue-on-error, an environment variable Grype reads), a Grype
+// configuration file at the repository root, and what each trigger is narrowed to.
+func TestSeedImageScan(t *testing.T) {
+	t.Parallel()
+
+	dockerfile, err := templates.ReadFile("templates/root/Dockerfile.tmpl")
+	if err != nil {
+		t.Fatalf("templates.ReadFile() error = %v", err)
+	}
+	workflow, err := os.ReadFile(seedImageWorkflow)
+	if err != nil {
+		t.Fatalf("os.ReadFile() error = %v: the workflow that scans the seeded image's base is gone", err)
+	}
+	base := lastFrom(string(dockerfile))
+	if !regexp.MustCompile(`^FROM [a-z0-9][a-z0-9./-]*@sha256:[0-9a-f]{64}$`).MatchString(base) {
+		t.Errorf("the template's last FROM is %q, want FROM and an image by digest alone: the workflow scans the line's second word", base)
+	}
+	seeded, err := filepath.Glob(filepath.Join(fixtures, "*", "Dockerfile"))
+	if err != nil || len(seeded) == 0 {
+		t.Fatalf("filepath.Glob() = %v, %v, want the fixture applications' Dockerfiles", seeded, err)
+	}
+	// The goldens are compared unless this run rewrites them (-update), which another
+	// test does while this one reads.
+	if !*update {
+		goldens, err := filepath.Glob(filepath.Join("testdata", "*", "root", "Dockerfile"))
+		if err != nil || len(goldens) == 0 {
+			t.Fatalf("filepath.Glob() = %v, %v, want the goldens' seeded Dockerfiles", goldens, err)
+		}
+		seeded = append(seeded, goldens...)
+	}
+	for _, name := range seeded {
+		content, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("os.ReadFile() error = %v", err)
+		}
+		if got := lastFrom(string(content)); got != base {
+			t.Errorf("%s ends on %q and the template's last FROM is %q: move both to the same digest", name, got, base)
+		}
+	}
+	lines := map[string]bool{}
+	for _, line := range strings.Split(string(workflow), "\n") {
+		lines[strings.TrimSpace(line)] = true
+	}
+	for _, line := range []string{
+		`image="$(awk '$1 == "FROM" { image = $2 } END { print image }' internal/render/templates/root/Dockerfile.tmpl)"`,
+		`docker pull "$image"`,
+		`docker tag "$image" ` + seedBaseTag,
+		"pull_request:",
+		"push:",
+		"schedule:",
+		"workflow_dispatch:",
+	} {
+		if !lines[line] {
+			t.Errorf("%s lacks the line %q", seedImageWorkflow, line)
+		}
+	}
+
+	a, err := app.Discover(filepath.Join(fixtures, "harbor"))
+	if err != nil {
+		t.Fatalf("app.Discover() error = %v", err)
+	}
+	framework, err := ci.Render(a)
+	if err != nil {
+		t.Fatalf("ci.Render() error = %v", err)
+	}
+	want, got := grypeStep(string(framework)), grypeStep(string(workflow))
+	// The framework's step waits for the application to have a Dockerfile; this one has
+	// no condition. Its image is the base under its local name, and its action is the
+	// framework's at whatever pin each repository carries.
+	delete(want, "if")
+	want["image"] = seedBaseTag
+	action := func(uses string) string {
+		name, _, _ := strings.Cut(uses, "@")
+
+		return name
+	}
+	want["uses"], got["uses"] = action(want["uses"]), action(got["uses"])
+	if want["uses"] == "" || want["fail-build"] == "" || want["severity-cutoff"] == "" {
+		t.Fatalf("the framework's image check is not read: its Grype step reads %v", want)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("%s scans otherwise than the framework's image check does; the seed is held to what an application's pull request is held to (-framework +workflow):\n%s", seedImageWorkflow, diff)
+	}
+}
+
+// lastFrom is the last FROM line of a Dockerfile, which names what its last stage is
+// built on.
+func lastFrom(dockerfile string) string {
+	last := ""
+	for _, line := range strings.Split(dockerfile, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "FROM" {
+			last = line
+		}
+	}
+
+	return last
+}
+
+// grypeStep is the settings of a workflow's step named Grype, the scan action's inputs by
+// name: the lines under the step's name up to the next step or the job's end.
+func grypeStep(workflow string) map[string]string {
+	settings := map[string]string{}
+	inStep := false
+	for _, line := range strings.Split(workflow, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "- name: Grype":
+			inStep = true
+		case inStep && (trimmed == "" || strings.HasPrefix(trimmed, "- ")):
+			return settings
+		case inStep:
+			if name, value, ok := strings.Cut(trimmed, ":"); ok {
+				settings[name] = strings.TrimSpace(value)
+			}
+		}
+	}
+
+	return settings
+}
+
 func TestWrite(t *testing.T) {
 	t.Parallel()
 
@@ -2411,4 +2548,47 @@ func dockerLines(dockerfile []byte, prefix, word string) []string {
 	}
 
 	return lines
+}
+
+// TestBranchIsAStringInTheWorkflow: the operations workflow writes the default branch
+// between double quotes wherever it is a value, so a branch YAML would otherwise read as a
+// number, a boolean or null stays the branch's name; the placement holds the branch to
+// characters that stand for themselves between the quotes.
+func TestBranchIsAStringInTheWorkflow(t *testing.T) {
+	t.Parallel()
+
+	for _, branch := range []string{"1.0", "true", "null", "release/2.x"} {
+		t.Run(branch, func(t *testing.T) {
+			t.Parallel()
+
+			m := deriveFixture(t, "harbor", "placement.json")
+			m.Placement.DefaultBranch = branch
+			if err := m.Placement.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			files, err := Render(m)
+			if err != nil {
+				t.Fatalf("Render() error = %v", err)
+			}
+			listed, set := 0, 0
+			for _, f := range files {
+				if !f.Root || f.Path != ".github/workflows/operations.yml" {
+					continue
+				}
+				for _, line := range strings.Split(string(f.Content), "\n") {
+					switch strings.TrimSpace(line) {
+					case "- " + branch, "BRANCH: " + branch:
+						t.Errorf("the workflow writes the branch as a plain word, which YAML reads by its own rules: %q", line)
+					case `- "` + branch + `"`:
+						listed++
+					case `BRANCH: "` + branch + `"`:
+						set++
+					}
+				}
+			}
+			if listed != 1 || set != 3 {
+				t.Errorf("the workflow names the branch between quotes in %d list item(s) and %d BRANCH value(s), want 1 and 3", listed, set)
+			}
+		})
+	}
 }

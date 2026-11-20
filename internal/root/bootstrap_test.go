@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-playground/errors/v5"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -87,7 +88,9 @@ func registerApp(t *testing.T, srv *githubtest.Server, m org.AppManifest, id int
 }
 
 // bootstrapWorld is the lab before the bootstrap: nothing on Google Cloud, the GitHub
-// organization with the Bot Account as an owner and the Cloud Build app installed.
+// organization with the Bot Account as an owner and the Cloud Build app installed. The
+// draft lists no library, so the infrastructure app the bootstrap makes holds nothing on
+// the organization's secrets, and GitHub's stand-in refuses them.
 func bootstrapWorld(t *testing.T) (*roottest.Fake, *githubtest.Server, *root.Clients) {
 	t.Helper()
 
@@ -97,6 +100,7 @@ func bootstrapWorld(t *testing.T) (*roottest.Fake, *githubtest.Server, *root.Cli
 	srv := githubtest.New(t)
 	srv.Login = "imp-bot"
 	srv.Memberships["imp-example"] = "admin"
+	srv.OrgSecretsRefused["imp-example"] = true
 	srv.PublicApps["google-cloud-build"] = github.App{ID: 10529, Slug: "google-cloud-build", Name: "Google Cloud Build"}
 	srv.OrgInstallations["imp-example"] = []github.OrgInstallation{{ID: 55, AppID: 10529, AppSlug: "google-cloud-build", RepositorySelection: github.AllRepositories}}
 	clients := &root.Clients{
@@ -519,4 +523,70 @@ func TestBootstrapRefusals(t *testing.T) {
 			t.Errorf("error = %v, want %q", err, want)
 		}
 	})
+}
+
+// TestBootstrapStopped: the bootstrap makes the root organization and checks it through
+// the engine, and either run of it that stops on an error says what it had gathered
+// before the stop: the one that makes the organization how many changes it made, never as
+// a finished apply counts them, and the check what it had found. The answer is the stop's
+// error.
+func TestBootstrapStopped(t *testing.T) {
+	t.Parallel()
+
+	stop := errors.New("the budgets could not be listed in this test")
+	tests := []struct {
+		name string
+		// arrange makes the budgets fail: at once, or from the engine's second run on.
+		arrange func(fake *roottest.Fake, clients *root.Clients)
+		under   string
+		want    string
+	}{
+		{
+			name:    "making the organization",
+			arrange: func(fake *roottest.Fake, _ *root.Clients) { fake.Refuse["Budgets"] = stop },
+			under:   "=== making the root organization as placement.json says ===\n",
+			want:    " change(s) before the stop; ",
+		},
+		{
+			name: "checking it",
+			arrange: func(fake *roottest.Fake, clients *root.Clients) {
+				datasets, runs := clients.Datasets, 0
+				clients.Datasets = func(ctx context.Context) (root.Datasets, error) {
+					runs++
+					if runs == 2 {
+						fake.Refuse["Budgets"] = stop
+					}
+
+					return datasets(ctx)
+				}
+			},
+			under: "=== checking ===\n",
+			want:  "\nBefore the stop: 0 change(s) the apply would make; ",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fake, srv, clients := bootstrapWorld(t)
+			p := draft()
+			brought := map[org.AppRole]root.BroughtApp{}
+			for i, m := range p.AppManifests() {
+				brought[m.Role] = root.BroughtApp{ID: fmt.Sprint(5000 + i), Key: registerApp(t, srv, m, int64(5000+i), true)}
+			}
+			tt.arrange(fake, clients)
+			var out bytes.Buffer
+			_, err := root.Bootstrap(context.Background(), clients, &root.BootstrapRequest{Placement: p, Dir: t.TempDir(), Token: []byte("test-token"), Brought: brought}, &out)
+			if !errors.Is(err, stop) {
+				t.Fatalf("Bootstrap() = %v, want the stop's error\n%s", err, out.String())
+			}
+			_, run, found := strings.Cut(out.String(), tt.under)
+			if !found || !strings.Contains(run, stoppedLine) || !strings.Contains(run, tt.want) {
+				t.Errorf("after %q the output lacks the stopped run's report (%q, then %q):\n%s", tt.under, stoppedLine, tt.want, out.String())
+			}
+			if verdict := finishedVerdict.FindString(run); verdict != "" {
+				t.Errorf("the stopped run printed a finished run's verdict (%s):\n%s", verdict, out.String())
+			}
+		})
+	}
 }

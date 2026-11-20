@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -232,6 +233,92 @@ func TestOrgRunsInWorkflow(t *testing.T) {
 	out, err = execute(d, "", "org", "check", "--dir", dir, "--issue")
 	if err != nil || !strings.Contains(out, fmt.Sprintf("Closed issue #%d", number)) || root.Issues[0].State != "closed" {
 		t.Errorf("the check once the finding is gone = %v; printed:\n%s\nissue: %+v", err, out, root.Issues[0])
+	}
+}
+
+// TestOrgRunsInWorkflowStopped: in the workflow of a root organization without a cloud, a
+// check, a plan and an apply that stop on an error say what they had gathered before the
+// stop, as incomplete, and end with the error as before. The check says it compared the
+// organization in part, and with --issue it opens no issue from half a comparison; the
+// plan puts the stop and the error into its comment on the pull request as the
+// infrastructure app; the apply says how many changes it made before the stop, never as
+// a finished apply counts them.
+func TestOrgRunsInWorkflowStopped(t *testing.T) {
+	// No t.Parallel(): the runs read the process environment.
+	t.Setenv(github.TokenEnv, "")
+	d, srv, brought, key := noCloudWorld(t)
+	dir := filepath.Join(t.TempDir(), "imf-root-infrastructure")
+	args := append([]string{"org", "bootstrap", dir, "--no-cloud", "--prefix", "imf", "--github-organization", "imp-example", "--public-library", "workflows", "--no-browser"}, brought...)
+	if out, err := execute(d, "", args...); err != nil {
+		t.Fatalf("org bootstrap --no-cloud = %v; printed:\n%s", err, out)
+	}
+	t.Setenv(org.InfrastructureKeySecret, string(key))
+	t.Setenv(rootorg.CommitEnv, "0123456789abcdef0123456789abcdef01234567")
+	t.Setenv(rootorg.PullRequestEnv, "7")
+
+	// A pull request lists a second library, and GitHub fails the read of the release
+	// app's key's secret, which every run comes to after the libraries.
+	p, err := org.ReadPlacement(filepath.Join(dir, "placement.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Libraries = append(p.Libraries, org.Library{Repository: "notes"})
+	if err := p.Write(filepath.Join(dir, "placement.json")); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		stopped = "The run stopped before it finished, at the error below: what it had gathered before the stop follows, and it is incomplete.\n"
+		creates = "libraries: the apply creates the private repository imp-example/notes, with an initial commit on master\n"
+		stop    = "GitHub GET /orgs/imp-example/actions/secrets/RELEASE_PLEASE_APP_PEM answered 500: failing in this test"
+	)
+	srv.Update(func() {
+		srv.Failing["GET /orgs/imp-example/actions/secrets/"+org.ReleaseKeyOrgSecret] = http.StatusInternalServerError
+	})
+	root := srv.Repos["imp-example/imf-root-infrastructure"]
+
+	out, _ := execute(d, "", "org", "check", "--dir", dir)
+	for _, want := range []string{stopped + creates, "\nBefore the stop: ", "\nThe root organization was compared with GitHub only in part: " + stop + "\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("org check printed:\n%s\nwant it to contain %q", out, want)
+		}
+	}
+	out, err = execute(d, "", "org", "check", "--dir", dir, "--issue")
+	if err == nil || !strings.Contains(err.Error(), stop) || !strings.Contains(out, stopped+creates) || len(root.Issues) != 0 {
+		t.Errorf("org check --issue = %v, with %d issue(s); printed:\n%s\nwant the stop's error, the report before it and no issue", err, len(root.Issues), out)
+	}
+
+	out, err = execute(d, "", "org", "plan", "--dir", dir)
+	if err == nil || !strings.Contains(err.Error(), stop) {
+		t.Fatalf("org plan = %v, want %q; printed:\n%s", err, stop, out)
+	}
+	for _, want := range []string{stopped + creates, "\nBefore the stop: ", "Posted the report on pull request #7 as the infrastructure app.\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("org plan printed:\n%s\nwant it to contain %q", out, want)
+		}
+	}
+	comments := root.Comments[7]
+	if len(comments) != 1 {
+		t.Fatalf("the comments on the pull request: %+v", comments)
+	}
+	for _, want := range []string{
+		"At 0123456:\n\n**The plan stopped before it finished, at the error below: what it had gathered before the stop follows, and it is incomplete.**\n\n",
+		"- libraries: creates the private repository imp-example/notes, with an initial commit on master\n",
+		"\nThe error the plan stopped at:\n\n    " + stop + "\n",
+	} {
+		if !strings.Contains(comments[0].Body, want) {
+			t.Errorf("the stopped plan's comment:\n%s\nwant it to contain %q", comments[0].Body, want)
+		}
+	}
+
+	out, err = execute(d, "", "org", "apply", "--dir", dir)
+	if err == nil || !strings.Contains(err.Error(), stop) {
+		t.Fatalf("org apply = %v, want %q; printed:\n%s", err, stop, out)
+	}
+	if !strings.Contains(out, "libraries: creates the private repository imp-example/notes") || !strings.Contains(out, stopped) || !strings.Contains(out, " change(s) before the stop; 0 finding(s).\n") || strings.Contains(out, "change(s); ") {
+		t.Errorf("org apply printed:\n%s\nwant the changes it made, then the stop with their count, and no finished apply's count", out)
+	}
+	if srv.Repos["imp-example/notes"] == nil {
+		t.Error("the apply did not make the library before it stopped")
 	}
 }
 
