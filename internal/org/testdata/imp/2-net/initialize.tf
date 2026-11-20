@@ -1,9 +1,10 @@
 terraform {
   # Same bucket as the foundation layers, prefix = this directory. A backend
-  # block cannot read a variable, so the bucket name is a placeholder that is
-  # substituted once, by hand, with the name the seed step created (see
-  # 0-bootstrap/README.md). The remote state block below carries the same
-  # placeholder; one substitution covers both.
+  # block cannot read a variable, so every render writes the bucket's name
+  # here, from placement.json (stateBucket): the bucket the creation's seed
+  # made (0-bootstrap/README.md, "Created by the root organization", step 1).
+  # The remote state block below carries the same name, written by the same
+  # render.
   backend "gcs" {
     bucket = "imp-boot-gbl-state-a1b2"
     prefix = "2-net"

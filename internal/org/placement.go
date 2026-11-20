@@ -320,8 +320,11 @@ type Placement struct {
 	CiLargeRunnerMaximum int `json:"ciLargeRunnerMaximum,omitempty"`
 	// SourceRepo is this repository's name, the source_repo label every resource carries.
 	SourceRepo string `json:"sourceRepo"`
-	// StateBucket is the seeded state bucket every backend block names; empty until the
-	// seed has run, and REPLACEME is rendered in its place.
+	// StateBucket is the organization's state bucket, which every backend block names
+	// and every render writes there. bedrock org create names a hosting organization's
+	// in its record (Fill), before the creation's seed makes the bucket; a root
+	// organization's bootstrap names its own. Empty in a placement neither filled in:
+	// Bucket then answers the REPLACEME form for 2-env's seeded tfvars.
 	StateBucket string `json:"stateBucket,omitempty"`
 	// BreakGlassAccount is the organization's break-glass account: a Google account in
 	// the Workspace directory with no person behind it, which runs the root organization's
@@ -987,8 +990,10 @@ func (p *Placement) Secondary() Region {
 	return p.Regions[1]
 }
 
-// Bucket is the state bucket every backend block names: the seeded one, or the
-// REPLACEME form the seed step's README says to substitute.
+// Bucket is the state bucket's name for 2-env's seeded terraform.tfvars (state_bucket),
+// the one template that takes it: the placement's stateBucket, or the REPLACEME form
+// while the placement records none. The backend blocks take StateBucket itself, which
+// every render writes there.
 func (p *Placement) Bucket() string {
 	if p.StateBucket != "" {
 		return p.StateBucket
