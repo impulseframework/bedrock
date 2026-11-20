@@ -55,22 +55,25 @@ var ErrLocked = errors.New("the lock is held")
 
 // The constructors an exported constructor of this file calls with an identity, a
 // project or options of its choosing: the impersonation, the Org Policy client, the
-// Budgets client (the module's own constructor of it), and the seven clients NewIAM
-// opens. Each variable holds Google's or the module's constructor itself, and nothing but
-// a test assigns one. A test puts a function in its place that records what the exported
-// constructor calls it with: the identity and the project a client calls as show at a
-// call alone, and a call needs credentials a test has none of.
+// Budgets client (the module's own constructor of it), the Cloud DNS service and the
+// Site Verification service as NewDNSAs and NewVerifierAs open them, and the seven
+// clients NewIAM opens. Each variable holds Google's or the module's constructor itself,
+// and nothing but a test assigns one. A test puts a function in its place that records
+// what the exported constructor calls it with: the identity and the project a client
+// calls as show at a call alone, and a call needs credentials a test has none of.
 var (
-	impersonatedTokenSource = impersonate.CredentialsTokenSource
-	newOrgPolicyClient      = orgpolicy.NewClient
-	newBudgetsClient        = budgets.New
-	newIAMAdminClient       = admin.NewIamClient
-	newProjectsClient       = resourcemanager.NewProjectsClient
-	newFoldersClient        = resourcemanager.NewFoldersClient
-	newOrganizationsClient  = resourcemanager.NewOrganizationsClient
-	newBillingService       = cloudbilling.NewService
-	newStorageClient        = storage.NewClient
-	newServiceUsageService  = serviceusage.NewService
+	impersonatedTokenSource    = impersonate.CredentialsTokenSource
+	newOrgPolicyClient         = orgpolicy.NewClient
+	newBudgetsClient           = budgets.New
+	newDNSService              = dns.NewService
+	newSiteVerificationService = siteverification.NewService
+	newIAMAdminClient          = admin.NewIamClient
+	newProjectsClient          = resourcemanager.NewProjectsClient
+	newFoldersClient           = resourcemanager.NewFoldersClient
+	newOrganizationsClient     = resourcemanager.NewOrganizationsClient
+	newBillingService          = cloudbilling.NewService
+	newStorageClient           = storage.NewClient
+	newServiceUsageService     = serviceusage.NewService
 )
 
 // operationPoll is how often a long-running operation is asked after.
@@ -254,7 +257,7 @@ func NewDNSAs(ctx context.Context, identity string) (DNS, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
-	service, err := dns.NewService(ctx, option.WithTokenSource(source))
+	service, err := newDNSService(ctx, option.WithTokenSource(source))
 	if err != nil {
 		return nil, errors.Wrapf(err, "dns.NewService(): as %s", identity)
 	}
@@ -271,7 +274,7 @@ func NewVerifierAs(ctx context.Context, identity string) (Verifier, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
-	service, err := siteverification.NewService(ctx, option.WithTokenSource(source))
+	service, err := newSiteVerificationService(ctx, option.WithTokenSource(source))
 	if err != nil {
 		return nil, errors.Wrapf(err, "siteverification.NewService(): as %s", identity)
 	}
@@ -1374,7 +1377,7 @@ func NewBudgetsAs(ctx context.Context, identity string) (budgets.Client, error) 
 		return nil, errors.Wrapf(err, "impersonate.CredentialsTokenSource(): %s", identity)
 	}
 
-	return budgets.New(ctx, option.WithTokenSource(source))
+	return newBudgetsClient(ctx, option.WithTokenSource(source))
 }
 
 // NewDatasets opens BigQuery.

@@ -11,11 +11,13 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
+	"cloud.google.com/go/storage"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"golang.org/x/oauth2"
@@ -30,21 +32,27 @@ const asIdentity = "sa-plan@imr-example-dev-core-9c1d.iam.gserviceaccount.com"
 
 // TestStorageAsCallsAsTheIdentity: NewStorageAs asks for the token of the identity it is
 // given with the scope that reads, NewStorageAsWriter with the scope that writes, each
-// with no option, and the client each opens calls with the token it was answered. A
-// client opened as the process's own identity, the deploy identity, may not read what the
-// plan identity may; one opened with the other scope would write where it is to read
-// alone, or be refused its write. The impersonation is the package's variable, which
-// holds a function here that records what the constructor calls it with
-// (recordImpersonations): an option the constructor gave it would change the credentials
-// the identity is impersonated with, so any option fails the test. The token source it
-// answers is Google's own, asking a stand-in for the IAM Credentials API that refuses
-// every token and says whose it was asked for, and with which scopes, so a call of the
-// client ends at that refusal and its own request is never sent. The process's default
-// credentials are named by a file that is not there, so a client that was not handed the
-// token source cannot be opened at all.
+// with no option; each opens its client with the source of that token and nothing else,
+// and the client each opens calls with the token it was answered. A client opened as the
+// process's own identity, the deploy identity, may not read what the plan identity may;
+// one opened with the other scope would write where it is to read alone, or be refused
+// its write. The impersonation is the package's variable, which holds a function here
+// that records what the constructor calls it with (recordImpersonations): an option the
+// constructor gave it would change the credentials the identity is impersonated with, so
+// any option fails the test. The token source it answers is Google's own, asking a
+// stand-in for the IAM Credentials API that refuses every token and says whose it was
+// asked for, and with which scopes, so a call of the client ends at that refusal and its
+// own request is never sent. That refusal comes before anything else the client was
+// opened with is used: an option beside the token source, which could send the client's
+// calls somewhere else, shows at no call. So the client's constructor is the package's
+// variable too, which holds a function here that records the options of the call and
+// opens the client with them (recordStorageOpenings): the options are read to be the one
+// that carries the token source the impersonation answered, that very one. The process's
+// default credentials are named by a file that is not there, so a client that was not
+// handed the token source cannot be opened at all.
 func TestStorageAsCallsAsTheIdentity(t *testing.T) {
-	// The impersonation swapped below is the package's and the variables the process's, so
-	// the test runs alone: t.Setenv forbids t.Parallel.
+	// The impersonation and the constructor swapped below are the package's and the
+	// variables the process's, so the test runs alone: t.Setenv forbids t.Parallel.
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
 	// A storage client opens without credentials when this variable names an emulator, and
 	// would never ask for the identity's token: a machine that runs one is not to fail the
@@ -53,6 +61,7 @@ func TestStorageAsCallsAsTheIdentity(t *testing.T) {
 
 	ctx := context.Background()
 	asked := recordImpersonations(t)
+	opened := recordStorageOpenings(t)
 	tests := []struct {
 		name      string
 		open      func() (Store, error)
@@ -74,7 +83,7 @@ func TestStorageAsCallsAsTheIdentity(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		asked.calls, asked.answers = nil, nil
+		asked.calls, asked.answers, *opened = nil, nil, nil
 		store, err := tt.open()
 		if err != nil {
 			t.Errorf("%s() = %v", tt.name, err)
@@ -84,6 +93,15 @@ func TestStorageAsCallsAsTheIdentity(t *testing.T) {
 		wantAsked := []impersonation{{config: impersonate.CredentialsConfig{TargetPrincipal: asIdentity, Scopes: []string{tt.wantScope}}}}
 		if diff := cmp.Diff(wantAsked, asked.calls, cmp.AllowUnexported(impersonation{}), cmpopts.EquateEmpty()); diff != "" {
 			t.Errorf("%s() asked for other than that identity's token, once, with that scope and no option (-want +got):\n%s", tt.name, diff)
+		}
+		// The option holds the token source in a field of its own, which is not exported, so
+		// the lists are compared whole: they are equal when the one option of the call holds
+		// the source the impersonation answered. An impersonation asked for other than once
+		// is reported above, and leaves no one source to compare with.
+		if len(asked.answers) == 1 {
+			if want := [][]option.ClientOption{{option.WithTokenSource(asked.answers[0])}}; !reflect.DeepEqual(want, *opened) {
+				t.Errorf("%s() called the client's constructor with %#v, want one call with the source of the identity's token and nothing else, %#v", tt.name, *opened, want)
+			}
 		}
 		want := tokenRefusal(asIdentity, tt.wantScope)
 		if _, err := store.Read(ctx, "imr-example-dev-records", "example/record.json"); err == nil || !strings.Contains(err.Error(), want) {
@@ -344,6 +362,30 @@ func recordSecretManagerOpenings(t *testing.T) *[][]option.ClientOption {
 	t.Cleanup(func() {
 		newSecretManagerClient = library
 		_ = conn.Close()
+	})
+
+	return calls
+}
+
+// recordStorageOpenings puts a function in the place of the Cloud Storage client's
+// constructor for the length of the test, and answers the calls it gets, each the options
+// it was given. The function calls Google's constructor with those very options, so the
+// client opens as its caller chose, and a call of it still shows whose token it calls
+// with. What it records is a copy, which nothing the constructor does with the list it is
+// handed can change. The variable is the package's, so a test that swaps it does not run
+// in parallel.
+func recordStorageOpenings(t *testing.T) *[][]option.ClientOption {
+	t.Helper()
+
+	library := newStorageClient
+	calls := &[][]option.ClientOption{}
+	newStorageClient = func(ctx context.Context, opts ...option.ClientOption) (*storage.Client, error) {
+		*calls = append(*calls, slices.Clone(opts))
+
+		return library(ctx, opts...)
+	}
+	t.Cleanup(func() {
+		newStorageClient = library
 	})
 
 	return calls

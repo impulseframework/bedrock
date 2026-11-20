@@ -176,7 +176,10 @@ func NewKeyClientAs(ctx context.Context, identity string) (KeyClient, error) {
 // Google's own, which nothing but a test assigns. NewKeyLister opens with the process's
 // default credentials, which a test has none of: a test of it puts a function in the
 // constructor's place that records the options it is called with, and opens the service
-// at a server of the test's own.
+// at a server of the test's own. A test of NewKeyClientAs puts one there that records the
+// options and opens the service with them: an option beside the identity's token source
+// could send the client's calls somewhere else or bill them to another project, which a
+// call in a test, ended at the refusal of the token, does not show.
 var newKeysService = apikeys.NewService
 
 // newKeyClient opens the API Keys client with the options given, which a test points at

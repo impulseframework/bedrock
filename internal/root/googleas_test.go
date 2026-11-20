@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"path"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,19 +26,26 @@ const asIdentity = "sa-applier@imr-root-gbl-core-f2a4.iam.gserviceaccount.com"
 
 // TestTheAsConstructorsCallAsTheIdentity: each of NewDNSAs, NewVerifierAs and NewBudgetsAs
 // asks for the token of the identity it is given, with that constructor's scopes and
-// with no option, and the client it opens calls with the token it was answered. A client
-// opened as another identity, or with the process's own, shows that at its first call
-// alone. The impersonation is the package's variable, which holds a function here that
-// records what the constructor calls it with (recordImpersonations): an option the
-// constructor gave it would change the credentials the identity is impersonated with, so
-// any option fails the test. The token source it answers is Google's own, asking a
-// stand-in for the IAM Credentials API that refuses every token and says whose it was
-// asked for, so a call of the client ends at that refusal and its own request is never
-// sent. The process's default credentials are named by a file that is not there, so a
-// client that was not handed the token source cannot be opened at all.
+// with no option, opens its client with the source of that token and nothing else, and
+// the client it opens calls with the token it was answered. A client opened as another
+// identity, or with the process's own, shows that at its first call alone. The
+// impersonation is the package's variable, which holds a function here that records what
+// the constructor calls it with (recordImpersonations): an option the constructor gave
+// it would change the credentials the identity is impersonated with, so any option fails
+// the test. The token source it answers is Google's own, asking a stand-in for the IAM
+// Credentials API that refuses every token and says whose it was asked for, so a call of
+// the client ends at that refusal and its own request is never sent. That refusal comes
+// before anything else the client was opened with is used: an option beside the token
+// source, which could send the client's calls somewhere else or bill them to another
+// project, shows at no call. So each client's constructor is the package's variable too,
+// which holds a function here that records the options of the call and opens the client
+// with them (recordOpeningsPassedOn): the options are read to be the one that carries the
+// token source the impersonation answered, that very one. The process's default
+// credentials are named by a file that is not there, so a client that was not handed the
+// token source cannot be opened at all.
 func TestTheAsConstructorsCallAsTheIdentity(t *testing.T) {
-	// The impersonation swapped below is the package's and the variable the process's, so
-	// the test runs alone: t.Setenv forbids t.Parallel.
+	// The impersonation and the constructors swapped below are the package's and the
+	// variable the process's, so the test runs alone: t.Setenv forbids t.Parallel.
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-credentials.json"))
 
 	ctx := context.Background()
@@ -47,6 +56,8 @@ func TestTheAsConstructorsCallAsTheIdentity(t *testing.T) {
 		call func() error
 		// wantScopes are the scopes the identity's token is asked for with.
 		wantScopes []string
+		// opened are the calls of the client's constructor, each the options it was given.
+		opened *[][]option.ClientOption
 	}{
 		{
 			name: "NewDNSAs",
@@ -61,6 +72,7 @@ func TestTheAsConstructorsCallAsTheIdentity(t *testing.T) {
 				return err
 			},
 			wantScopes: []string{cloudPlatformScope},
+			opened:     recordOpeningsPassedOn(t, &newDNSService),
 		},
 		{
 			name: "NewVerifierAs",
@@ -75,6 +87,7 @@ func TestTheAsConstructorsCallAsTheIdentity(t *testing.T) {
 				return err
 			},
 			wantScopes: []string{cloudPlatformScope, siteverification.SiteverificationScope},
+			opened:     recordOpeningsPassedOn(t, &newSiteVerificationService),
 		},
 		{
 			name: "NewBudgetsAs",
@@ -89,14 +102,24 @@ func TestTheAsConstructorsCallAsTheIdentity(t *testing.T) {
 				return err
 			},
 			wantScopes: []string{cloudPlatformScope},
+			opened:     recordOpeningsPassedOn(t, &newBudgetsClient),
 		},
 	}
 	for _, tt := range tests {
-		*asked = nil
+		asked.calls, asked.answers = nil, nil
 		err := tt.call()
 		wantAsked := []impersonation{{config: impersonate.CredentialsConfig{TargetPrincipal: asIdentity, Scopes: tt.wantScopes}}}
-		if diff := cmp.Diff(wantAsked, *asked, cmp.AllowUnexported(impersonation{}), cmpopts.EquateEmpty()); diff != "" {
+		if diff := cmp.Diff(wantAsked, asked.calls, cmp.AllowUnexported(impersonation{}), cmpopts.EquateEmpty()); diff != "" {
 			t.Errorf("%s() asked for other than that identity's token, once, with those scopes and no option (-want +got):\n%s", tt.name, diff)
+		}
+		// The option holds the token source in a field of its own, which is not exported, so
+		// the lists are compared whole: they are equal when the one option of the call holds
+		// the source the impersonation answered. An impersonation asked for other than once
+		// is reported above, and leaves no one source to compare with.
+		if len(asked.answers) == 1 {
+			if want := [][]option.ClientOption{{option.WithTokenSource(asked.answers[0])}}; !reflect.DeepEqual(want, *tt.opened) {
+				t.Errorf("%s() called its client's constructor with %#v, want one call with the source of the identity's token and nothing else, %#v", tt.name, *tt.opened, want)
+			}
 		}
 		if want := tokenRefusal(asIdentity, tt.wantScopes...); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("a call of the client %s() opened = %v, want the refusal %q: the client does not call with the token it asked for", tt.name, err, want)
@@ -258,24 +281,57 @@ type impersonation struct {
 	options []option.ClientOption
 }
 
+// impersonations are the calls of the impersonation a test recorded, and the token
+// source each was answered, in the order of the calls.
+type impersonations struct {
+	calls   []impersonation
+	answers []oauth2.TokenSource
+}
+
 // recordImpersonations puts a function in the place of the package's impersonation for
 // the length of the test, and answers the calls it gets. The function asks Google's own
 // impersonation for the token source, for the identity and the scopes it was called
 // with, and gives it an HTTP client that stands in for the IAM Credentials API
 // (tokenRefusals) in place of the options it was called with. The variable is the
 // package's, so a test that swaps it does not run in parallel.
-func recordImpersonations(t *testing.T) *[]impersonation {
+func recordImpersonations(t *testing.T) *impersonations {
 	t.Helper()
 
 	library := impersonatedTokenSource
-	calls := &[]impersonation{}
+	recorded := &impersonations{}
 	impersonatedTokenSource = func(ctx context.Context, config impersonate.CredentialsConfig, opts ...option.ClientOption) (oauth2.TokenSource, error) {
-		*calls = append(*calls, impersonation{config: config, options: opts})
+		source, err := library(ctx, config, option.WithHTTPClient(&http.Client{Transport: tokenRefusals{}}))
+		recorded.calls = append(recorded.calls, impersonation{config: config, options: opts})
+		recorded.answers = append(recorded.answers, source)
 
-		return library(ctx, config, option.WithHTTPClient(&http.Client{Transport: tokenRefusals{}}))
+		return source, err
 	}
 	t.Cleanup(func() {
 		impersonatedTokenSource = library
+	})
+
+	return recorded
+}
+
+// recordOpeningsPassedOn puts a function in the place of a client's constructor for the
+// length of the test, and answers the calls it gets, each the options it was given. The
+// function calls the constructor it stands for with those very options, so the client
+// opens as its caller chose, and a call of it still shows whose token it calls with:
+// recordOpenings is the one that opens with options of the test's own. What it records is
+// a copy, which nothing the constructor does with the list it is handed can change. The
+// variable is the package's, so a test that swaps one does not run in parallel.
+func recordOpeningsPassedOn[C any](t *testing.T, constructor *func(context.Context, ...option.ClientOption) (C, error)) *[][]option.ClientOption {
+	t.Helper()
+
+	library := *constructor
+	calls := &[][]option.ClientOption{}
+	*constructor = func(ctx context.Context, opts ...option.ClientOption) (C, error) {
+		*calls = append(*calls, slices.Clone(opts))
+
+		return library(ctx, opts...)
+	}
+	t.Cleanup(func() {
+		*constructor = library
 	})
 
 	return calls
