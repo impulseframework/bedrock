@@ -4,7 +4,7 @@ variable "billing_account_id" {
 }
 
 variable "boot_layer_roles" {
-  description = "Roles granted to the boot layer identity on the organization's folder, and nowhere higher. The creation's seed grants the same list, by API (README, \"Created by the root organization\", step 1); change both together."
+  description = "Roles granted to the boot layer identity on the organization's folder, and nowhere higher. The creation's seed grants the same list, by API (README, \"Created by the root organization\", step 1): this default and the seed's list are both bedrock's, and a test of bedrock's holds them the same."
   type        = list(string)
   default = [
     "roles/cloudbuild.builds.editor",        # the two triggers that plan and apply the layers (cloud-build.tf)
@@ -39,7 +39,7 @@ variable "boot_project_id" {
 }
 
 variable "boot_project_roles" {
-  description = "Roles granted to the boot layer identity on the boot project alone: the roles Google binds on a project or at the organization node and never on a folder. The creation's seed grants the same list, by API (README, \"Created by the root organization\", step 1); change both together."
+  description = "Roles granted to the boot layer identity on the boot project alone: the roles Google binds on a project or at the organization node and never on a folder. The creation's seed grants the same list, by API (README, \"Created by the root organization\", step 1): this default and the seed's list are both bedrock's, and a test of bedrock's holds them the same."
   type        = list(string)
   default = [
     "roles/iam.roleAdmin", # the custom roles this layer creates in the boot project (project updater, state bucket policy admin)

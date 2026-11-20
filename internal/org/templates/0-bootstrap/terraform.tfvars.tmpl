@@ -5,9 +5,11 @@
 # render outside a creation did not have.
 
 billing_account_id = "{{.BillingAccount}}"
-# boot_project_id is the ID the seed step chose, suffix included;
-# organization_folder_id and terraform_folder_id are the bare numeric folder
-# IDs from the seed step, under organization {{.OrganizationID}}.
+# boot_project_id is the ID the organization's record names (projects.boot),
+# suffix included: bedrock org create chose the suffix where the record named
+# none, and the creation's seed made the project with that ID.
+# organization_folder_id and terraform_folder_id are the bare numeric IDs of
+# the two folders the seed made, under organization {{.OrganizationID}}.
 boot_project_id        = "{{.BootProjectID}}"
 organization_folder_id = "{{.OrganizationFolderID}}"
 terraform_folder_id    = "{{.TerraformFolderID}}"

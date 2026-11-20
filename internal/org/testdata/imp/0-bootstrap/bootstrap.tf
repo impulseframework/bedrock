@@ -80,10 +80,12 @@ import {
 # project for every downstream layer.
 #
 # random_project_id is off and the ID comes from a variable: the project already
-# exists with a suffix the seed script chose, and the module would otherwise
-# generate a different one and try to create a second project. folder_id comes
-# from the same variable rather than from google_folder.terraform so that a
-# tainted or replaced folder cannot cascade into replacing the project.
+# exists, made by the creation's seed with the ID the organization's record
+# names (bedrock org create chose its suffix where the record named none), and
+# the module would otherwise generate a different one and try to create a
+# second project. folder_id comes from the same variable rather than from
+# google_folder.terraform so that a tainted or replaced folder cannot cascade
+# into replacing the project.
 module "boot_project" {
   source  = "terraform-google-modules/project-factory/google"
   version = "18.3.0"
@@ -164,7 +166,9 @@ import {
 # API (README.md, "Created by the root organization", step 1), so the
 # identity can run this layer at all. Declaring it here makes the grants
 # visible and reviewable instead of leaving them as console state nobody can
-# audit. Keep the two lists in sync: shrinking boot_layer_roles revokes
+# audit. Both lists are bedrock's, and a test of bedrock's holds them the
+# same: the seed's is in its code, and this one is var.boot_layer_roles'
+# default, rendered from its template. Shrinking boot_layer_roles revokes
 # permissions from the identity running the apply, and the run that does it
 # may not survive to finish. Nothing is granted at the organization node.
 resource "google_folder_iam_member" "boot_tofu" {
@@ -179,7 +183,8 @@ resource "google_folder_iam_member" "boot_tofu" {
 # Custom Roles Administrator binds on a project or at the organization node,
 # never on a folder (IAM refuses the binding), so the identity holds it on the
 # boot project alone, where the custom roles this layer makes live. The seed
-# grants the same list (var.boot_project_roles); keep the two in sync.
+# grants the same list (var.boot_project_roles' default), which the same test
+# of bedrock's holds to the seed's.
 resource "google_project_iam_member" "boot_tofu_project" {
   for_each = toset(var.boot_project_roles)
 

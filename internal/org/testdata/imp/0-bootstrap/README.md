@@ -194,10 +194,10 @@ resources assert them.
 | Name | Description | Type | Default | Required |
 |---|---|---|---|:---:|
 | `billing_account_id` | Billing account ID to link projects to. | `string` | n/a | yes |
-| `boot_layer_roles` | Roles granted to the boot layer identity on the organization's folder. The seed grants the same list; change both together. | `list(string)` | eight roles, see `variables.tf` | no |
+| `boot_layer_roles` | Roles granted to the boot layer identity on the organization's folder. The creation's seed grants the same list: the default and the seed's list are both bedrock's, and a test of bedrock's holds them the same. | `list(string)` | eight roles, see `variables.tf` | no |
 | `boot_plan_roles` | Reads on the organization's folder of the two boot layers' plan identities. | `list(string)` | eight roles, see `variables.tf` | no |
 | `boot_project_id` | Project ID of the seeded boot project, suffix included. Adopted, not created. | `string` | n/a | yes |
-| `boot_project_roles` | Roles granted to the boot layer identity on the boot project alone, the ones Google never binds on a folder. The seed grants the same list; change both together. | `list(string)` | one role, see `variables.tf` | no |
+| `boot_project_roles` | Roles granted to the boot layer identity on the boot project alone, the ones Google never binds on a folder. The creation's seed grants the same list: the default and the seed's list are both bedrock's, and a test of bedrock's holds them the same. | `list(string)` | one role, see `variables.tf` | no |
 | `org_project_roles` | Roles granted to the org layer identity on the boot project alone, the ones Google never binds on a folder: Custom Roles Administrator, for the custom role `1-org` creates there. | `list(string)` | one role, see `variables.tf` | no |
 | `github_default_branch` | The infrastructure repository's default branch: the plan trigger runs on a pull request into it, the apply trigger on a push to it. | `string` | `"master"` | no |
 | `github_organization` | The GitHub organization of the infrastructure and application repositories. | `string` | `"imp-example"` | no |

@@ -5,9 +5,11 @@
 # render outside a creation did not have.
 
 billing_account_id = "012345-6789AB-CDEF01"
-# boot_project_id is the ID the seed step chose, suffix included;
-# organization_folder_id and terraform_folder_id are the bare numeric folder
-# IDs from the seed step, under organization 123456789012.
+# boot_project_id is the ID the organization's record names (projects.boot),
+# suffix included: bedrock org create chose the suffix where the record named
+# none, and the creation's seed made the project with that ID.
+# organization_folder_id and terraform_folder_id are the bare numeric IDs of
+# the two folders the seed made, under organization 123456789012.
 boot_project_id        = "imp-boot-gbl-core-a1b2"
 organization_folder_id = "REPLACEME"
 terraform_folder_id    = "REPLACEME"

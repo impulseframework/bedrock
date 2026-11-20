@@ -1368,7 +1368,7 @@ func seedEnvironments(placed []string) []string {
 // bucket or lacks an environment project's id or number, which 1-org's outputs give.
 func (p *Placement) ApplicationPlacement(app, repository, bedrockVersion, bedrockSHA256 string) (*derive.Placement, error) {
 	if p.StateBucket == "" {
-		return nil, errors.New("placement.json records no stateBucket yet: the seed's state bucket goes there (step 2 of the hand steps, 0-bootstrap/README.md) before an application's placement can name it")
+		return nil, errors.New("placement.json records no stateBucket yet: bedrock org create names the state bucket in the organization's record and the creation's seed makes it (0-bootstrap/README.md, \"Created by the root organization\", step 1), before an application's placement can name it")
 	}
 	if _, missing := p.ApplicationProjects(); len(missing) > 0 {
 		return nil, errors.Newf("placement.json records no project id and number for %s yet: record 1-org's project_ids and project_numbers outputs there (projects, projectNumbers), since an application's placement names its environments' projects, then register again", prose(missing))
