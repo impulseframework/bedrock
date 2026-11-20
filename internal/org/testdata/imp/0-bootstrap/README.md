@@ -141,12 +141,12 @@ applies would, and left no person with a grant to trim:
    applies' inits.
 5. **The withdrawal.** The creating identity took its own grants off
    everything it made: Owner on each project, Folder Admin and Folder Editor
-   on each folder, and its three roles on the organization's folder. It holds
-   nothing here now; a marker in the root organization's state bucket says the
-   creation is done, and a pull request there recorded the folder
-   (`hostingOrganizations`), from which that organization's apply keeps the
-   boot identity's grant on the shared secrets, by API: a root organization
-   has no layers ("The GitHub Apps' keys" below).
+   on each folder, and Project Creator and Tag Administrator on the
+   organization's folder. It holds nothing here now; a marker in the root
+   organization's state bucket says the creation is done, and a pull request
+   there recorded the folder (`hostingOrganizations`), from which that
+   organization's apply keeps the boot identity's grant on the shared secrets,
+   by API: a root organization has no layers ("The GitHub Apps' keys" below).
 
 Nothing on the billing account stays by hand: the spend budget is the
 creation's ("The spend budget" below). The consent screen of each environment

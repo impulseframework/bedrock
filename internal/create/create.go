@@ -152,10 +152,11 @@ const (
 // creatingFolderRoles are the roles the creation grants its identity on the
 // organization's folder for the first applies, beside the Folder Admin a folder's creator
 // has, since a folder's administrator creates no project: Project Creator for the boot
-// project and 1-org's projects, Organization Policy Administrator for 1-org's policies on
-// its folders, and Tag Administrator for the tag keys 1-org makes in the environment
-// projects. Its Folder Admin, a creator's, covers the rest; the withdrawal takes all of
-// it off.
+// project and 1-org's projects, and Tag Administrator for the tag keys 1-org makes in the
+// environment projects. Its Folder Admin, a creator's, covers the rest; the withdrawal
+// takes all of it off. The organization policies on the folder are not the creating
+// identity's to set: the root organization's apply sets them as the applier
+// (Request.Seeded).
 var creatingFolderRoles = []string{bootProjectRoleCreator, tagAdminRole}
 
 // services are the APIs the creation enables in a boot project before its 0-bootstrap
