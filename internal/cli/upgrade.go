@@ -69,13 +69,16 @@ application.
 
 In a hosting organization's repository a move that changes the pin's kind, a release to a commit or a
 commit to a release, changes the shape of the Cloud Build triggers' steps (0-bootstrap/cloud-build.tf:
-a release pin renders the fetch step alone, a commit pin adds the step that builds it), and
-0-bootstrap is the one layer no trigger applies: the triggers as applied stay in the old shape,
-and in the release shape the fetch step refuses a commit pin. So upgrade says so, asks for yes
-typed back (--yes stands in for it where there is no terminal; without either the run is refused
-and nothing is moved), and after the render applies 0-bootstrap as you, with your sign-in, the way
-the break-glass account applies the layer by hand: the plan updates the two triggers in place.
-A move that keeps the kind applies nothing.
+a release pin renders the fetch step alone, a commit pin adds the step that builds it). The apply
+trigger applies 0-bootstrap, the layer that holds the triggers, as it applies every layer, in a run
+on the steps as they stand, and in the release shape the fetch step refuses a commit pin: after a
+move from a release to a commit the pull request could not be planned, and no run would reach the
+layer's apply. So upgrade says so, asks for yes typed back (--yes stands in for it where there is no
+terminal; without either the run is refused and nothing is moved), and after the render applies
+0-bootstrap as you, with your sign-in, the way the break-glass account applies the layer by hand: the
+plan updates the two triggers in place. It applies a move from a commit to a release the same way,
+which leaves the triggers and the repository in one shape, though the commit shape's steps run a
+release too. A move that keeps the kind applies nothing.
 
 A root organization has no layer, so nothing is applied in its repository and nothing is asked.
 With a cloud, its two triggers' steps change shape with the pin's kind the same way, and the engine
@@ -246,7 +249,10 @@ func (t *upgradeTarget) shapeChange(version string) *shapeChange {
 
 // shapeChange is a move of the organization's pin across kinds (org.PinKind), which
 // changes the shape of the Cloud Build triggers' steps. In a hosting organization
-// 0-bootstrap, the one layer no trigger applies, is applied here after the render. In a
+// 0-bootstrap, the layer that holds the triggers, is applied here after the render: the
+// apply trigger applies it as it applies every layer, in a run on the steps as they
+// stand, and in the release shape those steps refuse a commit pin, so after a move from
+// a release to a commit no run reaches the layer's apply (layers' hand.go). In a
 // root organization (engine) there is no layer and nothing is applied here: the engine
 // makes the triggers, and the move says what brings them to the new shape.
 type shapeChange struct {

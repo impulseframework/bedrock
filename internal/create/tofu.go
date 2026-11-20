@@ -1,7 +1,6 @@
 // tofu.go is the creation's first applies of the new organization's two foundation
-// layers: what a person does by hand for an organization bootstrapped by hand
-// (0-bootstrap/README.md, "Apply with local state", then "Migrate the state into the
-// bucket"; 1-org/README.md, "Applying"), done once by the creating identity against the
+// layers (0-bootstrap/README.md, "Created by the root organization", steps 2 and 3;
+// 1-org/README.md, "Applying"), each done once by the creating identity against the
 // state bucket the seed made, with no local state to migrate: tofu init at the layer's
 // prefix, then an apply. 1-org's apply makes the organization's folders, projects and
 // identities, and its outputs record them in the placement, as a person records

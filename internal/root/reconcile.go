@@ -130,6 +130,10 @@ type engine struct {
 	// to the end (releaseSecrets), so what its report says of the infrastructure app's
 	// permission on them is final.
 	secretsSettled bool
+	// granted are the bindings on the identities themselves this run made
+	// (Desired.ServiceAccountGrants): a trigger change refused moments after one of them
+	// waits for IAM to apply it (triggerChange).
+	granted []Grant
 }
 
 // StoppedError is the error of a run that stopped in one of its sections: the section's
@@ -691,7 +695,12 @@ func (e *engine) grants(ctx context.Context) error {
 			continue
 		}
 		if err := e.change(ctx, sectionGrants, fmt.Sprintf("grants %s %s on the identity %s", g.Member, g.Role, g.Resource), func(ctx context.Context) error {
-			return e.iam.GrantServiceAccount(ctx, g.Resource, g.Role, g.Member)
+			if err := e.iam.GrantServiceAccount(ctx, g.Resource, g.Role, g.Member); err != nil {
+				return err
+			}
+			e.granted = append(e.granted, g)
+
+			return nil
 		}); err != nil {
 			return err
 		}
@@ -1334,14 +1343,14 @@ func (e *engine) cloudBuild(ctx context.Context) error {
 		switch {
 		case got == nil:
 			if err := e.change(ctx, sectionCloudBuild, "creates the trigger "+want.Name, func(ctx context.Context) error {
-				return e.builds.CreateTrigger(ctx, project, location, want)
+				return e.triggerChange(ctx, want, func() error { return e.builds.CreateTrigger(ctx, project, location, want) })
 			}); err != nil {
 				return err
 			}
 		case triggerDiff(got, want) != "":
 			want.ID = got.ID
 			if err := e.change(ctx, sectionCloudBuild, "brings the trigger "+want.Name+" to its steps: "+triggerDiff(got, want), func(ctx context.Context) error {
-				return e.builds.UpdateTrigger(ctx, project, location, want)
+				return e.triggerChange(ctx, want, func() error { return e.builds.UpdateTrigger(ctx, project, location, want) })
 			}); err != nil {
 				return err
 			}
@@ -1349,6 +1358,64 @@ func (e *engine) cloudBuild(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Cloud Build lets an identity create or change a trigger that runs as a service account
+// only when it may act as that account. Its documentation, "Run builds with a
+// user-managed service account"
+// (https://docs.cloud.google.com/build/docs/securing-builds/configure-user-specified-service-accounts),
+// under "Service account impersonation": "For the user or automation identity creating,
+// updating, or manually running the build trigger (or submitting builds with gcloud
+// builds submit), grant the Service Account User role (roles/iam.serviceAccountUser),
+// which includes the iam.serviceAccounts.actAs permission." The applier holds the role on
+// the two accounts the triggers run as (Desired.ServiceAccountGrants), and an apply that
+// made the grant itself changes a trigger moments later, when IAM may not have applied
+// it. IAM's documentation, "Access change propagation"
+// (https://docs.cloud.google.com/iam/docs/access-change-propagation): "In IAM, access
+// changes, such as granting a role or denying a permission, are eventually consistent.",
+// and for the method "Change a policy" its table gives the propagation time "Typically 2
+// minutes, potentially 7 minutes or longer". actAsApplies is the longer of the two, and
+// the longest a refused trigger change is tried again for; the tries start
+// actAsFirstWait apart, each wait twice the one before it and none longer than
+// actAsLongestWait.
+const (
+	actAsApplies     = 7 * time.Minute
+	actAsFirstWait   = 5 * time.Second
+	actAsLongestWait = time.Minute
+)
+
+// triggerChange makes one change of the trigger t (call) and waits out IAM's delay for
+// it. Where this same run granted the applier Service Account User on the account t
+// runs as, and the change is refused for a permission, the grant has not been applied
+// yet: the call is made again with a backoff, for no longer than actAsApplies in all,
+// and a refusal that outlasts it ends the run with a sentence that names the grant and
+// the account. Any other refusal is the call's answer at once: the grant stood before
+// the run, so IAM applied it long ago, or the run is the bootstrap's, whose calls are
+// the break-glass account's and never wait on a grant to the applier.
+func (e *engine) triggerChange(ctx context.Context, t *Trigger, call func() error) error {
+	account := t.ServiceAccount[strings.LastIndex(t.ServiceAccount, "/")+1:]
+	applier := member(e.d.Applier())
+	if e.req.Bootstrap || !slices.Contains(e.granted, Grant{Resource: account, Role: roleServiceAccountUser, Member: applier}) {
+		return call()
+	}
+	wait, waited := actAsFirstWait, time.Duration(0)
+	for {
+		err := call()
+		if err == nil || !permissionNotSeen(err) {
+			return err
+		}
+		if waited >= actAsApplies {
+			return errors.Newf("Cloud Build refuses the change of the trigger %s (%v): the trigger runs as %s, and Cloud Build lets an identity create or change it only when the identity holds %s on that account (the permission iam.serviceAccounts.actAs). This run granted the role on %s to %s, and IAM has not applied the grant after %d minutes of tries: its documentation says a policy change typically takes 2 minutes, and potentially 7 minutes or longer. The grant stands: run the apply trigger %s again, and it changes the trigger once IAM applies the grant",
+				t.Name, errors.Cause(err), account, roleServiceAccountUser, account, applier, int(actAsApplies.Minutes()), e.p.ApplyTriggerName())
+		}
+		wait = min(wait, actAsApplies-waited)
+		fmt.Fprintf(e.out, "  (IAM has not applied %s's %s on %s yet, which this run granted moments ago; trying again in %s)\n", applier, roleServiceAccountUser, account, wait)
+		if werr := e.sleep(ctx, wait); werr != nil {
+			return werr
+		}
+		waited += wait
+		wait = min(2*wait, actAsLongestWait)
+	}
 }
 
 // triggerDiff says in a few words what differs between the trigger that stands and the

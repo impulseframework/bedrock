@@ -45,11 +45,12 @@ const (
 
 // stepsEnv is the variable 0-bootstrap's triggers set in the fetch step's environment
 // to the shape of their steps (StepsShape: 2-release, 2-commit). In the release shape
-// the fetch step refuses a commit pin, since no build step follows: the triggers are
-// applied by hand, and a pull request that moves the pin from a release to a commit
-// runs on the triggers as they stand until 0-bootstrap is applied in the commit shape,
-// which bedrock upgrade does when the pin changes kind. 2-env's stack trigger leaves
-// the variable unset: its build step is always there.
+// the fetch step refuses a commit pin, since no build step follows. The apply trigger
+// applies 0-bootstrap, the layer that holds the triggers, in a run on the steps as they
+// stand, so a pull request that moves the pin from a release to a commit runs on the
+// release shape, and no run reaches the layer's apply, until 0-bootstrap is applied in
+// the commit shape, which bedrock upgrade does by hand when the pin changes kind.
+// 2-env's stack trigger leaves the variable unset: its build step is always there.
 const stepsEnv = "BEDROCK_STEPS"
 
 // The steps' timeouts in seconds: a release's download (three tries of a minute each,

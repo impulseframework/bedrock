@@ -356,7 +356,9 @@ Decided before writing:
 2. **GCS backend.** `backend "gcs"` in every layer, one bucket
    (`imp-boot-gbl-state-<suffix>`, created by the seed) with a prefix per
    layer. The bucket name is substituted into the backend blocks once.
-   `0-bootstrap` is applied with local state first and migrated.
+   `0-bootstrap` is applied against the bucket from its first apply, the
+   creation's: the seed makes the bucket before it, so there is no local state
+   and nothing to migrate.
 3. **Organization values.** Domain imp.example, organization 123456789012,
    prefix `imp`, billing account 012345-6789AB-CDEF01, regions us-central1
    and us-west3, contact domain `@imp.example`,
@@ -404,9 +406,13 @@ Consequences of the above, not separately decided:
   Administrator on a project or at the organization node, never on a folder.
   Every other grant sits on the organization's folder, none at the
   organization node ("Several organizations").
-- The billing grants are gated by `manage_billing_iam`, false here:
-  the break-glass account is a Billing Account User on the account and cannot set its
-  IAM policy. See the `0-bootstrap` README.
+- The billing grants are gated by `manage_billing_iam`, false here: the apply
+  trigger applies `0-bootstrap` as the boot layer identity, a Billing Account
+  User on the account, which cannot set its IAM policy. The break-glass account
+  holds Billing Account Administrator on the root organization's billing
+  account (this organization's as well, unless its record named another),
+  granted by a billing administrator before the root organization's bootstrap,
+  and applies the layer only by hand. See the `0-bootstrap` README.
 - The state bucket is the one seeded resource left outside OpenTofu, for the
   reason the model leaves its Scalr environment unmanaged: a layer should not
   own the container of its own state.

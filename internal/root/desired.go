@@ -215,15 +215,25 @@ type Grant struct {
 	Member   string
 }
 
-// ServiceAccountGrants are the bindings on the identities themselves: the Cloud Build
-// service agent runs the triggers' builds as the two runners, the applier creates
-// hosting organizations as the creating identity, and the applier impersonates itself
-// for a token of Google's webmaster verification, whose scope is not Cloud Platform's
-// and so not the build's credentials'.
+// ServiceAccountGrants are the bindings on the identities themselves. The Cloud Build
+// service agent runs the triggers' builds as the two runners (Service Account User on
+// each). The applier holds Service Account User on the two accounts the triggers run as:
+// on the planner, since the apply keeps the plan trigger at the steps of the placement's
+// pin, and on itself, since it keeps the apply trigger, its own, the same way. Cloud
+// Build lets an identity create or change a trigger that runs as a service account only
+// when it may act as that account (iam.serviceAccounts.actAs, which the role carries;
+// the rule's source is quoted at actAsApplies), and the applier's Cloud Build Editor on
+// the project does not reach it. Neither grant reaches anything the applier's Service
+// Account Admin on the project does not already: that role sets any identity's bindings
+// in it. The applier creates hosting organizations as the creating identity, and it
+// impersonates itself for a token of Google's webmaster verification, whose scope is not
+// Cloud Platform's and so not the build's credentials'.
 func (d *Desired) ServiceAccountGrants() []Grant {
 	return []Grant{
 		{Resource: d.Planner(), Role: roleServiceAccountUser, Member: d.ServiceAgent()},
 		{Resource: d.Applier(), Role: roleServiceAccountUser, Member: d.ServiceAgent()},
+		{Resource: d.Planner(), Role: roleServiceAccountUser, Member: member(d.Applier())},
+		{Resource: d.Applier(), Role: roleServiceAccountUser, Member: member(d.Applier())},
 		{Resource: d.Creator(), Role: roleImpersonator, Member: member(d.Applier())},
 		{Resource: d.Applier(), Role: roleImpersonator, Member: member(d.Applier())},
 	}

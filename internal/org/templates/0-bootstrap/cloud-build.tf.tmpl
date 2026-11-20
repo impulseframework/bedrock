@@ -22,10 +22,12 @@
 # previous release's steps. Both triggers pass _BEDROCK_STEPS, the shape of
 # these steps and the kind of pin they were rendered for, and the commands say
 # when they run under another. The one move the lag does not cover is a pin
-# that changes kind: this layer is applied by hand, never by a trigger, and
-# the release shape's fetch step refuses a commit pin, since no step follows
-# to build it. bedrock upgrade applies this layer itself when it moves the
-# pin across kinds, after yes typed back, before the pull request is opened.
+# moved from a release to a commit: the apply trigger applies this layer like
+# every layer, in a run on the steps as they stand, and the release shape's
+# fetch step refuses a commit pin, since no step follows to build it, so no
+# run reaches this layer's apply. bedrock upgrade applies this layer itself
+# when it moves the pin across kinds, after yes typed back, before the pull
+# request is opened.
 #
 # The connection and the repository link exist once placement.json records
 # the Cloud Build GitHub authorization (cloudBuildInstallationId,
