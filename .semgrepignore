@@ -5,11 +5,12 @@
 # line above the finding that names the one rule, under the reason the rule does not
 # apply there, and every other rule still reads the file.
 #
-# The two paths left are the files the welcome image is made of. Each has one finding, and
-# a comment added to either would change the image: welcome/VERSION records the hash of
-# these files, a published version is never made of other files, and a changed hash takes
-# the next version, which the merge then publishes. The reason above each path says which
-# audit found what, and why that audit does not apply.
+# The two paths left are two of the three files the welcome image is made of:
+# welcome/VERSION records the hash of welcome/Dockerfile, welcome/main.go and
+# welcome/page.html together. Each of the two has one finding, and a comment added to
+# either would change the image: a published version is never made of other files, and a
+# changed hash takes the next version, which the merge then publishes. The reason above
+# each path says which audit found what, and why that audit does not apply.
 #
 # The welcome image's program answers every request with its one page, a file embedded at
 # build time that holds nothing a request sent, so the direct-write audit (an HTML page
