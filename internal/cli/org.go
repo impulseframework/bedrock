@@ -1776,17 +1776,24 @@ infrastructure app with a key of it generated anew (--infrastructure-key).
 
 For a hosting organization it
 destroys 1-org, the GitHub repositories taken out of its state first so that they stay with
-their code, pull requests and releases (the rulesets and the operations environments go), an
+their code, pull requests and releases (the rulesets and the operations environments go), the
+destroy planned next (tofu plan -destroy, which deletes nothing and reads everything the
+destroy reads, so a token GitHub refuses at a ruleset or an Environment stops the destroy
+there, with every protection and every zone standing), an
 apply with destroy=true recording the projects'
 deletion policy, that no API is disabled first, and the folders' protection lifted, then the
 network project's zones deleted by API ahead of the project (the apps domain's and every vanity
 domain's, each zone's record sets first, so their name servers are free for a zone of the name
 at once: a zone that goes with its project holds them until the project purges, thirty days
-later; they go once that apply has passed, so a destroy that stops at it or before it deletes
-no zone), and the destroy tried again after a
+later; they go once the plan and that apply have passed, so a destroy that stops at either or
+before them deletes no zone), and the destroy tried again after a
 pause while it fails (a folder refuses for a while after its last project's deletion); then
-0-bootstrap the same way, on a local copy of its state, since the state bucket is in the boot
-project and goes with it. Google keeps a deleted project for 30 days, in which the console can
+0-bootstrap the same way without the plan, on a local copy of its state, since the state
+bucket is in the boot project and goes with it. While 1-org's state holds the network project,
+a placement.json that records none (projects.net) or a project the account may not read stops
+the destroy before any of that, with nothing of 1-org changed; a state that no longer holds
+the project, which a run before this one deleted, its zones first, has no project read and no
+zone deleted. Google keeps a deleted project for 30 days, in which the console can
 restore it; its id never returns after. A layer whose state holds nothing is skipped. When 2-net
 registers domains (registrations in 2-net/terraform.tfvars) the network project is kept, with
 its folder and the organization's, since a registration cannot move to another project; 2-net
@@ -1878,6 +1885,11 @@ func (d deps) destroyOrg(cmd *cobra.Command, dir, key string, yes bool) error {
 		}
 		req := &layers.DestroyRequest{
 			Dir: dir, Placement: p, GithubToken: d.githubToken, KeepNet: keepNet, Pause: layers.DestroyPause,
+			CheckZones: func(ctx context.Context) error {
+				_, err := d.netProjectStands(ctx, p, stopsUnchanged)
+
+				return err
+			},
 			DeleteZones: func(ctx context.Context) error {
 				return d.deleteNetZones(ctx, p, out)
 			},
@@ -1953,43 +1965,68 @@ func (d deps) deleteHostingBudget(ctx context.Context, p *org.Placement, out io.
 	return nil
 }
 
-// deleteNetZones deletes the zones of a hosting organization's network project by API,
-// the apps domain's and every vanity domain's, as the root organization's destroy deletes
-// its root project's: 1-org's destroy deletes the project next, and a zone that goes with
-// its project holds its name servers until the project purges, thirty days later. A
-// network project gone already (a destroy run again after 1-org's deleted it: Google
-// answers that there is none, or that it holds it after its deletion) is said and is no
-// error, as the root organization's destroy says of its project. A read Google refuses is
-// not a project gone: the destroy stops there, since going on would delete the project
-// with its zones in it; and so does a placement that records no network project, whose
-// zones could not be asked for. It acts as the person running the destroy, who holds
-// Owner on the organization's folder for the run, through the clients bootProjectStands
-// read the boot project with.
-func (d deps) deleteNetZones(ctx context.Context, p *org.Placement, out io.Writer) error {
-	clients := d.rootOrg()
+// Where a hosting organization's destroy stops when it cannot read its network project:
+// at its precondition, as soon as 1-org's state is listed, or at the read right before
+// the zones go, which the precondition passed minutes earlier (a grant that ran out in
+// between), after the apply that lifted the protections.
+const (
+	stopsUnchanged   = "stops with nothing of 1-org changed"
+	stopsUnprotected = "stops before 1-org's destroy deletes the project, after the apply that lifted the protection of 1-org's projects and folders, which stays lifted until 1-org's next apply"
+)
+
+// netProjectStands reads whether a hosting organization's network project stands, for a
+// destroy whose 1-org state still holds the project (layers.Destroy asks for nothing of
+// this otherwise), and carries the destroy's two refusals. A placement that records no
+// network project is one: the project's zones could not be asked for. A read Google
+// refuses is the other, since it is not a project gone, and going on would delete the
+// project with its zones in it; Google refuses the read of a project that no longer
+// exists the same way (one purged thirty days after its deletion), so the refusal says
+// both and names the way out for a state that holds a project gone for good. A project
+// Google answers is not there, or holds after its deletion, is no refusal: false. stops
+// says where the destroy stops, which the refusal tells the person. Read as the person
+// running the destroy, who holds Owner on the organization's folder for the run, through
+// the clients bootProjectStands reads the boot project with.
+func (d deps) netProjectStands(ctx context.Context, p *org.Placement, stops string) (bool, error) {
 	project := p.Projects[netKey]
 	if project == "" {
-		return errors.New("placement.json records no network project (projects.net) while 1-org's state still holds resources, so the destroy cannot delete the network project's zones ahead of it and stops before 1-org's destroy deletes a project: record the project's id under projects.net and run the destroy again")
+		return false, errors.Newf("placement.json records no network project (projects.net) while 1-org's state still holds one, so the destroy cannot delete the network project's zones ahead of it and %s: record the project's id under projects.net and run the destroy again", stops)
 	}
-	google, err := clients.Google(ctx, "")
+	google, err := d.rootOrg().Google(ctx, "")
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer google.Close()
 	stands, err := google.ProjectStands(ctx, project)
 	if status.Code(errors.Cause(err)) == codes.PermissionDenied {
-		return errors.Wrapf(err, "the account this destroy runs as may not read the network project %s (Google refuses it resourcemanager.projects.get there), so the destroy cannot tell whether the project's zones still stand and stops before 1-org's destroy deletes the project: run it again as an account that holds Owner on the organization's folder, as the break-glass account does for the run", project)
+		return false, errors.Wrapf(err, "the account this destroy runs as may not read the network project %s, or the project no longer exists (Google refuses it resourcemanager.projects.get there, and answers a project that is not there the same way), while 1-org's state still holds it, so the destroy cannot tell whether the project's zones still stand and %s: run it again as an account that holds Owner on the organization's folder, as the break-glass account does for the run; a project that is gone for good (Google purges a deleted one after thirty days) is taken out of 1-org's state first (tofu state rm 'module.project[\"net\"]' in 1-org)", project, stops)
 	}
+
+	return stands, err
+}
+
+// deleteNetZones deletes the zones of a hosting organization's network project by API,
+// the apps domain's and every vanity domain's, as the root organization's destroy deletes
+// its root project's: 1-org's destroy deletes the project next, and a zone that goes with
+// its project holds its name servers until the project purges, thirty days later. A
+// network project gone already (a destroy run again after the project was deleted and
+// before 1-org's state lost it: Google answers that there is none, or that it holds it
+// after its deletion) is said and is no error, as the root organization's destroy says
+// of its project. The project is read again here, since the plan and the apply ran since
+// the destroy's precondition read it (netProjectStands), and a read refused now stops
+// the destroy as it does there.
+func (d deps) deleteNetZones(ctx context.Context, p *org.Placement, out io.Writer) error {
+	stands, err := d.netProjectStands(ctx, p, stopsUnprotected)
 	if err != nil {
 		return err
 	}
+	project := p.Projects[netKey]
 	if !stands {
 		fmt.Fprintf(out, "The network project %s is gone already: no zone is left to delete ahead of it.\n", project)
 
 		return nil
 	}
 
-	return rootorg.DeleteZones(ctx, clients, project, out)
+	return rootorg.DeleteZones(ctx, d.rootOrg(), project, out)
 }
 
 // bootProjectStands reports whether the organization's boot project is active. A destroy

@@ -24,6 +24,9 @@ import (
 const (
 	BootstrapLayer = "0-bootstrap"
 	destroyCommand = "destroy"
+	// destroyFlag makes a plan the destroy's own: what tofu destroy would delete, read
+	// and planned as the destroy does it, with nothing deleted.
+	destroyFlag = "-destroy"
 	// autoApprove is the flag the destroy's two tofu runs take: the prefix typed back
 	// at the command is the approval.
 	autoApprove = "-auto-approve"
@@ -91,24 +94,41 @@ var layerFiles = []string{"*.tf", "*.tfvars", "*.tfvars.json", lockFile}
 // GitHub token for the GitHub provider comes from (asked for only when 1-org's state
 // holds something), whether the network project is kept (the layer registers domains
 // there; 2-net is then destroyed inside it, on a copy rendered from the placement), what
-// deletes the network project's zones when it is not kept, and the pause between two
-// attempts of a destroy. A root organization has no layers: bedrock org destroy deletes
-// it by API (internal/root).
+// reads the network project and deletes its zones when it is not kept, and the pause
+// between two attempts of a destroy. A root organization has no layers: bedrock org
+// destroy deletes it by API (internal/root).
 type DestroyRequest struct {
 	Dir         string
 	Placement   *org.Placement
 	GithubToken func(ctx context.Context) (string, error)
 	KeepNet     bool
+	// CheckZones answers whether DeleteZones can do its work, and its refusals are the
+	// destroy's preconditions: a placement that records no network project, and a network
+	// project the person may not read. It runs as soon as 1-org's state is listed, before
+	// anything of 1-org changes: no resource is out of the state yet and no protection is
+	// lifted, so a destroy it refuses leaves 1-org as it stood.
+	//
+	// Both are asked for only when 1-org's state holds the network project and the
+	// project is not kept. A project the state does not hold is not this destroy's to
+	// delete (a destroy run earlier deleted it, its zones first, or 1-org never made it),
+	// so no zone can go with it, and it is not read: Google answers a project that no
+	// longer exists as it answers one the caller may not read, and a destroy picked up
+	// after the project's thirty days would be refused for good.
+	CheckZones func(ctx context.Context) error
 	// DeleteZones deletes the network project's zones by API, ahead of the project: a
 	// zone that goes with its project holds its name servers until the project purges,
 	// thirty days later, one of the five sets Cloud DNS gives a name and its subdomains.
-	// It runs between 1-org's two commands, after the apply that records the deletion
-	// policies and right before the destroy that deletes the projects: a run that stops
-	// earlier (a state that holds nothing, no GitHub token, a state rm or that apply
-	// failing) takes no zone with it. The destroy after it can still fail, on every
-	// attempt, with the zones gone and the projects standing; the run again then finds
-	// no zone to delete and goes on to the destroy. It is not asked for with KeepNet,
-	// where 2-net's destroy deletes the zones inside the kept project.
+	// It runs right before the destroy that deletes the projects, after everything that
+	// can refuse without deleting: the check above, the GitHub token, the state rm's, the
+	// plan of the destroy and the apply that records the deletion policies. The plan
+	// reads everything the destroy reads (tofu refreshes every resource the state holds,
+	// where the apply refreshes only what it targets), so a read GitHub or Google refuses
+	// the person stops the run with every zone standing. What only a deletion can show
+	// still fails the destroy after it, on every attempt, with the zones gone and the
+	// projects standing: a token that reads a ruleset or an Environment and may not
+	// delete it, a folder that refuses past the attempts. The run again then finds no
+	// zone to delete and goes on to the destroy. With KeepNet neither is asked for:
+	// 2-net's destroy deletes the zones inside the kept project.
 	DeleteZones func(ctx context.Context) error
 	Pause       time.Duration
 }
@@ -117,15 +137,16 @@ type DestroyRequest struct {
 // first, its GitHub repositories and its tags taken out of the state, then 0-bootstrap
 // on a local copy of its state. In each layer an apply with destroy=true records the
 // projects' DELETE policy and lifts the folders' protection, then the destroy runs, tried
-// again after a pause while it fails; between 1-org's two, the network project's zones
-// are deleted by API, ahead of the project. A layer whose state holds nothing is skipped.
-// With KeepNet the network project is excluded from 1-org's destroy and the
-// organization's folder from 0-bootstrap's, and both stay for a person.
+// again after a pause while it fails. In 1-org the destroy is planned before that apply,
+// and the network project's zones are deleted by API between the apply and the destroy,
+// ahead of the project. A layer whose state holds nothing is skipped. With KeepNet the
+// network project is excluded from 1-org's destroy and the organization's folder from
+// 0-bootstrap's, and both stay for a person.
 func Destroy(ctx context.Context, exec deploy.Runner, req *DestroyRequest, out io.Writer) error {
 	if exec == nil {
 		return errors.New("no program runner is wired")
 	}
-	if !req.KeepNet && req.DeleteZones == nil {
+	if !req.KeepNet && (req.CheckZones == nil || req.DeleteZones == nil) {
 		return errors.New("no zone deletion is wired: the destroy deletes the network project's zones ahead of the project")
 	}
 	for _, layer := range []string{orgLayer, BootstrapLayer} {
@@ -282,8 +303,11 @@ func checkDestroyVariable(dir, layer string) error {
 
 // destroyOrgLayer destroys 1-org in the checkout: its state in the bucket, its GitHub
 // repositories and its tags taken out of the state first, the network project excluded
-// when kept, and its zones deleted by API when not, after the apply that records the
-// deletion policies, the last step that can refuse before the destroy deletes a project.
+// when kept, and its zones deleted by API when not. Everything that can refuse without
+// deleting comes before the zones go, and what changes least comes first: the check of
+// the network project (nothing has changed by then), the GitHub token, the state rm's,
+// the plan of the destroy (no protection is lifted yet), and the apply that records the
+// deletion policies.
 func destroyOrgLayer(ctx context.Context, exec deploy.Runner, req *DestroyRequest, work string, out io.Writer) error {
 	layer := orgLayer
 	h := &handTofu{exec: exec, layer: layer, dir: filepath.Join(req.Dir, layer), data: filepath.Join(work, layer+".data"), out: out, declaresDestroy: true}
@@ -299,6 +323,15 @@ func destroyOrgLayer(ctx context.Context, exec deploy.Runner, req *DestroyReques
 		fmt.Fprintf(out, "%s's state holds nothing: nothing to destroy there.\n", layer)
 
 		return nil
+	}
+	zones := !req.KeepNet && holdsNetProject(addresses)
+	switch {
+	case zones:
+		if err := req.CheckZones(ctx); err != nil {
+			return err
+		}
+	case !req.KeepNet:
+		fmt.Fprintf(out, "%s's state holds no network project (a destroy run earlier deleted it, its zones first, or %s never made it): this run reads none and deletes no zone by API.\n", layer, layer)
 	}
 	token, err := req.GithubToken(ctx)
 	if err != nil {
@@ -324,16 +357,28 @@ func destroyOrgLayer(ctx context.Context, exec deploy.Runner, req *DestroyReques
 	if req.KeepNet {
 		excluded = append(excluded, netProjectAddress)
 	}
+	if err := h.planDestroy(ctx, excluded, zones); err != nil {
+		return err
+	}
 	if err := h.unprotect(ctx, addresses, excluded); err != nil {
 		return err
 	}
-	if !req.KeepNet {
+	if zones {
 		if err := req.DeleteZones(ctx); err != nil {
 			return err
 		}
 	}
 
 	return h.destroy(ctx, excluded, req.Pause)
+}
+
+// holdsNetProject reports whether 1-org's state holds the network project itself, which
+// the layer's destroy then deletes: the project resource under the project's module, and
+// not what else the module holds.
+func holdsNetProject(addresses []string) bool {
+	return slices.ContainsFunc(addresses, func(address string) bool {
+		return strings.HasPrefix(address, netProjectAddress+".") && strings.HasSuffix(address, projectSuffix)
+	})
 }
 
 // destroyVariable is the destroy variable set to true, for a layer that declares it, and
@@ -506,6 +551,35 @@ func (h *handTofu) unprotect(ctx context.Context, addresses, excluded []string) 
 	fmt.Fprintf(h.out, "Recording on %s that the destroy deletes %d project(s) with %d service(s) and %d folder(s), disabling no API first.\n", h.layer, projects, services, folders)
 	if err := h.run(ctx, args...); err != nil {
 		return errors.Wrapf(err, "the apply recording %s's deletion policies failed; the log says why", h.layer)
+	}
+
+	return nil
+}
+
+// planDestroy plans the layer's destroy with the arguments the destroy runs with, and
+// deletes nothing. It runs once the GitHub repositories and the tags are out of the state
+// (a repository carries prevent_destroy, and tofu refuses to plan its destruction), so it
+// is the plan the destroy itself makes first: every resource the state holds is read,
+// with the same GitHub token and sign-in. A read that is refused, as GitHub refuses a
+// token that does not reach a repository's rulesets or its Environments, stops the run
+// here, where the destroy would have been refused it on every attempt after the zones
+// were gone. zones says whether this run deletes the network project's zones by API
+// after it, which the lines then name.
+func (h *handTofu) planDestroy(ctx context.Context, excluded []string, zones bool) error {
+	args := make([]string, 0, 6+len(excluded))
+	args = append(args, planCommand, destroyFlag, noInput, noColor)
+	args = append(args, h.destroyVariable()...)
+	for _, address := range excluded {
+		args = append(args, "-exclude="+address)
+	}
+	ahead, spared := "before the projects' and folders' protection is lifted", "no protection was lifted"
+	if zones {
+		ahead += " and before a zone is deleted by API"
+		spared += " and no zone was deleted by API"
+	}
+	fmt.Fprintf(h.out, "Planning the destroy of %s first, which deletes nothing: the plan reads everything the destroy reads, with the same GitHub token and sign-in, so a read GitHub or Google refuses stops the destroy here, %s.\n", h.layer, ahead)
+	if err := h.run(ctx, args...); err != nil {
+		return errors.Wrapf(err, "the plan of %s's destroy failed, so nothing of %s was destroyed: %s; what was taken out of its state above (the GitHub repositories, the tags) stays out of it, and the destroy run again goes on from there; the log says why", h.layer, h.layer, spared)
 	}
 
 	return nil

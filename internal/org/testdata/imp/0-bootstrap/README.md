@@ -503,7 +503,11 @@ folder refuses for a while after its last project's deletion, and the next
 attempt gets past it. `1-org`'s GitHub repositories are taken out of its state
 first, and so are its tag keys, values and bindings, which go with the
 projects that hold them (a tag value refuses to go while a binding still holds
-it, and the bindings go with the projects' deletion, not before). The network
+it, and the bindings go with the projects' deletion, not before). `1-org`'s
+destroy is planned before its apply (`tofu plan -destroy`, which deletes
+nothing and reads everything the destroy reads), so a token GitHub refuses at
+a ruleset or an Environment stops the command there, with every protection
+and every zone standing. The network
 project's zones, the apps domain's and each vanity domain's, are deleted by
 API right before `1-org`'s destroy deletes the project, each zone's record
 sets first: a zone that goes with its project holds its name servers until
