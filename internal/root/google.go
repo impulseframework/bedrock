@@ -342,9 +342,11 @@ type Clients struct {
 // OrgPolicies reads and writes organization policies: the baseline the root organization
 // sets on each hosting organization's folders.
 type OrgPolicies interface {
-	// Policy is the policy by resource name (folders/F/policies/CONSTRAINT), and whether
-	// there is one.
-	Policy(ctx context.Context, name string) (*Policy, bool, error)
+	// ListPolicies are the policies set on the parent itself (folders/F), each by its
+	// resource name (folders/F/policies/CONSTRAINT) with its rules, in one list of the
+	// parent: Google counts a list as one call against the project's quota, whatever
+	// number of policies it answers.
+	ListPolicies(ctx context.Context, parent string) ([]*Policy, error)
 	// CreatePolicy makes the policy on its parent (folders/F); UpdatePolicy replaces an
 	// existing policy's rules with the policy's.
 	CreatePolicy(ctx context.Context, parent string, policy *Policy) error

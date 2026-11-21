@@ -235,8 +235,9 @@ the apply, run on it:
   bucket (`locks/root`) it makes the organization as the merged placement says,
   creates each hosting organization recorded without a folder yet, as the
   creating identity, and leaves a marker (`applied/root`) with the commit. A
-  run that fails leaves the lock; a person deletes the object, and the next
-  push applies again.
+  run that ends in an error gives the lock back, and the next push applies
+  again. A run that is cancelled or killed leaves the lock: a person deletes
+  the object, and the next push applies again.
 
 The steps a run takes are the trigger's own and never this repository's: a
 pull request changes what the steps read, never what they do. A run fetches
@@ -750,7 +751,9 @@ grants the new organization's identities their use of the billing account.
    "Delegating a domain to this organization") and recorded in its placement
    (`appsZone`), which its `2-net` adopts; then the repository `<prefix>-infrastructure`, private in
    `imp-example`, with the rendered foundation as its first push,
-   which its apply trigger runs on, every layer as its own identity; then the
+   which its apply trigger runs on, every layer as its own identity, and whose
+   commit the creation records in this organization's state bucket
+   (`applied/pushed/<prefix>`) before the branch moves to it; then the
    creating identity's own grants off everything it made, a marker in this
    organization's state bucket (`applied/created/<prefix>`), and the hand-off:
    a pull request here, from the branch `create/<prefix>`, recording the folder
@@ -758,8 +761,15 @@ grants the new organization's identities their use of the billing account.
    `organizations/<prefix>/`, the label of its apps domain handed onward
    to its zone (`domains`), and this README rendered from the placement,
    branch and pull request as the infrastructure
-   app. A creation that stops finishes on the next push,
-   since every step looks before it makes; a created organization is left
+   app. A creation that stops finishes on the next push, from any point:
+   before its own push every step looks before it makes, and once the
+   foundation is on the new repository's default branch the run again applies
+   nothing as the creating identity (the first applies are the organization's
+   own from that push on) and goes on from the push, reading what the creation
+   made at the commit it recorded, whatever the branch has taken since, with
+   what is left of the withdrawal, the marker and the hand-off, and no grant
+   given by hand. A
+   created organization is left
    alone, and its hand-off is kept by every apply until its merge records the
    folder or the record is taken out of `placement.json`: an open pull request
    moves to a fresh commit when what it records changed, and one closed

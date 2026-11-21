@@ -86,10 +86,15 @@ type Fake struct {
 	Enabled        map[string][]string
 	BillingOf      map[string]string
 
-	// Locked by "bucket/object" to the lock's data.
 	// OrgPolicies by resource name (folders/F/policies/C).
 	OrgPolicies map[string]*root.Policy
+	// PolicyQuota is Google's quota on the Org Policy calls, which the stand-in keeps
+	// when it is set; nil keeps none.
+	PolicyQuota *PolicyQuota
+	// policyProject is the project the Org Policy client was last opened to bill.
+	policyProject string
 
+	// Locked by "bucket/object" to the lock's data.
 	Locked map[string][]byte
 	// Objects are the store's objects (the markers), by bucket/object.
 	Objects map[string][]byte
@@ -156,7 +161,13 @@ func (f *Fake) Clients(c *root.Clients) {
 
 		return f, nil
 	}
-	c.OrgPolicies = func(context.Context, string) (root.OrgPolicies, error) { return f, nil }
+	c.OrgPolicies = func(_ context.Context, quotaProject string) (root.OrgPolicies, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.policyProject = quotaProject
+
+		return f, nil
+	}
 	c.Secrets = func(context.Context) (root.Secrets, error) { return f, nil }
 	c.DNS = func(context.Context) (root.DNS, error) { return f, nil }
 	c.DNSAs = func(_ context.Context, identity string) (root.DNS, error) {
@@ -530,12 +541,21 @@ func (f *Fake) CreateZone(_ context.Context, project string, zone root.Zone) err
 	return nil
 }
 
-// DeleteZone deletes the zone and its record sets.
+// DeleteZone deletes the zone, and refuses one that still holds a record set other than
+// its apex NS and SOA, as Cloud DNS does (its guide to deleting a zone: "Remove all
+// records in the zone except for the SOA and NS records"): a destroy passes here only
+// when it deleted the zone's record sets first.
 func (f *Fake) DeleteZone(_ context.Context, project, zone string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("DeleteZone", project, zone); err != nil {
 		return err
+	}
+	apex := f.ZoneMap[project][zone].DNSName
+	for _, r := range f.Records[project+"/"+zone] {
+		if r.Name != apex || (r.Type != "NS" && r.Type != "SOA") {
+			return errors.Wrapf(&googleapi.Error{Code: http.StatusBadRequest, Message: "The resource named '" + zone + "' cannot be deleted because it is not empty"}, "dns.ManagedZonesService.Delete(): %s in %s", zone, project)
+		}
 	}
 	delete(f.ZoneMap[project], zone)
 	delete(f.Records, project+"/"+zone)
@@ -1150,6 +1170,18 @@ func (f *Fake) FindFolder(_ context.Context, parent, displayName string) (string
 	return f.Folders[parent+"|"+displayName], nil
 }
 
+// Held answers that the caller holds every permission asked on the folder or the project:
+// this stand-in refuses no call for a grant its caller lacks.
+func (f *Fake) Held(_ context.Context, resource string, permissions []string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("Held", resource, strings.Join(permissions, "+")); err != nil {
+		return nil, err
+	}
+
+	return slices.Clone(permissions), nil
+}
+
 // CreateFolder makes the folder under the parent.
 func (f *Fake) CreateFolder(_ context.Context, parent, displayName string) (string, error) {
 	f.mu.Lock()
@@ -1169,6 +1201,17 @@ func (f *Fake) ProjectExists(_ context.Context, id string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("ProjectExists", id); err != nil {
+		return false, err
+	}
+
+	return f.Projects[id], nil
+}
+
+// ProjectStands reports whether the project is there; the stand-in refuses no read.
+func (f *Fake) ProjectStands(_ context.Context, id string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("ProjectStands", id); err != nil {
 		return false, err
 	}
 
@@ -1377,21 +1420,87 @@ func (f *Fake) Add(ctx context.Context, container string, payload []byte) (strin
 	return f.AddSecretVersion(ctx, container, payload)
 }
 
-// Policy is the organization policy by name, when there is one.
-func (f *Fake) Policy(_ context.Context, name string) (*root.Policy, bool, error) {
+// PolicyQuota is Google's quota on the Org Policy calls of one project, as the stand-in
+// keeps it: so many lists of a parent's policies and so many writes of a policy in one
+// minute, each kind counted on its own. A call past its kind's limit in the minute is
+// refused as ResourceExhausted and spends nothing; the next minute starts the count
+// again. The minutes are the stand-in's own clock's, which only Wait moves, so a run
+// that waits for nothing makes all its calls inside one minute.
+type PolicyQuota struct {
+	Lists, Writes int
+
+	elapsed time.Duration
+	minute  time.Duration
+	spent   map[string]int
+}
+
+// GooglePolicyQuota is the quota with the limits Google gives a project by default, as
+// the lab read them from its root project (2026-11-21): 300 lists and 100 writes a
+// minute.
+func GooglePolicyQuota() *PolicyQuota {
+	return &PolicyQuota{Lists: 300, Writes: 100}
+}
+
+// The kinds of Org Policy call the quota counts, as its refusal names them: the
+// stand-in's names, in the shape of the one Google's refusal of a read by name gave
+// when the lab's root apply ended on it ('Policy read requests').
+const (
+	policyList  = "Policy list requests"
+	policyWrite = "Policy write requests"
+)
+
+// Wait moves the quota's clock on by d: the wait of a run whose Sleep is the test's.
+func (f *Fake) Wait(d time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.call("Policy", name); err != nil {
-		return nil, false, err
+	if f.PolicyQuota != nil {
+		f.PolicyQuota.elapsed += d
 	}
-	p, ok := f.OrgPolicies[name]
-	if !ok {
-		return nil, false, nil
-	}
-	c := *p
-	c.Rules = slices.Clone(p.Rules)
+}
 
-	return &c, true, nil
+// spend counts one Org Policy call of the kind against the quota, or refuses it in
+// Google's words when the minute's limit for the kind is spent.
+func (f *Fake) spend(kind, call string) error {
+	q := f.PolicyQuota
+	if q == nil {
+		return nil
+	}
+	if minute := q.elapsed.Truncate(time.Minute); minute != q.minute || q.spent == nil {
+		q.minute, q.spent = minute, map[string]int{}
+	}
+	limit := q.Lists
+	if kind == policyWrite {
+		limit = q.Writes
+	}
+	if q.spent[kind] >= limit {
+		return errors.Wrap(status.Errorf(codes.ResourceExhausted, "Quota exceeded for quota metric '%s' and limit '%s per minute' of service 'orgpolicy.googleapis.com' for consumer 'project_number:%s'.", kind, kind, f.Numbers[f.policyProject]), call)
+	}
+	q.spent[kind]++
+
+	return nil
+}
+
+// ListPolicies are the organization policies set on the parent (folders/F), by name.
+func (f *Fake) ListPolicies(_ context.Context, parent string) ([]*root.Policy, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("ListPolicies", parent); err != nil {
+		return nil, err
+	}
+	if err := f.spend(policyList, "orgpolicy.Client.ListPolicies(): "+parent); err != nil {
+		return nil, err
+	}
+	var policies []*root.Policy
+	for name, p := range f.OrgPolicies {
+		if strings.HasPrefix(name, parent+"/policies/") {
+			c := *p
+			c.Rules = slices.Clone(p.Rules)
+			policies = append(policies, &c)
+		}
+	}
+	sort.Slice(policies, func(i, j int) bool { return policies[i].Name < policies[j].Name })
+
+	return policies, nil
 }
 
 // CreatePolicy stores the policy under its name; one there already is an error, as the
@@ -1400,6 +1509,9 @@ func (f *Fake) CreatePolicy(_ context.Context, parent string, policy *root.Polic
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("CreatePolicy", parent, policy.Name); err != nil {
+		return err
+	}
+	if err := f.spend(policyWrite, "orgpolicy.Client.CreatePolicy(): "+policy.Name); err != nil {
 		return err
 	}
 	if _, ok := f.OrgPolicies[policy.Name]; ok {
@@ -1417,6 +1529,9 @@ func (f *Fake) UpdatePolicy(_ context.Context, policy *root.Policy) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("UpdatePolicy", policy.Name); err != nil {
+		return err
+	}
+	if err := f.spend(policyWrite, "orgpolicy.Client.UpdatePolicy(): "+policy.Name); err != nil {
 		return err
 	}
 	if _, ok := f.OrgPolicies[policy.Name]; !ok {

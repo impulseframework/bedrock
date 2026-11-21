@@ -503,7 +503,17 @@ folder refuses for a while after its last project's deletion, and the next
 attempt gets past it. `1-org`'s GitHub repositories are taken out of its state
 first, and so are its tag keys, values and bindings, which go with the
 projects that hold them (a tag value refuses to go while a binding still holds
-it, and the bindings go with the projects' deletion, not before).
+it, and the bindings go with the projects' deletion, not before). `1-org`'s
+destroy is planned before its apply (`tofu plan -destroy`, which deletes
+nothing and reads everything the destroy reads), so a token GitHub refuses at
+a ruleset or an Environment stops the command there, with every protection
+and every zone standing. The network
+project's zones, the apps domain's and each vanity domain's, are deleted by
+API right before `1-org`'s destroy deletes the project, each zone's record
+sets first: a zone that goes with its project holds its name servers until
+the project purges, thirty days later, and Cloud DNS gives a name and its
+subdomains five name-server sets in all, so a zone deleted ahead of its
+project leaves its set free for a zone of the name at once.
 `0-bootstrap`'s state lives in the bucket the boot project holds, so its
 destroy runs on a copy of the layer with a local copy of the state, pulled
 before the project goes. A layer whose state holds nothing is skipped, so the
@@ -515,7 +525,10 @@ protections say.
 When `2-net` registers domains (`registrations` in `2-net/terraform.tfvars`),
 the network project is kept, with its folder and the organization's, because a
 registration cannot move to another project; everything else in it goes.
-`2-net` is destroyed inside it first, on a copy of the layer rendered without
+`2-net` is destroyed inside it once `1-org`'s destroy is planned and before
+anything of `1-org` is destroyed: its destroy deletes the zones, so a token
+GitHub refuses or a plan that fails leaves every zone standing here too. It
+runs on a copy of the layer rendered without
 the zones' `prevent_destroy` (as `zoneReplacement` renders it) and with the
 registrations taken out of its state, so the project holds the registrations
 and nothing else: its zones and records, the load balancer and its address and

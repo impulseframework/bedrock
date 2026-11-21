@@ -17,6 +17,8 @@ import (
 	"github.com/go-playground/errors/v5"
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/modfile"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/impulseframework/bedrock/internal/budgets"
 	"github.com/impulseframework/bedrock/internal/create"
@@ -1774,16 +1776,30 @@ infrastructure app with a key of it generated anew (--infrastructure-key).
 
 For a hosting organization it
 destroys 1-org, the GitHub repositories taken out of its state first so that they stay with
-their code, pull requests and releases (the rulesets, the operations environments, the runner
-group and the organization variable go), an apply with destroy=true recording the projects'
-deletion policy, that no API is disabled first, and the folders' protection lifted, and the destroy tried again after a
+their code, pull requests and releases (the rulesets and the operations environments go), the
+destroy planned next (tofu plan -destroy, which deletes nothing and reads everything the
+destroy reads, so a token GitHub refuses at a ruleset or an Environment stops the destroy
+there, with every protection and every zone standing), an
+apply with destroy=true recording the projects'
+deletion policy, that no API is disabled first, and the folders' protection lifted, then the
+network project's zones deleted by API ahead of the project (the apps domain's and every vanity
+domain's, each zone's record sets first, so their name servers are free for a zone of the name
+at once: a zone that goes with its project holds them until the project purges, thirty days
+later; they go once the plan and that apply have passed, so a destroy that stops at either or
+before them deletes no zone), and the destroy tried again after a
 pause while it fails (a folder refuses for a while after its last project's deletion); then
-0-bootstrap the same way, on a local copy of its state, since the state bucket is in the boot
-project and goes with it. Google keeps a deleted project for 30 days, in which the console can
+0-bootstrap the same way without the plan, on a local copy of its state, since the state
+bucket is in the boot project and goes with it. While 1-org's state holds the network project,
+a placement.json that records none (projects.net) or a project the account may not read stops
+the destroy before any of that, with nothing of 1-org changed; a state that no longer holds
+the project, which a run before this one deleted, its zones first, has no project read and no
+zone deleted. Google keeps a deleted project for 30 days, in which the console can
 restore it; its id never returns after. A layer whose state holds nothing is skipped. When 2-net
 registers domains (registrations in 2-net/terraform.tfvars) the network project is kept, with
 its folder and the organization's, since a registration cannot move to another project; 2-net
-is destroyed inside it first, on a copy rendered without the zones' prevent_destroy and with
+is destroyed inside it once 1-org's destroy is planned and before anything of 1-org is
+destroyed (its destroy deletes the zones, so a token refused or a plan that fails leaves every
+zone standing there too), on a copy rendered without the zones' prevent_destroy and with
 the registrations taken out of its state, so the project holds the registrations and nothing
 else, the domains stop resolving until a zone stands elsewhere and each registration is
 pointed at it, and the registrations are a person's to transfer out or give up (the rendered
@@ -1869,7 +1885,17 @@ func (d deps) destroyOrg(cmd *cobra.Command, dir, key string, yes bool) error {
 
 			return nil
 		}
-		req := &layers.DestroyRequest{Dir: dir, Placement: p, GithubToken: d.githubToken, KeepNet: keepNet, Pause: layers.DestroyPause}
+		req := &layers.DestroyRequest{
+			Dir: dir, Placement: p, GithubToken: d.githubToken, KeepNet: keepNet, Pause: layers.DestroyPause,
+			CheckZones: func(ctx context.Context) error {
+				_, err := d.netProjectStands(ctx, p, stopsUnchanged)
+
+				return err
+			},
+			DeleteZones: func(ctx context.Context) error {
+				return d.deleteNetZones(ctx, p, out)
+			},
+		}
 		if err := layers.Destroy(cmd.Context(), exec, req, out); err != nil {
 			return err
 		}
@@ -1941,6 +1967,70 @@ func (d deps) deleteHostingBudget(ctx context.Context, p *org.Placement, out io.
 	return nil
 }
 
+// Where a hosting organization's destroy stops when it cannot read its network project:
+// at its precondition, as soon as 1-org's state is listed, or at the read right before
+// the zones go, which the precondition passed minutes earlier (a grant that ran out in
+// between), after the apply that lifted the protections.
+const (
+	stopsUnchanged   = "stops with nothing of 1-org changed"
+	stopsUnprotected = "stops before 1-org's destroy deletes the project, after the apply that lifted the protection of 1-org's projects and folders, which stays lifted until 1-org's next apply"
+)
+
+// netProjectStands reads whether a hosting organization's network project stands, for a
+// destroy whose 1-org state still holds the project (layers.Destroy asks for nothing of
+// this otherwise), and carries the destroy's two refusals. A placement that records no
+// network project is one: the project's zones could not be asked for. A read Google
+// refuses is the other, since it is not a project gone, and going on would delete the
+// project with its zones in it; Google refuses the read of a project that no longer
+// exists the same way (one purged thirty days after its deletion), so the refusal says
+// both and names the way out for a state that holds a project gone for good. A project
+// Google answers is not there, or holds after its deletion, is no refusal: false. stops
+// says where the destroy stops, which the refusal tells the person. Read as the person
+// running the destroy, who holds Owner on the organization's folder for the run, through
+// the clients bootProjectStands reads the boot project with.
+func (d deps) netProjectStands(ctx context.Context, p *org.Placement, stops string) (bool, error) {
+	project := p.Projects[netKey]
+	if project == "" {
+		return false, errors.Newf("placement.json records no network project (projects.net) while 1-org's state still holds one, so the destroy cannot delete the network project's zones ahead of it and %s: record the project's id under projects.net and run the destroy again", stops)
+	}
+	google, err := d.rootOrg().Google(ctx, "")
+	if err != nil {
+		return false, err
+	}
+	defer google.Close()
+	stands, err := google.ProjectStands(ctx, project)
+	if status.Code(errors.Cause(err)) == codes.PermissionDenied {
+		return false, errors.Wrapf(err, "the account this destroy runs as may not read the network project %s, or the project no longer exists (Google refuses it resourcemanager.projects.get there, and answers a project that is not there the same way), while 1-org's state still holds it, so the destroy cannot tell whether the project's zones still stand and %s: run it again as an account that holds Owner on the organization's folder, as the break-glass account does for the run; a project that is gone for good (Google purges a deleted one after thirty days) is taken out of 1-org's state first (tofu state rm 'module.project[\"net\"]' in 1-org)", project, stops)
+	}
+
+	return stands, err
+}
+
+// deleteNetZones deletes the zones of a hosting organization's network project by API,
+// the apps domain's and every vanity domain's, as the root organization's destroy deletes
+// its root project's: 1-org's destroy deletes the project next, and a zone that goes with
+// its project holds its name servers until the project purges, thirty days later. A
+// network project gone already (a destroy run again after the project was deleted and
+// before 1-org's state lost it: Google answers that there is none, or that it holds it
+// after its deletion) is said and is no error, as the root organization's destroy says
+// of its project. The project is read again here, since the plan and the apply ran since
+// the destroy's precondition read it (netProjectStands), and a read refused now stops
+// the destroy as it does there.
+func (d deps) deleteNetZones(ctx context.Context, p *org.Placement, out io.Writer) error {
+	stands, err := d.netProjectStands(ctx, p, stopsUnprotected)
+	if err != nil {
+		return err
+	}
+	project := p.Projects[netKey]
+	if !stands {
+		fmt.Fprintf(out, "The network project %s is gone already: no zone is left to delete ahead of it.\n", project)
+
+		return nil
+	}
+
+	return rootorg.DeleteZones(ctx, d.rootOrg(), project, out)
+}
+
 // bootProjectStands reports whether the organization's boot project is active. A destroy
 // run again after the projects went would find the state bucket gone with the boot
 // project and fail at the first layer's init (the lab, 2026-11-08), so the layers are not
@@ -1994,7 +2084,7 @@ func destroyWarning(p *org.Placement, registered []string) string {
 	}
 	fmt.Fprintf(&b, "\nAlso gone: the folders, the spend budget %q on the organization's folder, the custom roles and the tags, the org policies, the entitlements, the audit log sink, and on GitHub the rulesets and the operations environments. The repositories stay, with their code, pull requests and releases.\n", org.HostingBudgetName(p.Prefix))
 	if len(registered) > 0 {
-		fmt.Fprintf(&b, "\nKept: the network project %s, with its folder and the organization's, since 2-net registers %s there (registrations in 2-net/terraform.tfvars) and a registration cannot move to another project. Everything else in it goes: 2-net is destroyed inside it first, so its zones and records, the load balancer and its address and the certificates are gone, and %s stop resolving until a zone stands elsewhere and each registration is pointed at it. The registrations are a person's: transfer each out (sixty days after it was registered, after an unlock, with a year added at the new registrar's price), or give it up by deleting the registration or the project (Google's thirty-day restore window, then nothing but the registrant contact and support).\n", p.Projects[netKey], strings.Join(registered, ", "), strings.Join(registered, ", "))
+		fmt.Fprintf(&b, "\nKept: the network project %s, with its folder and the organization's, since 2-net registers %s there (registrations in 2-net/terraform.tfvars) and a registration cannot move to another project. Everything else in it goes: 2-net is destroyed inside it, once 1-org's destroy is planned and before anything else is destroyed, so its zones and records, the load balancer and its address and the certificates are gone, and %s stop resolving until a zone stands elsewhere and each registration is pointed at it. The registrations are a person's: transfer each out (sixty days after it was registered, after an unlock, with a year added at the new registrar's price), or give it up by deleting the registration or the project (Google's thirty-day restore window, then nothing but the registrant contact and support).\n", p.Projects[netKey], strings.Join(registered, ", "), strings.Join(registered, ", "))
 	}
 	b.WriteString("\nGoogle keeps a deleted project for 30 days, in which the console can restore it; its id never returns after. The Spanner instance and every backup on it (the release backups, the schedules' and the final backups bedrock destroy took) go with the Spanner project and come back with it in those days, and are gone after. Nothing here is undone by bedrock.\n\n")
 
@@ -2093,7 +2183,7 @@ func destroyEpilogue(p *org.Placement, keepNet bool) string {
 
 		return b.String()
 	}
-	fmt.Fprintf(&b, "\nDeleted the %s organization's projects; a line went into %s. Google holds them for 30 days (their ids never return); the GitHub repositories are as they were, without the rulesets, environments and runners 1-org made.\n", p.Prefix, journalFile)
+	fmt.Fprintf(&b, "\nDeleted the %s organization's projects; a line went into %s. Google holds them for 30 days (their ids never return); the GitHub repositories are as they were, without the rulesets and environments 1-org made.\n", p.Prefix, journalFile)
 	if keepNet {
 		fmt.Fprintf(&b, "The network project %s stays with its registrations and nothing else: 2-net's zones, load balancer and certificates are gone, and the domains registered there do not resolve until a zone stands elsewhere and each registration is pointed at it. A registration cannot move to another project: transfer it out (sixty days after it was registered, after an unlock, with a year added at the new registrar's price), or give it up by deleting it or the project (Google's thirty-day restore window). bedrock org check here lists each registration, where it points and whether a zone answers for it.\n", p.Projects[netKey])
 	}

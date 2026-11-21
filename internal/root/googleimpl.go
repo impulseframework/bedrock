@@ -1271,17 +1271,19 @@ type orgPolicies struct {
 	c *orgpolicy.Client
 }
 
-func (o *orgPolicies) Policy(ctx context.Context, name string) (*Policy, bool, error) {
-	got, err := o.c.GetPolicy(ctx, &orgpolicypb.GetPolicyRequest{Name: name})
-	if err != nil {
-		if status.Code(err) == codes.NotFound {
-			return nil, false, nil
+func (o *orgPolicies) ListPolicies(ctx context.Context, parent string) ([]*Policy, error) {
+	var policies []*Policy
+	it := o.c.ListPolicies(ctx, &orgpolicypb.ListPoliciesRequest{Parent: parent})
+	for {
+		p, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			return policies, nil
 		}
-
-		return nil, false, errors.Wrapf(err, "orgpolicy.Client.GetPolicy(): %s", name)
+		if err != nil {
+			return nil, errors.Wrapf(err, "orgpolicy.Client.ListPolicies(): %s", parent)
+		}
+		policies = append(policies, policyFromProto(p))
 	}
-
-	return policyFromProto(got), true, nil
 }
 
 func (o *orgPolicies) CreatePolicy(ctx context.Context, parent string, policy *Policy) error {
