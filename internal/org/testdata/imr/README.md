@@ -750,7 +750,9 @@ grants the new organization's identities their use of the billing account.
    "Delegating a domain to this organization") and recorded in its placement
    (`appsZone`), which its `2-net` adopts; then the repository `<prefix>-infrastructure`, private in
    `imp-example`, with the rendered foundation as its first push,
-   which its apply trigger runs on, every layer as its own identity; then the
+   which its apply trigger runs on, every layer as its own identity, and whose
+   commit the creation records in this organization's state bucket
+   (`applied/pushed/<prefix>`) before the branch moves to it; then the
    creating identity's own grants off everything it made, a marker in this
    organization's state bucket (`applied/created/<prefix>`), and the hand-off:
    a pull request here, from the branch `create/<prefix>`, recording the folder
@@ -762,8 +764,10 @@ grants the new organization's identities their use of the billing account.
    before its own push every step looks before it makes, and once the
    foundation is on the new repository's default branch the run again applies
    nothing as the creating identity (the first applies are the organization's
-   own from that push on) and goes on from the push, with what is left of the
-   withdrawal, the marker and the hand-off, and no grant given by hand. A
+   own from that push on) and goes on from the push, reading what the creation
+   made at the commit it recorded, whatever the branch has taken since, with
+   what is left of the withdrawal, the marker and the hand-off, and no grant
+   given by hand. A
    created organization is left
    alone, and its hand-off is kept by every apply until its merge records the
    folder or the record is taken out of `placement.json`: an open pull request

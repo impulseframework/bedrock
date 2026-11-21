@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -235,20 +236,27 @@ func orgOutputs() map[string]any {
 	return map[string]any{"project_ids": value(ids), "project_numbers": value(numbers), "folder_ids": value(folders), "public_invoker_tag_key": value(keys), "public_invoker_tag_value": value(values), "billing_account_id": value("012345-6789AB-CDEF01"), "prefix": value("rgb")}
 }
 
+// The objects the creation writes in the root organization's state bucket: the record of
+// its push, written before the new repository's branch moves, and its marker.
+const (
+	pushObject   = "applied/pushed/rgb"
+	markerObject = "applied/created/rgb"
+)
+
 // fakeStore is the root organization's state bucket.
 type fakeStore struct {
 	mu      sync.Mutex
 	objects map[string]string
-	// refuse, when set, is what a write answers: the test's way of stopping a creation at
-	// its marker.
-	refuse error
+	// refuse, when set, is what a write of the object named answers: the test's way of
+	// stopping a creation at the record of its push or at its marker.
+	refuse map[string]error
 }
 
 func (s *fakeStore) Write(_ context.Context, _, object string, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.refuse != nil {
-		return s.refuse
+	if err := s.refuse[object]; err != nil {
+		return err
 	}
 	s.objects[object] = string(data)
 
@@ -340,6 +348,33 @@ func (f *flow) pushed() bool {
 	})
 
 	return pushed
+}
+
+// pushRecord is the record of the creation's push in the root organization's state
+// bucket, as the tests read it.
+type pushRecord struct {
+	Prefix      string `json:"prefix"`
+	BootProject string `json:"bootProject"`
+	Repository  string `json:"repository"`
+	Branch      string `json:"branch"`
+	Commit      string `json:"commit"`
+}
+
+// pushRecorded reads the record of the push from the stand-in for the state bucket.
+func (f *flow) pushRecorded(t *testing.T) pushRecord {
+	t.Helper()
+	var record pushRecord
+	if err := json.Unmarshal([]byte(f.store.objects[pushObject]), &record); err != nil {
+		t.Fatalf("no record of the push: %v; objects %v", err, f.store.objects)
+	}
+
+	return record
+}
+
+// recordedPushAlone reports whether the state bucket holds the record of the push and
+// nothing else: what a creation that stopped after its push leaves there.
+func (f *flow) recordedPushAlone() bool {
+	return len(f.store.objects) == 1 && f.store.objects[pushObject] != ""
 }
 
 func request(root *org.Placement, dir string) *create.Request {
@@ -488,6 +523,11 @@ func TestRun(t *testing.T) {
 	if !strings.Contains(hosting.Files[tree+":placement.json"], `"appsZone"`) || !strings.Contains(hosting.Files[tree+":2-net/dns.tf"], `id = "projects/${local.project_id}/managedZones/rgb-net-gbl-dns-apps"`) {
 		t.Errorf("the push lacks the zone record or 2-net's import of it:\n%s", hosting.Files[tree+":2-net/dns.tf"])
 	}
+	// The record of the push, which names the commit the branch moved to.
+	head := hosting.Refs["refs/heads/master"].SHA
+	if got, want := f.pushRecorded(t), (pushRecord{Prefix: "rgb", BootProject: "rgb-boot-gbl-core-e5f6", Repository: owner + "/rgb-infrastructure", Branch: "master", Commit: head}); got != want {
+		t.Errorf("the record of the push = %+v, want %+v", got, want)
+	}
 	// The marker and the hand-off.
 	var marker create.Marker
 	if err := json.Unmarshal([]byte(f.store.objects["applied/created/rgb"]), &marker); err != nil {
@@ -543,7 +583,8 @@ func TestRun(t *testing.T) {
 		"=== first apply of rgb's 0-bootstrap as " + creatingEmail + ", state in gs://rgb-boot-gbl-state-e5f6/0-bootstrap ===\n",
 		"=== first apply of rgb's 1-org as " + creatingEmail + ", state in gs://rgb-boot-gbl-state-e5f6/1-org ===\n",
 		"Applied rgb's 1-org and recorded its 6 projects, 4 folders and 3 public-invoker tags in the placement (projects, projectNumbers, folders, publicInvokerTags).\n",
-		"Pushed the foundation to " + owner + "/rgb-infrastructure at ",
+		"Recorded the foundation commit " + head[:7] + " of rgb in gs://imr-root-gbl-state-c3d4/applied/pushed/rgb, before master of " + owner + "/rgb-infrastructure moves to it: a creation that stops after its push is run again from what that commit records.\n",
+		"Pushed the foundation to " + owner + "/rgb-infrastructure at " + head[:7] + " ",
 		"Took the creating identity's grants off the 4 folders and 6 projects 1-org made, folder " + tfFolder + ", project rgb-boot-gbl-core-e5f6 and folder " + orgFolder + ".\n",
 		"Recorded the creation of rgb in gs://imr-root-gbl-state-c3d4/applied/created/rgb.\n",
 		"Made the zone rgb-net-gbl-dns-apps for rgb.impapps.example in rgb-net-gbl-core-e5f6, on " + strings.Join(createtest.ZoneNameServers, ", ") + ".\n",
@@ -691,7 +732,7 @@ func TestRunAgainAfterPush(t *testing.T) {
 			f := newFlow(t)
 			dir, root := checkout(t)
 			if done == removals {
-				f.store.refuse = errStopped
+				f.store.refuse = map[string]error{markerObject: errStopped}
 			} else {
 				revokes := 0
 				f.google.Stop = func(call string) error {
@@ -711,15 +752,15 @@ func TestRunAgainAfterPush(t *testing.T) {
 				t.Fatalf("Run() error = %v, want the stop; output:\n%s", err, out.String())
 			}
 			hosting := f.srv.Repos[owner+"/rgb-infrastructure"]
-			if !f.pushed() || len(f.google.Revoked) != done || len(f.store.objects) != 0 {
-				t.Fatalf("the creation stopped with the foundation pushed: %t, %d removals made (want %d) and the objects %v (want none)", f.pushed(), len(f.google.Revoked), done, f.store.objects)
+			if !f.pushed() || len(f.google.Revoked) != done || !f.recordedPushAlone() {
+				t.Fatalf("the creation stopped with the foundation pushed: %t, %d removals made (want %d) and the objects %v (want the record of the push alone)", f.pushed(), len(f.google.Revoked), done, f.store.objects)
 			}
 			head := hosting.Refs["refs/heads/master"].SHA
 			orgFolder := f.google.Folders[orgNode+"|rgb"]
 			tfFolder := f.google.Folders["folders/"+orgFolder+"|terraform"]
 
 			f.google.Stop, f.store.refuse = nil, nil
-			programs, denied := len(f.runner.ran), len(f.google.Denied)
+			programs, denied, calls := len(f.runner.ran), len(f.google.Denied), len(f.google.Calls)
 			out.Reset()
 			result, err := create.Run(t.Context(), f.clients(), request(root, dir), &out)
 			if err != nil {
@@ -730,6 +771,17 @@ func TestRunAgainAfterPush(t *testing.T) {
 			}
 			if refused := f.google.Denied[denied:]; len(refused) != 0 {
 				t.Errorf("the run again was refused: %v", refused)
+			}
+			// The placement read at the creation's own push is what the creation made, so
+			// each folder and project the withdrawal covers is asked about once.
+			asked := 0
+			for _, call := range f.google.Calls[calls:] {
+				if strings.HasPrefix(call, "Held(") {
+					asked++
+				}
+			}
+			if asked != removals {
+				t.Errorf("the run again asked what the identity holds %d times, want once for each of the %d folders and projects the withdrawal covers", asked, removals)
 			}
 			if got := hosting.Refs["refs/heads/master"].SHA; got != head || strings.Contains(out.String(), "Pushed the foundation") {
 				t.Errorf("master of rgb-infrastructure is at %s, was %s: the run again pushes nothing; output:\n%s", got, head, out.String())
@@ -762,7 +814,7 @@ func TestRunAgainAfterPush(t *testing.T) {
 				withdrawal = "The creating identity holds nothing on the 6 folders and 7 projects its withdrawal covers any longer, as Google answers for each: the withdrawal ended in the run that stopped, and nothing is left to take off.\n"
 			}
 			for _, want := range []string{
-				"master of " + owner + "/rgb-infrastructure carries the foundation already (" + head[:7] + ")",
+				"master of " + owner + "/rgb-infrastructure holds the foundation commit this creation recorded before its push (" + head[:7] + ", gs://imr-root-gbl-state-c3d4/applied/pushed/rgb): an earlier run of this creation pushed it and stopped. Nothing before the push is done again (the first applies are the organization's own from that push on, which its apply trigger runs), and the creation goes on from there: what it made is read at that commit, whatever the branch has taken since.\n",
 				withdrawal,
 				"Recorded the creation of rgb in gs://imr-root-gbl-state-c3d4/applied/created/rgb.\n",
 				"Created rgb: folder " + orgFolder + ", boot project rgb-boot-gbl-core-e5f6 (100000000001), repository " + owner + "/rgb-infrastructure at " + head[:7] + "; the creating identity holds nothing under the folder now.\n",
@@ -809,6 +861,14 @@ func (f *flow) pushedPlacement(t *testing.T, change func(placement map[string]an
 // commit the creation pushed.
 func (f *flow) laterPlacement(t *testing.T, change func(placement map[string]any)) {
 	t.Helper()
+	f.later(true)
+	f.pushedPlacement(t, change)
+}
+
+// later puts master of rgb's repository at another commit that carries the files the
+// creation pushed: a commit on the creation's push, or, for a branch rewritten since, one
+// whose history the push is no part of.
+func (f *flow) later(onPush bool) {
 	const later, tree = "c0ffee0000000000000000000000000000000001", "treelater"
 	f.srv.Update(func() {
 		repo := f.srv.Repos[owner+"/rgb-infrastructure"]
@@ -824,10 +884,12 @@ func (f *flow) laterPlacement(t *testing.T, change func(placement map[string]any
 		if repo.Ancestry == nil {
 			repo.Ancestry = map[string][]string{}
 		}
-		repo.Ancestry[later] = append([]string{later}, repo.Ancestry[pushed]...)
+		repo.Ancestry[later] = []string{later}
+		if onPush {
+			repo.Ancestry[later] = append(repo.Ancestry[later], repo.Ancestry[pushed]...)
+		}
 		repo.Refs["refs/heads/master"] = github.Object{Type: "commit", SHA: later}
 	})
-	f.pushedPlacement(t, change)
 }
 
 // object is the JSON object under the key of the pushed placement.
@@ -848,14 +910,29 @@ func object(t *testing.T, placement map[string]any, key string) map[string]any {
 // 0-bootstrap/terraform.tfvars names stops it with no grant taken off and nothing
 // recorded: a withdrawal over less than the creation made, or over another folder, would
 // leave the identity holding the rest, under a marker that says it holds nothing.
+//
+// Each holds where the run again reads the creation's push: at the commit the creation
+// recorded before its push, and, for a push no record names (one an earlier bedrock made),
+// at the branch's head, where a commit after the push may have changed the placement and
+// what Google answers under the organization's folder is what tells. A branch that
+// carries the placement and does not hold the commit recorded is refused too.
 func TestRunAgainAfterPushRefused(t *testing.T) {
 	t.Parallel()
 
-	const differs = "placement.json on master of " + owner + "/rgb-infrastructure carries this organization's state bucket and is not what this creation's push records ("
+	const (
+		repository = owner + "/rgb-infrastructure"
+		record     = "gs://imr-root-gbl-state-c3d4/" + pushObject
+	)
 	tests := []struct {
-		name    string
-		spoil   func(t *testing.T, f *flow)
+		name  string
+		spoil func(t *testing.T, f *flow)
+		// wantErr names the place the run again read as {where}, the refusal of a
+		// placement that is not the record's up to its differences as {differs}, and the
+		// creation's push as {push}.
 		wantErr string
+		// unrecorded and recorded keep the case to a push no record names, or to one the
+		// record names.
+		unrecorded, recorded bool
 	}{
 		{
 			name: "the pushed placement lacks the folders",
@@ -863,7 +940,7 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 				t.Helper()
 				f.pushedPlacement(t, func(placement map[string]any) { delete(placement, "folders") })
 			},
-			wantErr: differs + "folders.shared is missing, folders.tst is missing, folders.stg is missing, folders.prd is missing): the creation cannot go on from it",
+			wantErr: "{differs}folders.shared is missing, folders.tst is missing, folders.stg is missing, folders.prd is missing): the creation cannot go on from it",
 		},
 		{
 			name: "the pushed placement lacks one of the four folders",
@@ -871,7 +948,7 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 				t.Helper()
 				f.pushedPlacement(t, func(placement map[string]any) { delete(object(t, placement, "folders"), "stg") })
 			},
-			wantErr: differs + "folders.stg is missing): the creation cannot go on from it",
+			wantErr: "{differs}folders.stg is missing): the creation cannot go on from it",
 		},
 		{
 			name: "the pushed placement names another boot project",
@@ -881,7 +958,7 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 					object(t, placement, "projects")["boot"] = "rgb-boot-gbl-core-0000"
 				})
 			},
-			wantErr: differs + "projects.boot is rgb-boot-gbl-core-0000 where the record names rgb-boot-gbl-core-e5f6): the creation cannot go on from it",
+			wantErr: "{differs}projects.boot is rgb-boot-gbl-core-0000 where the record names rgb-boot-gbl-core-e5f6): the creation cannot go on from it",
 		},
 		{
 			name: "the pushed placement lacks one of the creation's projects",
@@ -889,7 +966,7 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 				t.Helper()
 				f.pushedPlacement(t, func(placement map[string]any) { delete(object(t, placement, "projects"), "net") })
 			},
-			wantErr: differs + "projects.net is missing): the creation cannot go on from it",
+			wantErr: "{differs}projects.net is missing): the creation cannot go on from it",
 		},
 		{
 			name: "the pushed placement lacks the boot project's number",
@@ -897,7 +974,7 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 				t.Helper()
 				f.pushedPlacement(t, func(placement map[string]any) { delete(object(t, placement, "projectNumbers"), "boot") })
 			},
-			wantErr: differs + "projectNumbers.boot is missing): the creation cannot go on from it",
+			wantErr: "{differs}projectNumbers.boot is missing): the creation cannot go on from it",
 		},
 		{
 			name: "the organization's folder is not found",
@@ -921,7 +998,7 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 				f.google.Stand("folders/900000000099", orgNode, "")
 				f.google.Folders[orgNode+"|rgb"] = "900000000099"
 			},
-			wantErr: "the creating identity finds folder 900000000099 by the name rgb under " + orgNode + ", and 0-bootstrap/terraform.tfvars on master of " + owner + "/rgb-infrastructure records organization_folder_id 900000000001",
+			wantErr: "the creating identity finds folder 900000000099 by the name rgb under " + orgNode + ", and 0-bootstrap/terraform.tfvars {where} records organization_folder_id 900000000001",
 		},
 		{
 			name: "the terraform folder found by its name is not the one the push recorded",
@@ -930,24 +1007,26 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 					return strings.Replace(content, `terraform_folder_id    = "900000000002"`, `terraform_folder_id    = "900000000077"`, 1)
 				})
 			},
-			wantErr: "the creating identity finds folder 900000000002 by the name terraform under folders/900000000001, and 0-bootstrap/terraform.tfvars on master of " + owner + "/rgb-infrastructure records terraform_folder_id 900000000077",
+			wantErr: "the creating identity finds folder 900000000002 by the name terraform under folders/900000000001, and 0-bootstrap/terraform.tfvars {where} records terraform_folder_id 900000000077",
 		},
 		{
-			// The record names no commit as the creation's push, and the run again reads the
-			// placement at the branch's head. The identity's Folder Admin on the
-			// organization's folder still stands here, and reaches every folder and project
-			// beneath: one the placement records that answers nothing is not the creation's.
-			name: "a later commit changed a folder's id",
+			// No record names the creation's push, and the run again reads the placement at
+			// the branch's head. The identity's Folder Admin on the organization's folder
+			// still stands here, and reaches every folder and project beneath: one the
+			// placement records that answers nothing is not the creation's.
+			name:       "no record names the push, and a later commit changed a folder's id",
+			unrecorded: true,
 			spoil: func(t *testing.T, f *flow) {
 				t.Helper()
 				f.laterPlacement(t, func(placement map[string]any) {
 					object(t, placement, "folders")["tst"] = "900000000077"
 				})
 			},
-			wantErr: "Google answers that it holds nothing on folder 900000000077 (folders.tst), which placement.json on master of " + owner + "/rgb-infrastructure records: what the file records there is not under the organization's folder, so a commit after this creation's push changed the file, or what the creation made was moved or deleted since; a withdrawal that passed over it would record that the identity holds nothing while a grant of its own may still stand, so nothing is taken off and nothing is recorded: a file changed since is put back as the creation's push left it, and this creation run again",
+			wantErr: "Google answers that it holds nothing on folder 900000000077 (folders.tst), which placement.json on master of " + repository + " records: what the file records there is not under the organization's folder, so a commit after this creation's push changed the file, or what the creation made was moved or deleted since; a withdrawal that passed over it would record that the identity holds nothing while a grant of its own may still stand, so nothing is taken off and nothing is recorded: a file changed since is put back as the creation's push left it, and this creation run again",
 		},
 		{
-			name: "a later commit changed a project's id and a folder's",
+			name:       "no record names the push, and a later commit changed a project's id and a folder's",
+			unrecorded: true,
 			spoil: func(t *testing.T, f *flow) {
 				t.Helper()
 				f.laterPlacement(t, func(placement map[string]any) {
@@ -955,7 +1034,17 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 					object(t, placement, "folders")["shared"] = "900000000078"
 				})
 			},
-			wantErr: "Google answers that it holds nothing on folder 900000000078 (folders.shared), project rgb-net-gbl-core-0000 (projects.net), which placement.json on master of " + owner + "/rgb-infrastructure records: ",
+			wantErr: "Google answers that it holds nothing on folder 900000000078 (folders.shared), project rgb-net-gbl-core-0000 (projects.net), which placement.json on master of " + repository + " records: ",
+		},
+		{
+			// The branch was rewritten since the push: it carries the organization's
+			// placement, on a history the commit the creation recorded is no part of.
+			name:     "the branch carries the placement and does not hold the commit the creation recorded",
+			recorded: true,
+			spoil: func(_ *testing.T, f *flow) {
+				f.later(false)
+			},
+			wantErr: "master of " + repository + " carries this organization's placement.json and does not hold {push}, the foundation commit this creation recorded before its push (" + record + "): the branch was rewritten since, or what it carries is not this creation's push, so nothing on it is taken as what the creation made, nothing is taken off and nothing is recorded: the branch is put back so that it holds the commit, and this creation run again; when the commit is gone for good, the record is deleted (gcloud storage rm " + record + "), and the run again then reads what the branch carries and holds it to what Google answers under the organization's folder",
 		},
 		{
 			name: "the pushed tfvars names no organization folder",
@@ -964,7 +1053,84 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 					return strings.Replace(content, `organization_folder_id = "`, `organization_folder = "`, 1)
 				})
 			},
-			wantErr: "0-bootstrap/terraform.tfvars on master of " + owner + "/rgb-infrastructure carries no organization_folder_id",
+			wantErr: "0-bootstrap/terraform.tfvars {where} carries no organization_folder_id",
+		},
+	}
+	for _, tt := range tests {
+		for _, recorded := range []bool{true, false} {
+			if recorded && tt.unrecorded || !recorded && tt.recorded {
+				continue
+			}
+			name := tt.name + ", read at the commit the creation recorded"
+			if !recorded {
+				name = tt.name + ", read at the branch's head"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				f := newFlow(t)
+				dir, root := checkout(t)
+				stopAfterPush(t, f, dir, root, 0)
+				push := f.pushRecorded(t).Commit[:7]
+				replace := strings.NewReplacer(
+					"{where}", "at "+push+" of "+repository,
+					"{differs}", "placement.json at "+push+" of "+repository+", which "+record+" names as this creation's push, is not what this creation's push records (",
+					"{push}", push,
+				)
+				if !recorded {
+					// The push of a bedrock that recorded none.
+					delete(f.store.objects, pushObject)
+					replace = strings.NewReplacer(
+						"{where}", "on master of "+repository,
+						"{differs}", "placement.json on master of "+repository+" carries this organization's state bucket and is not what this creation's push records (",
+					)
+				}
+				tt.spoil(t, f)
+				held, objects := f.google.Holds(createtest.Member(creatingEmail)), maps.Clone(f.store.objects)
+				var out bytes.Buffer
+				_, err := create.Run(t.Context(), f.clients(), request(root, dir), &out)
+				if wantErr := replace.Replace(tt.wantErr); err == nil || !strings.Contains(err.Error(), wantErr) {
+					t.Fatalf("Run() again error = %v, want %q; output:\n%s", err, wantErr, out.String())
+				}
+				if got := f.google.Holds(createtest.Member(creatingEmail)); !slices.Equal(got, held) || !maps.Equal(f.store.objects, objects) {
+					t.Errorf("the refused run left the identity holding %v (it held %v) and the objects %v (they were %v), want no grant taken off and nothing recorded", got, held, f.store.objects, objects)
+				}
+			})
+		}
+	}
+}
+
+// TestRunAgainAfterPushLaterCommit: a run again reads what the creation made at the commit
+// the creation recorded before its push, and not at the branch's head. A commit after the
+// push that changed a folder's and a project's id in placement.json changes nothing of
+// what the run again takes off and records, in the two cases where nothing Google answers
+// tells a changed id from the creation's own: the withdrawal had ended (the identity
+// holds nothing anywhere, so an id that is not the creation's answers as one the
+// withdrawal is done with), and a person took the identity out of its roles on the
+// organization's folder (nothing it holds reaches beneath the folder any longer, so the
+// same).
+func TestRunAgainAfterPushLaterCommit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// ended stops the first run at its marker, the withdrawal over; it stops before
+		// the withdrawal's first removal otherwise.
+		ended bool
+		// offFolder takes the identity out of its roles on the organization's folder, as a
+		// person would.
+		offFolder bool
+		wantOut   string
+	}{
+		{
+			name:    "the withdrawal had ended",
+			ended:   true,
+			wantOut: "The creating identity holds nothing on the 6 folders and 7 projects its withdrawal covers any longer, as Google answers for each: the withdrawal ended in the run that stopped, and nothing is left to take off.\n",
+		},
+		{
+			name:      "a person took the identity's roles off the organization's folder",
+			offFolder: true,
+			wantOut:   "Took what was left of the creating identity's grants off 12 of the 13 folders and projects its withdrawal covers: ",
 		},
 	}
 	for _, tt := range tests {
@@ -973,34 +1139,137 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 
 			f := newFlow(t)
 			dir, root := checkout(t)
-			f.google.Stop = func(call string) error {
-				if strings.HasPrefix(call, "Revoke") {
-					return errStopped
+			if tt.ended {
+				f.store.refuse = map[string]error{markerObject: errStopped}
+				var out bytes.Buffer
+				if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err == nil || !strings.Contains(err.Error(), string(errStopped)) {
+					t.Fatalf("Run() error = %v, want the stop at the marker; output:\n%s", err, out.String())
 				}
+				f.store.refuse = nil
+			} else {
+				stopAfterPush(t, f, dir, root, 0)
+			}
+			member := createtest.Member(creatingEmail)
+			orgFolder := f.google.Folders[orgNode+"|rgb"]
+			if tt.offFolder {
+				for _, role := range organizationFolderRoles {
+					f.google.Unbind("folders/"+orgFolder, role, member)
+				}
+			}
+			pushed := f.srv.Repos[owner+"/rgb-infrastructure"].Refs["refs/heads/master"].SHA
+			f.laterPlacement(t, func(placement map[string]any) {
+				object(t, placement, "folders")["tst"] = "900000000077"
+				object(t, placement, "projects")["net"] = "rgb-net-gbl-core-0000"
+			})
 
-				return nil
-			}
 			var out bytes.Buffer
-			if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err == nil || !strings.Contains(err.Error(), string(errStopped)) {
-				t.Fatalf("Run() error = %v, want the stop; output:\n%s", err, out.String())
+			result, err := create.Run(t.Context(), f.clients(), request(root, dir), &out)
+			if err != nil {
+				t.Fatalf("Run() again error = %v, want the creation finished from its own push; output:\n%s", err, out.String())
 			}
-			f.google.Stop = nil
-			tt.spoil(t, f)
-			held := f.google.Holds(createtest.Member(creatingEmail))
+			if got, want := f.google.Holds(member), []string{orgNode + " " + createtest.FolderCreator}; !slices.Equal(got, want) {
+				t.Errorf("the creating identity holds %v at the end, want %v: a grant on what the creation made was passed over", got, want)
+			}
+			var marker create.Marker
+			if err := json.Unmarshal([]byte(f.store.objects[markerObject]), &marker); err != nil {
+				t.Fatalf("no marker: %v; objects %v", err, f.store.objects)
+			}
+			if !maps.Equal(marker.Folders, orgFolders()) || marker.Projects["net"] != "rgb-net-gbl-core-e5f6" {
+				t.Errorf("the marker records the folders %v and the net project %s, want what the creation's push recorded (%v, rgb-net-gbl-core-e5f6) and not what a later commit put on the branch", marker.Folders, marker.Projects["net"], orgFolders())
+			}
+			if !maps.Equal(result.Placement.Folders, orgFolders()) || result.Placement.Projects["net"] != "rgb-net-gbl-core-e5f6" {
+				t.Errorf("the result's placement records the folders %v and the net project %s, which the root organization's policies are set from", result.Placement.Folders, result.Placement.Projects["net"])
+			}
+			for _, want := range []string{
+				"master of " + owner + "/rgb-infrastructure holds the foundation commit this creation recorded before its push (" + pushed[:7] + ", gs://imr-root-gbl-state-c3d4/applied/pushed/rgb)",
+				"what it made is read at that commit, whatever the branch has taken since.\n",
+				tt.wantOut,
+				"repository " + owner + "/rgb-infrastructure at " + pushed[:7] + "; the creating identity holds nothing under the folder now.\n",
+			} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output lacks %q:\n%s", want, out.String())
+				}
+			}
+		})
+	}
+}
+
+// TestRunStoppedAtItsPush: the creation records its foundation commit in the root
+// organization's state bucket before the new repository's branch moves to it, so a run
+// stopped at any point leaves either a branch without the foundation or a record that
+// names a commit the branch holds. Stopped at the record's write, nothing is pushed.
+// Stopped at the branch's move, the record names a commit the branch does not hold, and
+// the branch carries no foundation. Either way the run again is a first run again: it
+// pushes, and the record names the commit the branch is at.
+func TestRunStoppedAtItsPush(t *testing.T) {
+	t.Parallel()
+
+	const move = "PATCH /repos/" + owner + "/rgb-infrastructure/git/refs/heads/master"
+	tests := []struct {
+		name    string
+		stop    func(f *flow)
+		wantErr string
+		// wantRecord says the stopped run left the record of a commit.
+		wantRecord bool
+	}{
+		{
+			name:    "at the record of the push",
+			stop:    func(f *flow) { f.store.refuse = map[string]error{pushObject: errStopped} },
+			wantErr: string(errStopped),
+		},
+		{
+			name: "at the branch's move",
+			stop: func(f *flow) {
+				f.srv.Update(func() { f.srv.Failing[move] = http.StatusInternalServerError })
+			},
+			wantErr:    "moving master of " + owner + "/rgb-infrastructure to ",
+			wantRecord: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFlow(t)
+			dir, root := checkout(t)
+			tt.stop(f)
+			var out bytes.Buffer
+			if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Run() error = %v, want the stop (%s); output:\n%s", err, tt.wantErr, out.String())
+			}
+			if f.pushed() || len(f.google.Revoked) != 0 || f.store.objects[markerObject] != "" {
+				t.Fatalf("the creation stopped with the foundation pushed: %t, %d removals made and the objects %v, want no foundation on the branch, no removal and no marker", f.pushed(), len(f.google.Revoked), f.store.objects)
+			}
+			if got := f.store.objects[pushObject] != ""; got != tt.wantRecord {
+				t.Fatalf("the stopped run recorded a push: %t, want %t; objects %v", got, tt.wantRecord, f.store.objects)
+			}
+			stopped := ""
+			if tt.wantRecord {
+				stopped = f.pushRecorded(t).Commit
+			}
+			f.store.refuse = nil
+			f.srv.Update(func() { delete(f.srv.Failing, move) })
+
 			out.Reset()
-			_, err := create.Run(t.Context(), f.clients(), request(root, dir), &out)
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("Run() again error = %v, want %q; output:\n%s", err, tt.wantErr, out.String())
+			if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err != nil {
+				t.Fatalf("Run() again error = %v; output:\n%s", err, out.String())
 			}
-			if got := f.google.Holds(createtest.Member(creatingEmail)); !slices.Equal(got, held) || len(f.store.objects) != 0 {
-				t.Errorf("the refused run left the identity holding %v (it held %v) and recorded %v, want no grant taken off and nothing recorded", got, held, f.store.objects)
+			head := f.srv.Repos[owner+"/rgb-infrastructure"].Refs["refs/heads/master"].SHA
+			if record := f.pushRecorded(t); !f.pushed() || record.Commit != head || head == stopped {
+				t.Errorf("after the run again the foundation is pushed: %t, master is at %s and the record names %s (the stopped run recorded %q), want the record to name the commit the branch moved to", f.pushed(), head, record.Commit, stopped)
+			}
+			if got, want := f.google.Holds(createtest.Member(creatingEmail)), []string{orgNode + " " + createtest.FolderCreator}; !slices.Equal(got, want) || f.store.objects[markerObject] == "" {
+				t.Errorf("the creating identity holds %v at the end, want %v, and the objects are %v, want the marker among them", got, want, f.store.objects)
+			}
+			if !strings.Contains(out.String(), "Pushed the foundation to "+owner+"/rgb-infrastructure at "+head[:7]+" ") || strings.Contains(out.String(), "holds the foundation commit this creation recorded") {
+				t.Errorf("the run again is a first run again, which pushes; output:\n%s", out.String())
 			}
 		})
 	}
 }
 
 // stopAfterPush runs rgb's creation and stops it after the given number of its
-// withdrawal's removals: the foundation is pushed, and nothing is recorded.
+// withdrawal's removals: the foundation is pushed, and no marker is written.
 func stopAfterPush(t *testing.T, f *flow, dir string, root *org.Placement, done int) {
 	t.Helper()
 	revokes := 0
@@ -1020,8 +1289,8 @@ func stopAfterPush(t *testing.T, f *flow, dir string, root *org.Placement, done 
 		t.Fatalf("Run() error = %v, want the stop; output:\n%s", err, out.String())
 	}
 	f.google.Stop = nil
-	if !f.pushed() || len(f.google.Revoked) != done || len(f.store.objects) != 0 {
-		t.Fatalf("the creation stopped with the foundation pushed: %t, %d removals made (want %d) and the objects %v (want none)", f.pushed(), len(f.google.Revoked), done, f.store.objects)
+	if !f.pushed() || len(f.google.Revoked) != done || f.store.objects[markerObject] != "" {
+		t.Fatalf("the creation stopped with the foundation pushed: %t, %d removals made (want %d) and the objects %v (want no marker)", f.pushed(), len(f.google.Revoked), done, f.store.objects)
 	}
 }
 
@@ -1120,8 +1389,8 @@ func TestRunAgainAfterPushNotItsOwnToTakeOff(t *testing.T) {
 	if got := f.google.Holds(member); !slices.Equal(got, want) {
 		t.Errorf("the creating identity holds %v after the refused run, want what is not its own to take off and nothing beneath: %v", got, want)
 	}
-	if len(f.store.objects) != 0 || strings.Contains(out.String(), "holds nothing") {
-		t.Errorf("the refused run recorded %v or said the identity holds nothing; output:\n%s", f.store.objects, out.String())
+	if !f.recordedPushAlone() || strings.Contains(out.String(), "holds nothing") {
+		t.Errorf("the refused run recorded %v (want the record of the push alone) or said the identity holds nothing; output:\n%s", f.store.objects, out.String())
 	}
 
 	for _, role := range organizationFolderRoles[1:] {
@@ -1180,8 +1449,8 @@ func TestRunAgainAfterPushNamesEveryGrant(t *testing.T) {
 	if got := f.google.Holds(member); !slices.Equal(got, want) {
 		t.Errorf("the creating identity holds %v after the refused run, want what is not its own to take off and nothing else: %v", got, want)
 	}
-	if len(f.store.objects) != 0 || strings.Contains(out.String(), "holds nothing") {
-		t.Errorf("the refused run recorded %v or said the identity holds nothing; output:\n%s", f.store.objects, out.String())
+	if !f.recordedPushAlone() || strings.Contains(out.String(), "holds nothing") {
+		t.Errorf("the refused run recorded %v (want the record of the push alone) or said the identity holds nothing; output:\n%s", f.store.objects, out.String())
 	}
 
 	// A person does what the sentence asks, on the folders it names and no other.
@@ -1241,6 +1510,10 @@ func TestRunStartsOver(t *testing.T) {
 		Refs: map[string]github.Object{"refs/heads/master": {Type: "commit", SHA: "old1"}}, Ancestry: map[string][]string{"old1": {"old1"}},
 		Trees: map[string]string{"old1": "treeold"}, Files: map[string]string{"treeold:placement.json": "{\"prefix\": \"rgb\", \"stateBucket\": \"rgb-boot-gbl-state-0ld1\"}\n", "treeold:README.md": "# rgb-infrastructure\n"},
 	})
+	// The earlier organization's record of its push stands in the root's state bucket: it
+	// names another boot project, and a commit the branch holds. It is not this creation's
+	// push, which is made, and whose record replaces it.
+	f.store.objects[pushObject] = `{"prefix": "rgb", "bootProject": "rgb-boot-gbl-core-0ld1", "repository": "` + owner + `/rgb-infrastructure", "branch": "master", "commit": "old1"}`
 	var out bytes.Buffer
 	if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err != nil {
 		t.Fatalf("Run() error = %v; output:\n%s", err, out.String())
@@ -1250,6 +1523,9 @@ func TestRunStartsOver(t *testing.T) {
 	}
 	hosting := f.srv.Repos[owner+"/rgb-infrastructure"]
 	head := hosting.Refs["refs/heads/master"].SHA
+	if record := f.pushRecorded(t); record.BootProject != "rgb-boot-gbl-core-e5f6" || record.Commit != head {
+		t.Errorf("the record of the push = %+v, want this creation's, with the commit %s the branch moved to", record, head)
+	}
 	if head == "old1" || !slices.Contains(hosting.Ancestry[head], "old1") {
 		t.Errorf("master is at %s with ancestry %v: the foundation goes on the earlier one", head, hosting.Ancestry[head])
 	}

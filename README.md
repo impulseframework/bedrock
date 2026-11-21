@@ -2751,7 +2751,9 @@ identity itself, by its token as a TXT record at the domain's apex in the zone i
 and nobody is made an owner by hand); then the
 repository `<prefix>-infrastructure`, private in the GitHub
 organization, with the rendered foundation as its first push, which the new apply trigger
-runs on, every layer as its own identity; then the creating identity's grants off
+runs on, every layer as its own identity, and whose commit the creation records in the root
+organization's state bucket (`applied/pushed/<prefix>`) before the branch moves to it; then
+the creating identity's grants off
 everything it made (Owner on each project, Folder Admin and Folder Editor on each folder,
 its roles on the organization's folder), a marker in the root organization's state bucket
 (`applied/created/<prefix>`), and the hand-off, a pull request in the root organization's
@@ -2763,7 +2765,8 @@ it. A creation that stopped finishes on the next push, from any point. Before it
 every step looks before it makes. Once the foundation is on the new repository's default
 branch, the run again applies nothing as the creating identity, which gives up the grants
 the first applies need as it withdraws (they are the organization's own from that push on):
-it goes on from the push, takes off what the withdrawal left, records the marker and opens
+it goes on from the push, reading what the creation made at the commit it recorded, whatever
+the branch has taken since, takes off what the withdrawal left, records the marker and opens
 the hand-off. No grant is given by hand in between. A created organization is left alone.
 `org plan` says on
 the pull request what its merge creates. Left by hand, after the creation: the consent

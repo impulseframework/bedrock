@@ -114,13 +114,58 @@ func AwaitBranch(ctx context.Context, gh *github.Client, owner, repo, branch str
 }
 
 // push puts the rendered files on the repository's default branch as one commit on its
-// initial commit, and answers the commit. A creation whose branch carried the placement
-// when the run started (a run that stopped after its push) does not come here: it goes on
+// initial commit, and answers the commit, which it records in the root organization's
+// state bucket before the branch moves to it (recordPush). A creation whose foundation an
+// earlier run pushed (a run that stopped after its push) does not come here: it goes on
 // from that push (resume.go).
 func (f *creation) push(ctx context.Context, dir string, h *org.Placement) (string, error) {
 	message := "chore: the foundation of " + h.Prefix + ", created by the root organization " + f.req.Root.Prefix + "\n\nRendered by bedrock org create from " + org.RecordsDir + "/" + h.Prefix + "/" + org.PlacementFile + " in " + f.req.Root.SourceRepo + " at " + short(f.req.Commit) + ". The apply trigger applies 0-bootstrap, then 1-org, from this push."
+	record := func(ctx context.Context, commit string) error {
+		return f.recordPush(ctx, h, commit)
+	}
 
-	return Push(ctx, f.gh, dir, h, message, f.out)
+	return pushFoundation(ctx, f.gh, dir, h, message, record, f.out)
+}
+
+// pushRecord is what the creation leaves in the root organization's state bucket before
+// its push (applied/pushed/<prefix>): the foundation commit the new repository's branch
+// is about to move to. A run again after the push reads what the creation made at that
+// commit, whatever the branch has taken since (resume.go). The boot project tells this
+// creation's record from that of an earlier organization by the prefix, destroyed and
+// started over; the repository and the branch are there for a person who reads it.
+type pushRecord struct {
+	Prefix      string `json:"prefix"`
+	BootProject string `json:"bootProject"`
+	Repository  string `json:"repository"`
+	Branch      string `json:"branch"`
+	Commit      string `json:"commit"`
+}
+
+// pushObject is the object of the push's record in the state bucket, under the applier's
+// markers.
+func pushObject(prefix string) string {
+	return org.MarkerPrefix + "/pushed/" + prefix
+}
+
+// recordPush writes the record of the push: the foundation commit, made in the repository
+// and on no branch yet. It is written before the branch moves so that a run stopped at
+// any point leaves one of two things: a branch that does not carry the foundation (the
+// run again is a first run again, and its own commit replaces the record before the
+// branch moves), or a branch that holds the commit the record names. Written after the
+// push, a run stopped between the two would leave a foundation on the branch that no
+// record names.
+func (f *creation) recordPush(ctx context.Context, h *org.Placement, commit string) error {
+	record := pushRecord{Prefix: h.Prefix, BootProject: h.Projects[bootKey], Repository: h.GithubOrganization + "/" + h.SourceRepo, Branch: h.GithubDefaultBranch, Commit: commit}
+	data, err := json.MarshalIndent(&record, "", "  ")
+	if err != nil {
+		return errors.Wrap(err, "json.MarshalIndent()")
+	}
+	if err := f.clients.Store.Write(ctx, f.req.Root.StateBucket, pushObject(h.Prefix), append(data, '\n')); err != nil {
+		return err
+	}
+	fmt.Fprintf(f.out, "Recorded the foundation commit %s of %s in gs://%s/%s, before %s of %s moves to it: a creation that stops after its push is run again from what that commit records.\n", short(commit), h.Prefix, f.req.Root.StateBucket, pushObject(h.Prefix), record.Branch, record.Repository)
+
+	return nil
 }
 
 // Push puts the directory's files on the repository's branch as one commit on the
@@ -132,6 +177,13 @@ func (f *creation) push(ctx context.Context, dir string, h *org.Placement) (stri
 // as a person commits the one their first init writes, the providers never are; a local
 // state is never pushed either.
 func Push(ctx context.Context, gh *github.Client, dir string, p *org.Placement, message string, out io.Writer) (string, error) {
+	return pushFoundation(ctx, gh, dir, p, message, nil, out)
+}
+
+// pushFoundation is Push with what runs between the commit's making and the branch's
+// move: record, when there is one, is given the commit, and an error of its own stops the
+// push with the branch where it was.
+func pushFoundation(ctx context.Context, gh *github.Client, dir string, p *org.Placement, message string, record func(ctx context.Context, commit string) error, out io.Writer) (string, error) {
 	owner, repo, branch := p.GithubOrganization, p.SourceRepo, p.GithubDefaultBranch
 	head, carries, earlier, err := Foundation(ctx, gh, p)
 	if err != nil {
@@ -156,6 +208,11 @@ func Push(ctx context.Context, gh *github.Client, dir string, p *org.Placement, 
 	commit, err := gh.CreateCommit(ctx, owner, repo, message, tree, []string{head})
 	if err != nil {
 		return "", errors.Wrapf(err, "creating the foundation commit in %s/%s", owner, repo)
+	}
+	if record != nil {
+		if err := record(ctx, commit); err != nil {
+			return "", err
+		}
 	}
 	if err := gh.UpdateRef(ctx, owner, repo, "heads/"+branch, commit, false); err != nil {
 		return "", errors.Wrapf(err, "moving %s of %s/%s to %s", branch, owner, repo, short(commit))

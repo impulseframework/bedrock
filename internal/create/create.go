@@ -34,7 +34,7 @@ import (
 
 // Clients are the creation's seams: Google as the creating identity, GitHub with the
 // infrastructure app's token, the programs a step runs (tofu), the root organization's
-// state bucket for the marker, and the wait between tries.
+// state bucket for the record of the push and the marker, and the wait between tries.
 type Clients struct {
 	Google GoogleAsFunc
 	GitHub deploy.GitHubFunc
@@ -315,12 +315,12 @@ func (f *creation) create(ctx context.Context) (*Result, error) {
 	}
 	defer g.Close()
 	fmt.Fprintf(f.out, "=== creation %s as %s ===\n", h.Prefix, f.req.Root.CreatingIdentity())
-	head, pushed, err := f.pushed(ctx, h)
+	pushed, err := f.pushed(ctx, h)
 	if err != nil {
 		return nil, err
 	}
 	if pushed != nil {
-		return f.resume(ctx, g, h, head, pushed)
+		return f.resume(ctx, g, h, pushed)
 	}
 	seed, number, err := f.seed(ctx, g, h)
 	if err != nil {
