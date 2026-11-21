@@ -293,6 +293,9 @@ func (f *creation) create(ctx context.Context) (*Result, error) {
 	}
 	defer g.Close()
 	fmt.Fprintf(f.out, "=== creation %s as %s ===\n", h.Prefix, f.req.Root.CreatingIdentity())
+	if err := f.billingAccess(ctx, g, h); err != nil {
+		return nil, err
+	}
 	seed, number, err := f.seed(ctx, g, h)
 	if err != nil {
 		return nil, err
@@ -310,8 +313,28 @@ func (f *creation) create(ctx context.Context) (*Result, error) {
 	return f.establish(ctx, g, h, seed, number)
 }
 
+// billingAccess is the creation's first step, before anything is made: it asks Google
+// what the creating identity holds on the billing account the organization is billed to
+// (CheckBillingAccess), the root organization's like any other, and refuses a creation
+// whose identity lacks a permission its calls need there, in one sentence that says
+// what to grant. Without it such a creation made the folders and the boot project and
+// stopped at the project's billing link, on every push. A question Google did not answer
+// stops the creation too: nothing is made on an answer nobody gave.
+func (f *creation) billingAccess(ctx context.Context, g Google, h *org.Placement) error {
+	access, err := CheckBillingAccess(ctx, g, f.req.Root, h)
+	if err != nil {
+		return err
+	}
+	if len(access.Missing) > 0 {
+		return access.Refusal("run the apply trigger " + f.req.Root.ApplyTriggerName() + " again; this run made nothing")
+	}
+	fmt.Fprintf(f.out, "The creating identity holds on billing account %s what the creation needs there, as Google answers: %s.\n", h.BillingAccount, BillingPermissionNames())
+
+	return nil
+}
+
 // budget makes the organization's spend budget on the billing account, as the creating
-// identity (a Billing Account Administrator since the bootstrap): the amount its record
+// identity, which holds what that takes there (billingAccess asked): the amount its record
 // names (monthlyBudget), counting its folder, with alerts at half, nine tenths and the
 // whole of it to the billing account's administrators and users. One that stands by name
 // is left as it is: the root organization's apply keeps it.
@@ -459,9 +482,10 @@ func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, se
 
 // billingUsers grants the new organization's boot and org identities Billing Account User
 // on the billing account, which 1-org needs the day it links a project it creates: the
-// creating identity holds Billing Account Administrator, granted by the bootstrap, so no
-// billing administrator is asked. Done once 0-bootstrap's first apply has made the org
-// identity.
+// creating identity may set the account's IAM policy (billingAccess asked), by the
+// bootstrap's grant on the root organization's account and by its administrator's on
+// another, so no billing administrator is asked here. Done once 0-bootstrap's first
+// apply has made the org identity.
 func (f *creation) billingUsers(ctx context.Context, g Google, h *org.Placement) error {
 	for _, name := range []string{h.Prefix + "-boot-gbl-tofu", h.Prefix + "-org-gbl-tofu"} {
 		member := "serviceAccount:" + name + "@" + h.Projects[bootKey] + ".iam.gserviceaccount.com"

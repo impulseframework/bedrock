@@ -735,10 +735,21 @@ account (step 1).
    and the bootstrap made the identity Billing Account Administrator on this
    organization's account alone: on an account of the record's own, an
    administrator of that account grants the creating identity Billing Account
-   Administrator (`roles/billing.admin`) before the merge. The pull request
-   carries both files; its plan says what the merge creates.
+   Administrator (`roles/billing.admin`) before the merge. Before it writes
+   the record, the command asks Google, as the creating identity, which of the
+   permissions the creation needs on that account the identity holds, this
+   organization's account like any other, and refuses a record whose account
+   lacks one, in a sentence that says what to grant, with nothing written;
+   what it prints at the end says what Google answered. Only an account that
+   may impersonate the creating identity can ask as it, which a person at a
+   terminal as a rule may not: such a run says the account was not checked,
+   and why, and goes on. The pull request carries both files; its plan says
+   what the merge creates.
 2. **The merge.** The apply trigger creates each listed organization without a
-   folder yet, in order, as the creating identity: the folder at the
+   folder yet, in order, as the creating identity: first it asks Google which
+   of the permissions the creation needs on the organization's billing account
+   the identity holds, and where one is missing it stops before it makes
+   anything, with the sentence that says what to grant; then the folder at the
    organization node named after the prefix, the `terraform` folder under it,
    the boot project with its billing link and its APIs, the boot identity with
    its roles on the folder and on the boot project, the break-glass account's

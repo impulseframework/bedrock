@@ -979,6 +979,91 @@ func TestRunOwnBillingAccount(t *testing.T) {
 			t.Errorf("the creation asked %s, on the root organization's account, for an organization billed to %s", call, own)
 		}
 	}
+	// The account grants everything, and the creation went on: asked first, before
+	// anything was made, and said in the build's log as Google answered it.
+	if want := billingAsked(own); len(f.google.Calls) == 0 || f.google.Calls[0] != want {
+		t.Errorf("the creation's first call = %q, want %q", f.google.Calls[:min(1, len(f.google.Calls))], want)
+	}
+	if want := "The creating identity holds on billing account " + own + " what the creation needs there, as Google answers: billing.resourceAssociations.create, billing.budgets.list, billing.budgets.create, billing.budgets.update, billing.accounts.getIamPolicy and billing.accounts.setIamPolicy.\n"; !strings.Contains(out.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, out.String())
+	}
+}
+
+// billingAsked is the stand-in's record of the creation's question about the billing
+// account: every permission its calls and the root organization's apply need there.
+func billingAsked(billingAccount string) string {
+	return "BillingAccountPermissions(" + billingAccount + ", billing.resourceAssociations.create, billing.budgets.list, billing.budgets.create, billing.budgets.update, billing.accounts.getIamPolicy, billing.accounts.setIamPolicy)"
+}
+
+// TestRunBillingCheck: the creation's first step asks Google what the creating identity
+// holds on the billing account the organization is billed to, the root organization's
+// like any other, and an account that lacks a permission, or that Google does not answer
+// about, stops the creation there: the question is the one call made, with no folder
+// looked for or made, nothing run, no repository and no marker. The refusal is one
+// sentence that says what to grant.
+func TestRunBillingCheck(t *testing.T) {
+	t.Parallel()
+
+	const own = "ABCDEF-012345-6789AB"
+	tests := []struct {
+		name string
+		// account is the billing account the record names, lacks the permissions Google
+		// answers the creating identity does not hold on it, and refuse an answer Google
+		// does not give.
+		account string
+		lacks   []string
+		refuse  error
+		wantErr string
+	}{
+		{
+			name:    "an account of the record's own on which the creating identity holds nothing",
+			account: own,
+			lacks:   []string{"billing.resourceAssociations.create", "billing.budgets.list", "billing.budgets.create", "billing.budgets.update", "billing.accounts.getIamPolicy", "billing.accounts.setIamPolicy"},
+			wantErr: "rgb is billed to the billing account ABCDEF-012345-6789AB (billingAccount in organizations/rgb/placement.json, the root organization's where the record names none), and Google answers that the creating identity imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com lacks billing.resourceAssociations.create (linking its projects to the account), billing.budgets.list (reading the account's budgets), billing.budgets.create (making its spend budget), billing.budgets.update (keeping its spend budget at the amount its record names), billing.accounts.getIamPolicy (reading the account's IAM policy) and billing.accounts.setIamPolicy (granting its boot and org identities Billing Account User) on it: an administrator of that billing account grants the creating identity Billing Account Administrator (roles/billing.admin) on it, the one predefined role that carries every permission the creation needs there, then run the apply trigger imr-root-uc1-apply again; this run made nothing",
+		},
+		{
+			name:    "the root organization's account, with one permission taken off the creating identity",
+			account: "012345-6789AB-CDEF01",
+			lacks:   []string{"billing.accounts.setIamPolicy"},
+			wantErr: "rgb is billed to the billing account 012345-6789AB-CDEF01 (billingAccount in organizations/rgb/placement.json, the root organization's where the record names none), and Google answers that the creating identity imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com lacks billing.accounts.setIamPolicy (granting its boot and org identities Billing Account User) on it: an administrator of that billing account grants the creating identity Billing Account Administrator (roles/billing.admin) on it, the one predefined role that carries every permission the creation needs there, then run the apply trigger imr-root-uc1-apply again; this run made nothing",
+		},
+		{
+			name:    "an account Google does not answer about",
+			account: own,
+			refuse:  errRefused,
+			wantErr: "what the creating identity imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com holds on billing account ABCDEF-012345-6789AB",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFlow(t)
+			dir, root := checkout(t)
+			nameBillingAccount(t, dir, tt.account)
+			f.google.BillingLacks[tt.account] = tt.lacks
+			if tt.refuse != nil {
+				f.google.Refuse["BillingAccountPermissions"] = tt.refuse
+			}
+			var out bytes.Buffer
+			_, err := create.Run(t.Context(), f.clients(), request(root, dir), &out)
+			if err == nil || !strings.HasSuffix(err.Error(), "error="+tt.wantErr) {
+				t.Fatalf("Run() error = %v\nwant: %s", err, tt.wantErr)
+			}
+			if tt.refuse != nil && !strings.Contains(err.Error(), tt.refuse.Error()) {
+				t.Errorf("Run() error = %v, want Google's own word in it, %q", err, tt.refuse)
+			}
+			if want := []string{billingAsked(tt.account)}; !slices.Equal(f.google.Calls, want) {
+				t.Errorf("calls = %q, want the question alone, %q", f.google.Calls, want)
+			}
+			if made := f.google.Made(); len(made) != 0 || len(f.google.Grants) != 0 {
+				t.Errorf("the creation made %v and granted %v before the refusal", made, f.google.Grants)
+			}
+			if len(f.runner.ran) != 0 || len(f.srv.Created) != 0 || len(f.store.objects) != 0 {
+				t.Errorf("the creation went on after the refusal: %v, %v, %v", f.runner.ran, f.srv.Created, f.store.objects)
+			}
+		})
+	}
 }
 
 // nameBillingAccount writes the billing account into rgb's record, as a person who

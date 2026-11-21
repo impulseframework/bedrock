@@ -36,6 +36,9 @@ type FakeGoogle struct {
 	Billing map[string]string
 	// SpendBudgets are the budgets by billing account.
 	SpendBudgets map[string][]org.Budget
+	// BillingLacks are the permissions the identity the seam is opened as lacks on a
+	// billing account, by account; on an account not named it holds every one asked.
+	BillingLacks map[string][]string
 	Grants       []string
 	Revoked      []string
 	Calls        []string
@@ -52,7 +55,7 @@ type FakeGoogle struct {
 func New() *FakeGoogle {
 	return &FakeGoogle{
 		Folders: map[string]string{}, Projects: map[string]bool{}, Numbers: map[string]string{}, Accounts: map[string]bool{},
-		Buckets: map[string]bool{}, Zones: map[string][]string{}, Enabled: map[string][]string{}, Billing: map[string]string{}, SpendBudgets: map[string][]org.Budget{}, Refuse: map[string]error{},
+		Buckets: map[string]bool{}, Zones: map[string][]string{}, Enabled: map[string][]string{}, Billing: map[string]string{}, SpendBudgets: map[string][]org.Budget{}, BillingLacks: map[string][]string{}, Refuse: map[string]error{},
 	}
 }
 
@@ -286,6 +289,20 @@ func (g *FakeGoogle) GrantBillingAccount(_ context.Context, billingAccount, role
 	g.Grants = append(g.Grants, "billingAccounts/"+billingAccount+" "+role+" "+member)
 
 	return nil
+}
+
+// BillingAccountPermissions answers the permissions asked, less those BillingLacks names
+// for the account, as billingAccounts.testIamPermissions answers the subset its caller
+// holds.
+func (g *FakeGoogle) BillingAccountPermissions(_ context.Context, billingAccount string, permissions []string) ([]string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := g.call("BillingAccountPermissions", append([]string{billingAccount}, permissions...)...); err != nil {
+		return nil, err
+	}
+	lacks := g.BillingLacks[billingAccount]
+
+	return slices.DeleteFunc(slices.Clone(permissions), func(p string) bool { return slices.Contains(lacks, p) }), nil
 }
 
 // LinkBilling records the link.

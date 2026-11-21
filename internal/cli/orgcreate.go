@@ -14,6 +14,7 @@ import (
 	"github.com/go-playground/errors/v5"
 	"github.com/spf13/cobra"
 
+	"github.com/impulseframework/bedrock/internal/create"
 	"github.com/impulseframework/bedrock/internal/org"
 )
 
@@ -48,14 +49,23 @@ prefix and its boot project; the folder is recorded by the hand-off), renders, a
 what the merge creates.
 
 For an organization billed to this organization's billing account nobody grants anything
-by hand: the creating identity holds Folder Creator at the organization node and Billing
-Account Administrator on that account since the bootstrap, links the new organization's
-projects to it, grants the new organization's identities Billing Account User itself, and
-makes the new organization's spend budget, the amount its record names (monthlyBudget), on
-its folder. On a billing account of the record's own, an administrator of that account
-grants the creating identity Billing Account Administrator (roles/billing.admin) before
-the merge: the bootstrap made the identity an administrator of this organization's
-account alone.`,
+by hand: the bootstrap granted the creating identity Folder Creator at the organization
+node and Billing Account Administrator on that account, and with them it links the new
+organization's projects to the account, grants the new organization's identities Billing
+Account User itself, and makes the new organization's spend budget, the amount its record
+names (monthlyBudget), on its folder. On a billing account of the record's own, an
+administrator of that account grants the creating identity Billing Account Administrator
+(roles/billing.admin) before the merge: the bootstrap made the identity an administrator
+of this organization's account alone.
+
+Before it writes the record, create asks Google, as the creating identity, whether the
+identity holds on the organization's billing account the permissions the creation needs
+there, this organization's account like any other, and refuses a record whose account
+lacks one, saying what to grant; its closing text says what Google answered. Only an
+account that may impersonate the creating identity can ask as it, which the apply
+trigger's runner does and a person at a terminal as a rule does not: such a run says the
+permissions were not checked, and why, and goes on. The merge's apply asks the same before
+it makes anything, and refuses the same way.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return d.orgCreate(cmd.Context(), dir, placement, args[0], cmd.OutOrStdout())
@@ -68,8 +78,11 @@ account alone.`,
 }
 
 // orgCreate records the organization: the skeleton when the record is absent, else the
-// filled record, the listing, the render and the preview.
-func (d deps) orgCreate(_ context.Context, dir, placement, prefix string, out io.Writer) error {
+// filled record, the listing, the render and the preview. Before the filled record is
+// written, it asks what the creating identity holds on the organization's billing
+// account (billingStanding), and a record whose account lacks a permission is refused
+// with nothing written.
+func (d deps) orgCreate(ctx context.Context, dir, placement, prefix string, out io.Writer) error {
 	root, err := orgPlacement(dir, placement)
 	if err != nil {
 		return err
@@ -92,6 +105,13 @@ func (d deps) orgCreate(_ context.Context, dir, placement, prefix string, out io
 	}
 	if err := org.Fill(root, h); err != nil {
 		return errors.Wrapf(err, "%s", path)
+	}
+	var billing billingStanding
+	if listed := root.HostingOrganization(prefix); listed == nil || !listed.Created() {
+		billing, err = d.billingStanding(ctx, root, h)
+		if err != nil {
+			return err
+		}
 	}
 	if err := h.Write(path); err != nil {
 		return err
@@ -116,9 +136,40 @@ func (d deps) orgCreate(_ context.Context, dir, placement, prefix string, out io
 	if _, err := org.Write(root, files, dir); err != nil {
 		return err
 	}
-	fmt.Fprint(out, creationSteps(root, h))
+	fmt.Fprint(out, creationSteps(root, h, billing))
 
 	return nil
+}
+
+// billingStanding is what bedrock org create learned about the creating identity on the
+// billing account the organization is billed to: Google's answer (access), or why Google
+// could not be asked (unasked).
+type billingStanding struct {
+	access  *create.BillingAccess
+	unasked error
+}
+
+// billingStanding asks Google, as the creating identity, what the identity holds on the
+// billing account the organization is billed to (create.AskBillingAccess), the root
+// organization's like any other. A permission Google answers missing is refused in the
+// sentence the creation refuses with. A run that cannot ask as the creating identity
+// (no credentials, or an account that may not impersonate it, as a person at a terminal
+// as a rule may not) refuses nothing and passes nothing: the closing text says the
+// permissions were not checked and why, and the merge's apply asks again before it makes
+// anything.
+func (d deps) billingStanding(ctx context.Context, root, h *org.Placement) (billingStanding, error) {
+	if d.org == nil || d.org.googleAs == nil {
+		return billingStanding{unasked: errors.New("no Google client as an identity is wired")}, nil
+	}
+	access, err := create.AskBillingAccess(ctx, d.org.googleAs, root, h)
+	if err != nil {
+		return billingStanding{unasked: err}, nil
+	}
+	if len(access.Missing) > 0 {
+		return billingStanding{}, access.Refusal("run bedrock org create " + h.Prefix + " again; nothing was written")
+	}
+
+	return billingStanding{access: access}, nil
 }
 
 // readRecord reads the record as a person wrote it: a hosting placement that
@@ -178,8 +229,10 @@ boot project's suffix and lists the organization in placement.json.
 	return nil
 }
 
-// creationSteps says what the merge creates and what is granted by hand before it.
-func creationSteps(root, h *org.Placement) string {
+// creationSteps says what the merge creates, and what the creating identity holds on the
+// organization's billing account as org create found it: Google's answer, or that Google
+// could not be asked, never what the bootstrap is taken to have left.
+func creationSteps(root, h *org.Placement, billing billingStanding) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `
 The merge of this pull request creates %s, as the creating identity (%s):
@@ -205,29 +258,73 @@ The merge of this pull request creates %s, as the creating identity (%s):
     the apps domain's label onward to its zone (domains), from which the apply writes the
     NS record set.
 `, h.Prefix, root.CreatingIdentity(), h.Prefix, h.Projects["boot"], h.BillingAccount, h.Prefix, h.StateBucket, h.MonthlyBudget, h.AppsDomain, h.GithubOrganization, h.SourceRepo)
-	if h.BillingAccount == root.BillingAccount {
-		fmt.Fprintf(&b, `Nothing is granted by hand before the merge: the creating identity holds Folder Creator at the
-organization node and Billing Account Administrator on this organization's billing account
-(%s), which %s is billed to, since the bootstrap, and it grants the new
-organization's boot and org identities Billing Account User itself and makes its spend
-budget (%d a month in the account's currency, monthlyBudget) on its folder, which the apply
-keeps. After the merge, for the new organization: its consent screen and role groups follow
-as its README says.
-`, root.BillingAccount, h.Prefix, h.MonthlyBudget)
+	b.WriteString(billingText(root, h, billing))
+	b.WriteString(`After the merge, for the new organization: its consent screen and role groups follow as its
+README says.
+`)
+
+	return b.String()
+}
+
+// billingText is the closing text's word on the billing account. Where Google answered,
+// it says what Google answered the creating identity holds there. Where Google could not
+// be asked, it says so and why, names the permissions the creation needs and the role
+// that carries them, and says who grants it: the bootstrap did on the root
+// organization's account, and an administrator of the account does on another, to the
+// creating identity by its email.
+func billingText(root, h *org.Placement, billing billingStanding) string {
+	var b strings.Builder
+	if billing.access != nil {
+		fmt.Fprintf(&b, `Nothing is granted by hand before the merge. Asked as the creating identity, Google answers
+that it holds on the billing account %s is billed to, %s, every permission
+the creation needs there:
+%sWith them it links the new organization's projects to the account, grants its boot and org
+identities Billing Account User itself and makes its spend budget (%d a month in the account's
+currency, monthlyBudget) on its folder. The bootstrap granted it Folder Creator at the
+organization node.
+`, h.Prefix, h.BillingAccount, billingPermissionLines(), h.MonthlyBudget)
 
 		return b.String()
 	}
-	fmt.Fprintf(&b, `One grant is made by hand before the merge: %s is billed to a billing account of its own,
-%s (billingAccount in %s), and the bootstrap made the
-creating identity Billing Account Administrator on this organization's account alone, so an
-administrator of %s grants %s
-Billing Account Administrator (roles/billing.admin) on it. The creating identity holds Folder
-Creator at the organization node since the bootstrap, and on that account it links the new
-organization's projects, grants its boot and org identities Billing Account User itself and
-makes its spend budget (%d a month in the account's currency, monthlyBudget) on its folder.
-After the merge, for the new organization: its consent screen and role groups follow as its
-README says.
-`, h.Prefix, h.BillingAccount, filepath.Join(org.RecordsDir, h.Prefix, org.PlacementFile), h.BillingAccount, root.CreatingIdentity(), h.MonthlyBudget)
+	fmt.Fprintf(&b, `Not checked: whether the creating identity holds what the creation needs on the billing
+account %s is billed to, %s. Only an account that may impersonate the
+creating identity can ask Google as it, as the apply trigger's run does, and this run could
+not (%v).
+The creation needs there:
+%sBilling Account Administrator (%s) is the one predefined role that carries them all.
+`, h.Prefix, h.BillingAccount, errors.Cause(billing.unasked), billingPermissionLines(), create.BillingAdminRole)
+	if h.BillingAccount == root.BillingAccount {
+		b.WriteString(`The bootstrap granted the creating identity that role on this account, this organization's
+own.
+`)
+	} else {
+		fmt.Fprintf(&b, `Nothing of bedrock grants the creating identity anything on this account, which is not this
+organization's (billingAccount in %s): before the merge, an
+administrator of the account grants that role on it to
+%s.
+`, filepath.ToSlash(filepath.Join(org.RecordsDir, h.Prefix, org.PlacementFile)), root.CreatingIdentity())
+	}
+	fmt.Fprintf(&b, `The merge's apply asks Google as the creating identity before it makes anything, and refuses
+with what to grant where a permission is missing. With the permissions it links the new
+organization's projects to the account, grants its boot and org identities Billing Account
+User itself and makes its spend budget (%d a month in the account's currency, monthlyBudget)
+on its folder. The bootstrap granted it Folder Creator at the organization node.
+`, h.MonthlyBudget)
+
+	return b.String()
+}
+
+// billingPermissionLines lists the permissions the creation needs on the billing account,
+// one a line with what each is for.
+func billingPermissionLines() string {
+	var b strings.Builder
+	for i, p := range create.BillingPermissions {
+		end := ";"
+		if i == len(create.BillingPermissions)-1 {
+			end = "."
+		}
+		fmt.Fprintf(&b, "  - %s, for %s%s\n", p.Permission, p.For, end)
+	}
 
 	return b.String()
 }

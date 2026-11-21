@@ -69,6 +69,10 @@ type Google interface {
 	GrantProject(ctx context.Context, id, role, member string) error
 	// RevokeProject takes the member out of each of the roles on the project's policy.
 	RevokeProject(ctx context.Context, id, member string, roles []string) error
+	// BillingAccountPermissions answers which of the permissions the caller, the identity
+	// the seam was opened as, holds on the billing account: the creation asks before it
+	// makes anything (CheckBillingAccess).
+	BillingAccountPermissions(ctx context.Context, billingAccount string, permissions []string) ([]string, error)
 	// LinkBilling links the project to the billing account.
 	LinkBilling(ctx context.Context, id, billingAccount string) error
 	// GrantBillingAccount adds the member to the role on the billing account's policy; a
@@ -100,7 +104,7 @@ type Google interface {
 	// (projects/P[/locations/L]/secrets/N); a member already in the role is left.
 	GrantSecret(ctx context.Context, secret, role, member string) error
 	// Budgets are the billing account's spend budgets, and CreateBudget makes one on it:
-	// the creating identity holds Billing Account Administrator.
+	// the creating identity holds what both take, which the creation asked first.
 	Budgets(ctx context.Context, billingAccount string) ([]org.Budget, error)
 	CreateBudget(ctx context.Context, billingAccount string, b *org.Budget) error
 	// Close releases the connections.
@@ -504,6 +508,18 @@ func (g *google) ProjectNumber(ctx context.Context, id string) (string, error) {
 	}
 
 	return strings.TrimPrefix(project.GetName(), "projects/"), nil
+}
+
+// BillingAccountPermissions asks Cloud Billing's billingAccounts.testIamPermissions, which
+// answers the subset of the permissions its caller holds on the account, and for its
+// caller alone.
+func (g *google) BillingAccountPermissions(ctx context.Context, billingAccount string, permissions []string) ([]string, error) {
+	resp, err := g.billing.BillingAccounts.TestIamPermissions("billingAccounts/"+billingAccount, &cloudbilling.TestIamPermissionsRequest{Permissions: permissions}).Context(ctx).Do()
+	if err != nil {
+		return nil, errors.Wrapf(err, "cloudbilling.BillingAccounts.TestIamPermissions(): %s", billingAccount)
+	}
+
+	return resp.Permissions, nil
 }
 
 func (g *google) GrantBillingAccount(ctx context.Context, billingAccount, role, member string) error {

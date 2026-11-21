@@ -1133,6 +1133,18 @@ func (f *Fake) Delete(_ context.Context, bucket, object string) error {
 
 // --- the creation seam (create.Google) ---
 
+// BillingAccountPermissions answers every permission asked: the creating identity holds
+// on the billing account what the creation's first step asks about.
+func (f *Fake) BillingAccountPermissions(_ context.Context, account string, permissions []string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("BillingAccountPermissions", append([]string{account}, permissions...)...); err != nil {
+		return nil, err
+	}
+
+	return permissions, nil
+}
+
 // GrantBillingAccount adds the member to the role on the billing account, as the
 // creation does for a hosting organization's identities.
 func (f *Fake) GrantBillingAccount(_ context.Context, account, role, member string) error {

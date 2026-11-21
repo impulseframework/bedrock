@@ -2735,8 +2735,20 @@ organization's projects to that account, grants its boot and org identities Bill
 Account User on it and makes its spend budget on it, and the bootstrap made the identity
 Billing Account Administrator on the root organization's account alone: on an account of
 the record's own, an administrator of that account grants the creating identity Billing
-Account Administrator (`roles/billing.admin`) before the merge. The merge's `org
-apply` creates each listed organization without a folder yet as the root organization's
+Account Administrator (`roles/billing.admin`) before the merge. Before it writes the
+record, `org create` asks Google, as the creating identity, which of the permissions the
+creation needs on that account the identity holds (`billing.resourceAssociations.create`,
+`billing.budgets.list`, `billing.budgets.create`, `billing.budgets.update`,
+`billing.accounts.getIamPolicy` and `billing.accounts.setIamPolicy`, asked with Cloud
+Billing's `billingAccounts.testIamPermissions`), the root organization's account like any
+other, and refuses a record whose account lacks one, in a sentence that says what to
+grant, with nothing written; what it prints at the end says what Google answered. Only an
+account that may impersonate the creating identity can ask as it, which a person at a
+terminal as a rule may not: such a run says the account was not checked, and why, and
+goes on. The merge's apply asks the same as the creation's first step, before it makes
+anything, and stops there with the same sentence where a permission is missing. The
+merge's `org apply` creates each listed organization without a folder yet as the root
+organization's
 creating identity (`<prefix>-create-gbl-tofu`, made by its bootstrap, which granted it
 Folder Creator at the organization node and Billing Account Administrator on the root
 organization's billing account): the folder at the organization node, the `terraform` folder, the boot

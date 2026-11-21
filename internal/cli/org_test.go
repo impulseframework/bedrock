@@ -101,7 +101,7 @@ func editPlacement(t *testing.T, dir string, edit func(p *org.Placement)) {
 // API key reports run without credentials, and the running bedrock is a commit installed
 // with go install, which an application's first placement can pin.
 func orgDeps(dir string) deps {
-	return deps{domains: noCloudDomains, secrets: noSecretManager, projects: noProjects, org: &orgClients{policies: noPolicies, keys: noKeys, registrations: noRegistrations, permissions: noPermissions}, cwd: dir, interactive: never, version: installedHead}
+	return deps{domains: noCloudDomains, secrets: noSecretManager, projects: noProjects, org: &orgClients{policies: noPolicies, keys: noKeys, registrations: noRegistrations, permissions: noPermissions, googleAs: noGoogleAs}, cwd: dir, interactive: never, version: installedHead}
 }
 
 // installedHead is the running bedrock as go install builds the head commit.
@@ -127,6 +127,11 @@ func noRegistrations(context.Context, string) (domain.RegistrationReader, error)
 
 // noPermissions refuses to open a permission tester, as a run without Google credentials.
 func noPermissions(context.Context) (org.PermissionTester, error) {
+	return nil, errors.New("no Google credentials in this test")
+}
+
+// noGoogleAs refuses to open Google as an identity, as a run without Google credentials.
+func noGoogleAs(context.Context, string) (create.Google, error) {
 	return nil, errors.New("no Google credentials in this test")
 }
 
