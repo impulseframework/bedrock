@@ -3220,7 +3220,10 @@ for the run; `GITHUB_TOKEN`, or gh's token, for
 organization owner's). It says what goes, project by project, and asks for the prefix typed
 back before anything runs (`--yes` stands in for it where there is no terminal). It destroys
 1-org, its GitHub repositories taken out of the state first so that they stay with their
-code, pull requests and releases (the rulesets and the operations environments go), then
+code, pull requests and releases (the rulesets and the operations environments go) and the
+network project's zones deleted by API ahead of the project (a zone that goes with its
+project holds its name servers until the project purges, thirty days later; deleted first,
+they are free for a zone of the name at once), then
 0-bootstrap on a local copy of its state, since the
 state bucket goes with the boot project; in each an apply with `destroy=true` records the
 projects' deletion policy, that no API is disabled first (one a resource outside the layer's

@@ -91,7 +91,7 @@ func Destroy(ctx context.Context, clients *Clients, req *DestroyRequest, out io.
 	}
 	if project != "" {
 		if exists {
-			if err := deleteZones(ctx, clients, project, out); err != nil {
+			if err := DeleteZones(ctx, clients, project, out); err != nil {
 				return err
 			}
 			if err := iam.DeleteProject(ctx, project); err != nil {
@@ -150,12 +150,14 @@ func deleteBudget(ctx context.Context, clients *Clients, p *org.Placement, proje
 	return nil
 }
 
-// deleteZones deletes the project's zones ahead of the project, each zone's record sets
+// DeleteZones deletes the project's zones ahead of the project, each zone's record sets
 // but its apex NS and SOA first: a zone deleted with its project keeps its name servers
 // until the project purges, thirty days later, and Cloud DNS gives a name and its
-// subdomains five name-server sets in all across every project, so a root organization
-// bootstrapped again within the month would be refused its zone.
-func deleteZones(ctx context.Context, clients *Clients, project string, out io.Writer) error {
+// subdomains five name-server sets in all across every project, so an organization made
+// again within the month would be refused its zone. The root organization's destroy runs
+// it on the root project, and a hosting organization's on its network project
+// (internal/cli).
+func DeleteZones(ctx context.Context, clients *Clients, project string, out io.Writer) error {
 	dns, err := clients.DNS(ctx)
 	if err != nil {
 		return err

@@ -206,6 +206,10 @@ var (
 	}
 )
 
+// zonesDeleted is the line the tests' zone deletion leaves among the commands: where it
+// stands says what had run by then.
+const zonesDeleted = "the network project's zones are deleted by API"
+
 func fixedToken(context.Context) (string, error) {
 	return "ghs_token", nil
 }
@@ -225,11 +229,14 @@ func TestDestroy(t *testing.T) {
 		name            string
 		destroyVariable bool
 		keepNet         bool
-		token           func(context.Context) (string, error)
-		runs            map[string]*handRun
-		wantErr         string
-		wantRan         []string
-		wantOut         []string
+		// noZoneDeletion leaves the request without what deletes the network project's
+		// zones.
+		noZoneDeletion bool
+		token          func(context.Context) (string, error)
+		runs           map[string]*handRun
+		wantErr        string
+		wantRan        []string
+		wantOut        []string
 		// wantAbsent are texts the output may not hold.
 		wantAbsent []string
 		wantCopy   bool
@@ -252,6 +259,7 @@ func TestDestroy(t *testing.T) {
 				`1-org: tofu state rm github_repository.app["quill"] [token] [data 1-org.data]`,
 				`1-org: tofu state rm google_tags_tag_key.public_invoker["tst"] [token] [data 1-org.data]`,
 				`1-org: tofu state rm google_tags_tag_value.public_invoker["tst"] [token] [data 1-org.data]`,
+				zonesDeleted,
 				`1-org: tofu apply -input=false -no-color -auto-approve -var destroy=true -target=google_folder.this["shared"] -target=google_folder.this["tst"] -target=module.project["net"].module.project-factory.google_project.main -target=module.project["net"].module.project-factory.module.project_services.google_project_service.project_services["dns.googleapis.com"] -target=module.project["tst"].module.project-factory.google_project.main -target=module.project["tst"].module.project-factory.module.project_services.google_project_service.project_services["compute.googleapis.com"] [token] [data 1-org.data]`,
 				"1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true [token] [data 1-org.data]",
 				"0-bootstrap: tofu init -input=false -no-color -reconfigure [data 0-bootstrap.data]",
@@ -336,6 +344,7 @@ func TestDestroy(t *testing.T) {
 				"1-org: tofu state list [data 1-org.data]",
 				`1-org: tofu state rm google_tags_tag_key.public_invoker["tst"] [token] [data 1-org.data]`,
 				`1-org: tofu state rm google_tags_tag_value.public_invoker["tst"] [token] [data 1-org.data]`,
+				zonesDeleted,
 				`1-org: tofu apply -input=false -no-color -auto-approve -var destroy=true -target=google_folder.this["shared"] -target=google_folder.this["tst"] -target=module.project["net"].module.project-factory.google_project.main -target=module.project["net"].module.project-factory.module.project_services.google_project_service.project_services["dns.googleapis.com"] -target=module.project["tst"].module.project-factory.google_project.main -target=module.project["tst"].module.project-factory.module.project_services.google_project_service.project_services["compute.googleapis.com"] [token] [data 1-org.data]`,
 				"1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true [token] [data 1-org.data]",
 				"1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true [token] [data 1-org.data]",
@@ -366,6 +375,15 @@ func TestDestroy(t *testing.T) {
 			wantErr:         "1-org/variables.tf declares no destroy variable, which bedrock org destroy sets",
 		},
 		{
+			name:            "refuses a request with nothing to delete the network project's zones, before anything runs",
+			destroyVariable: true,
+			noZoneDeletion:  true,
+			token:           fixedToken,
+			runs:            map[string]*handRun{orgLayer: {stateList: orgState}},
+			wantErr:         "no zone deletion is wired: the destroy deletes the network project's zones ahead of the project",
+			wantRan:         []string{},
+		},
+		{
 			name:            "refuses 1-org without a GitHub token, before anything changes",
 			destroyVariable: true,
 			token:           noToken,
@@ -384,7 +402,17 @@ func TestDestroy(t *testing.T) {
 			dir := destroyCheckout(t, tt.destroyVariable)
 			runner := &handRunner{runs: tt.runs}
 			var out bytes.Buffer
-			err := Destroy(context.Background(), runner, &DestroyRequest{Dir: dir, Placement: placement, GithubToken: tt.token, KeepNet: tt.keepNet}, &out)
+			deleteZones := func(context.Context) error {
+				runner.mu.Lock()
+				defer runner.mu.Unlock()
+				runner.ran = append(runner.ran, zonesDeleted)
+
+				return nil
+			}
+			if tt.noZoneDeletion {
+				deleteZones = nil
+			}
+			err := Destroy(context.Background(), runner, &DestroyRequest{Dir: dir, Placement: placement, GithubToken: tt.token, KeepNet: tt.keepNet, DeleteZones: deleteZones}, &out)
 			switch {
 			case tt.wantErr == "" && err != nil:
 				t.Fatalf("Destroy() = %v, want no error; printed:\n%s", err, out.String())

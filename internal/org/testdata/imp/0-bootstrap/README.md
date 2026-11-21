@@ -503,7 +503,13 @@ folder refuses for a while after its last project's deletion, and the next
 attempt gets past it. `1-org`'s GitHub repositories are taken out of its state
 first, and so are its tag keys, values and bindings, which go with the
 projects that hold them (a tag value refuses to go while a binding still holds
-it, and the bindings go with the projects' deletion, not before).
+it, and the bindings go with the projects' deletion, not before). The network
+project's zones, the apps domain's and each vanity domain's, are deleted by
+API right before `1-org`'s destroy deletes the project, each zone's record
+sets first: a zone that goes with its project holds its name servers until
+the project purges, thirty days later, and Cloud DNS gives a name and its
+subdomains five name-server sets in all, so a zone deleted ahead of its
+project leaves its set free for a zone of the name at once.
 `0-bootstrap`'s state lives in the bucket the boot project holds, so its
 destroy runs on a copy of the layer with a local copy of the state, pulled
 before the project goes. A layer whose state holds nothing is skipped, so the
