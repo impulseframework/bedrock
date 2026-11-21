@@ -202,16 +202,23 @@ func (g *FakeGoogle) CreateFolder(_ context.Context, parent, displayName string)
 	return id, nil
 }
 
-// AdministersFolder answers whether the caller may set the folder's policy. Google
-// answers the question for any caller, so it is never refused.
-func (g *FakeGoogle) AdministersFolder(_ context.Context, folder string) (bool, error) {
+// Held answers which of the permissions the caller holds on the folder or the project,
+// from the roles it holds there and above, in the order asked. Google answers the
+// question for any caller, so it is never refused.
+func (g *FakeGoogle) Held(_ context.Context, resource string, permissions []string) ([]string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if err := g.call("AdministersFolder", folder); err != nil {
-		return false, err
+	if err := g.call("Held", resource, strings.Join(permissions, "+")); err != nil {
+		return nil, err
+	}
+	var held []string
+	for _, permission := range permissions {
+		if g.may(permission, resource) {
+			held = append(held, permission)
+		}
 	}
 
-	return g.may(FoldersSetPolicy, "folders/"+folder), nil
+	return held, nil
 }
 
 // GrantFolder records the binding.

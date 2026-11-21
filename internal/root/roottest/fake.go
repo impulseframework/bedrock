@@ -1150,16 +1150,16 @@ func (f *Fake) FindFolder(_ context.Context, parent, displayName string) (string
 	return f.Folders[parent+"|"+displayName], nil
 }
 
-// AdministersFolder answers that the caller may set the folder's policy: this stand-in
-// refuses no call for a grant its caller lacks.
-func (f *Fake) AdministersFolder(_ context.Context, folder string) (bool, error) {
+// Held answers that the caller holds every permission asked on the folder or the project:
+// this stand-in refuses no call for a grant its caller lacks.
+func (f *Fake) Held(_ context.Context, resource string, permissions []string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.call("AdministersFolder", folder); err != nil {
-		return false, err
+	if err := f.call("Held", resource, strings.Join(permissions, "+")); err != nil {
+		return nil, err
 	}
 
-	return true, nil
+	return slices.Clone(permissions), nil
 }
 
 // CreateFolder makes the folder under the parent.

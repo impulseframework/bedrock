@@ -4,9 +4,10 @@
 // applies) needs the grants the withdrawal takes: run again, they would be refused, and
 // only a person granting the identity by hand would get the creation past them. So a run
 // that finds the foundation on the new repository's default branch does none of them
-// again. It reads what the creation made from the pushed placement, finds the two folders
-// by their names, takes off what the withdrawal left, and ends as every creation does:
-// the marker, and the hand-off. The first applies are the new organization's own from the
+// again. It reads what the creation made from the pushed placement, which it holds to the
+// record, finds the two folders by their names and holds them to the ids the push
+// recorded, takes off what the withdrawal left, and ends as every creation does: the
+// marker, and the hand-off. The first applies are the new organization's own from the
 // push on, which its apply trigger runs as its own identities.
 
 package create
@@ -15,12 +16,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/go-playground/errors/v5"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/zclconf/go-cty/cty"
 
 	"github.com/impulseframework/bedrock/internal/github"
 	"github.com/impulseframework/bedrock/internal/org"
 )
+
+// seededTfvars is the pushed file that names the two folders the creation's seed made.
+const seededTfvars = bootstrapLayer + "/terraform.tfvars"
 
 // pushed reads whether an earlier run of this creation pushed the foundation: the new
 // repository's default branch carries this organization's placement (Foundation). It
@@ -50,53 +59,108 @@ func (f *creation) pushed(ctx context.Context, h *org.Placement) (head string, p
 	return head, placed, nil
 }
 
-// resume finishes a creation that stopped after its push: what the pushed placement
-// records goes into the placement (the projects, the folders, the tags and the zone), the
-// organization's folder and its terraform folder are found by their names, the withdrawal
-// runs when it has not ended, and the marker and the hand-off follow.
-//
-// The withdrawal takes the creating identity's roles on the organization's folder off
-// last, in one write, and its Folder Admin there reaches every folder and project under
-// it. So while the identity may still set that folder's policy, the withdrawal is not
-// over, and every removal of it is the identity's to make again: one made already reads
-// the policy and writes nothing. Once it may not, the last removal went through, and with
-// it every one before. Google answers that one question for a caller that holds nothing
-// (AdministersFolder), and the two folders are found by the identity's Folder Creator at
-// the organization node, which the withdrawal does not touch.
+// resume finishes a creation that stopped after its push. The pushed placement is held to
+// the record first (differs), and what it records goes into the placement: the projects,
+// the folders, the tags and the zone. The organization's folder and its terraform folder
+// are found by their names, by the identity's Folder Creator at the organization node,
+// which the withdrawal does not touch, and held to the ids the push recorded (seeded).
+// What the withdrawal left is taken off (withdrawLeft), and the marker and the hand-off
+// follow.
 func (f *creation) resume(ctx context.Context, g Google, h *org.Placement, head string, placed *org.Placement) (*Result, error) {
 	owner, repo, branch := h.GithubOrganization, h.SourceRepo, h.GithubDefaultBranch
-	if placed.ProjectNumbers[bootKey] == "" || len(placed.Folders) == 0 {
-		return nil, errors.Newf("%s on %s of %s/%s carries this organization's state bucket and lacks the boot project's number (projectNumbers.%s) or the folders (folders), which the creation's push records: the creation cannot go on from it", org.PlacementFile, branch, owner, repo, bootKey)
+	if differences := differs(h, placed); len(differences) > 0 {
+		return nil, errors.Newf("%s on %s of %s/%s carries this organization's state bucket and is not what this creation's push records (%s): the creation cannot go on from it", org.PlacementFile, branch, owner, repo, strings.Join(differences, ", "))
 	}
 	h.Projects, h.ProjectNumbers = placed.Projects, placed.ProjectNumbers
 	h.Folders, h.PublicInvokerTags, h.AppsZone = placed.Folders, placed.PublicInvokerTags, placed.AppsZone
 	fmt.Fprintf(f.out, "%s of %s/%s carries the foundation already (%s): an earlier run of this creation pushed it and stopped. Nothing before the push is done again (the first applies are the organization's own from that push on, which its apply trigger runs), and the creation goes on from there.\n", branch, owner, repo, short(head))
-	seed := &org.Seed{}
-	var err error
-	if seed.OrganizationFolder, err = f.found(ctx, g, "organizations/"+h.OrganizationID, h.Prefix); err != nil {
-		return nil, err
-	}
-	if seed.TerraformFolder, err = f.found(ctx, g, "folders/"+seed.OrganizationFolder, terraformFolderName); err != nil {
-		return nil, err
-	}
-	administers, err := g.AdministersFolder(ctx, seed.OrganizationFolder)
+	recorded, err := f.seeded(ctx, h, head)
 	if err != nil {
 		return nil, err
 	}
-	if administers {
-		if err := f.withdraw(ctx, g, seed, h, h.Folders); err != nil {
-			return nil, err
-		}
-	} else {
-		fmt.Fprintf(f.out, "The creating identity administers folder %s no longer: its withdrawal ended in the run that stopped, and nothing under the folder is left to take off.\n", seed.OrganizationFolder)
+	seed := &org.Seed{}
+	if seed.OrganizationFolder, err = f.found(ctx, g, h, "organizations/"+h.OrganizationID, h.Prefix, organizationFolderVariable, recorded.OrganizationFolder); err != nil {
+		return nil, err
+	}
+	if seed.TerraformFolder, err = f.found(ctx, g, h, "folders/"+seed.OrganizationFolder, terraformFolderName, terraformFolderVariable, recorded.TerraformFolder); err != nil {
+		return nil, err
+	}
+	if err := f.withdrawLeft(ctx, g, seed, h); err != nil {
+		return nil, err
 	}
 
 	return f.conclude(ctx, h, seed, owner+"/"+repo, head)
 }
 
-// found is the folder named under the parent, which the creation made before its push;
-// one that is not there stops the creation, which makes nothing again after its push.
-func (f *creation) found(ctx context.Context, g Google, parent, name string) (string, error) {
+// differs is what the pushed placement lacks or names otherwise than the record, each as
+// its place in the file: the boot project, which the record names; its number; each
+// project 1-org makes; and each of the four folders 1-org makes. A run again goes on from
+// its own push alone: a project or a folder the withdrawal passed over would stand under
+// a marker that says the identity holds nothing, and another boot project would go into
+// the marker, which later runs read as an earlier organization's.
+func differs(h, placed *org.Placement) []string {
+	var differences []string
+	for _, key := range h.ProjectKeys() {
+		switch {
+		case placed.Projects[key] == "":
+			differences = append(differences, "projects."+key+" is missing")
+		case key == bootKey && placed.Projects[key] != h.Projects[key]:
+			differences = append(differences, "projects."+key+" is "+placed.Projects[key]+" where the record names "+h.Projects[key])
+		}
+	}
+	if placed.ProjectNumbers[bootKey] == "" {
+		differences = append(differences, "projectNumbers."+bootKey+" is missing")
+	}
+	for _, key := range append([]string{sharedFolderKey}, org.Environments...) {
+		if placed.Folders[key] == "" {
+			differences = append(differences, "folders."+key+" is missing")
+		}
+	}
+
+	return differences
+}
+
+// seeded reads the two folders the push recorded: the pushed 0-bootstrap/terraform.tfvars
+// names the organization's folder and its terraform folder by their ids, as the creation's
+// seed made them. A file that names neither is not this creation's push.
+func (f *creation) seeded(ctx context.Context, h *org.Placement, head string) (*org.Seed, error) {
+	owner, repo, branch := h.GithubOrganization, h.SourceRepo, h.GithubDefaultBranch
+	src, err := f.gh.Contents(ctx, owner, repo, seededTfvars, head)
+	if err != nil {
+		return nil, errors.Wrapf(err, "reading %s at %s of %s/%s", seededTfvars, short(head), owner, repo)
+	}
+	file, diags := hclsyntax.ParseConfig(src, seededTfvars, hcl.InitialPos)
+	if diags.HasErrors() {
+		return nil, errors.Wrapf(diags, "hclsyntax.ParseConfig(): %s on %s of %s/%s", seededTfvars, branch, owner, repo)
+	}
+	attributes, diags := file.Body.JustAttributes()
+	if diags.HasErrors() {
+		return nil, errors.Wrapf(diags, "hcl.Body.JustAttributes(): %s on %s of %s/%s", seededTfvars, branch, owner, repo)
+	}
+	recorded := &org.Seed{}
+	for _, folder := range []struct {
+		variable string
+		id       *string
+	}{{organizationFolderVariable, &recorded.OrganizationFolder}, {terraformFolderVariable, &recorded.TerraformFolder}} {
+		attribute, ok := attributes[folder.variable]
+		if !ok {
+			return nil, errors.Newf("%s on %s of %s/%s carries no %s, which the creation's push records: the creation cannot go on from it", seededTfvars, branch, owner, repo, folder.variable)
+		}
+		value, diags := attribute.Expr.Value(nil)
+		if diags.HasErrors() || value.IsNull() || value.Type() != cty.String {
+			return nil, errors.Newf("%s in %s on %s of %s/%s is not a folder's id as the creation's push records it: the creation cannot go on from it", folder.variable, seededTfvars, branch, owner, repo)
+		}
+		*folder.id = value.AsString()
+	}
+
+	return recorded, nil
+}
+
+// found is the folder named under the parent, which the creation made before its push,
+// when it is the one the push recorded under the variable. One that is not there stops
+// the creation, which makes nothing again after its push; so does one that is another
+// folder of the name, whose policy is not this creation's to change.
+func (f *creation) found(ctx context.Context, g Google, h *org.Placement, parent, name, variable, recorded string) (string, error) {
 	id, err := g.FindFolder(ctx, parent, name)
 	if err != nil {
 		return "", err
@@ -104,6 +168,93 @@ func (f *creation) found(ctx context.Context, g Google, parent, name string) (st
 	if id == "" {
 		return "", errors.Newf("the foundation of %s is pushed, and the creating identity finds no folder %s under %s, which this creation made before its push: the creation goes on from the push only with the folders it made", f.req.Record.Prefix, name, parent)
 	}
+	if id != recorded {
+		return "", errors.Newf("the creating identity finds folder %s by the name %s under %s, and %s on %s of %s/%s records %s %s: the folder found is not the one this creation made, so nothing is taken off it and nothing is recorded", id, name, parent, seededTfvars, h.GithubDefaultBranch, h.GithubOrganization, h.SourceRepo, variable, recorded)
+	}
 
 	return id, nil
+}
+
+// asks are the permissions the run again asks Google about for the removal: reading and
+// setting the policy, and, on the organization's folder, what tells the two roles there
+// that carry neither.
+func (r removal) asks() []string {
+	if r.project != "" {
+		return []string{projectGetPolicyPermission, projectSetPolicyPermission}
+	}
+	asks := []string{folderGetPolicyPermission, folderSetPolicyPermission}
+	if slices.Contains(r.roles, bootProjectRoleCreator) {
+		asks = append(asks, projectCreatePermission, tagKeyCreatePermission)
+	}
+
+	return asks
+}
+
+// takes reports whether the removal is the caller's own to make, from what it holds: the
+// permission that sets the policy.
+func (r removal) takes(held []string) bool {
+	if r.project != "" {
+		return slices.Contains(held, projectSetPolicyPermission)
+	}
+
+	return slices.Contains(held, folderSetPolicyPermission)
+}
+
+// withdrawLeft takes off what the withdrawal left, deciding at every folder and project
+// the withdrawal covers, in its order, from what Google answers the identity holds there
+// (Held, which Google answers a caller that holds nothing).
+//
+// Where it holds none of the permissions asked, no role of the withdrawal stands there for
+// it, and nothing is read: the identity may read no policy there any longer. Where it may
+// set the policy, the removal is made again; one made already reads the policy and writes
+// nothing. While the withdrawal's own order holds, those are the only two answers: the
+// identity's roles on the organization's folder come off last, in one write, and its
+// Folder Admin there reaches every folder and project beneath.
+//
+// Where it holds something and may not set the policy, that order was broken by other
+// means than this creation (a person took its Folder Admin off), and what it still holds
+// there is not its own to take off. The run then stops, after everything that is its own
+// is off, with nothing recorded. What the identity holds on the organization's folder
+// reaches the folders beneath, so when that folder is one of them it is the one named.
+func (f *creation) withdrawLeft(ctx context.Context, g Google, seed *org.Seed, h *org.Placement) error {
+	member := f.req.Root.CreatingIdentityMember()
+	all := removals(seed, h, h.Folders)
+	var took, stands []string
+	var organization string
+	for _, r := range all {
+		held, err := g.Held(ctx, r.resource(), r.asks())
+		if err != nil {
+			return err
+		}
+		switch {
+		case len(held) == 0:
+			// No role of the withdrawal stands here for the identity.
+		case r.takes(held):
+			if err := r.take(ctx, g, member); err != nil {
+				return err
+			}
+			took = append(took, r.String())
+		case r.folder == seed.OrganizationFolder:
+			organization = strings.Join(held, ", ") + " on " + r.String()
+		default:
+			stands = append(stands, strings.Join(held, ", ")+" on "+r.String())
+		}
+	}
+	standing := strings.Join(stands, "; ")
+	if organization != "" {
+		standing = organization
+	}
+	switch {
+	case len(took) == len(all):
+		f.withdrew(seed, h, h.Folders, all)
+	case len(took) > 0:
+		fmt.Fprintf(f.out, "Took what was left of the creating identity's grants off %d of the %d folders and projects its withdrawal covers: %s.\n", len(took), len(all), strings.Join(took, ", "))
+	case standing == "":
+		fmt.Fprintf(f.out, "The creating identity holds nothing on the %d folders and %d projects its withdrawal covers any longer, as Google answers for each: the withdrawal ended in the run that stopped, and nothing is left to take off.\n", len(h.Folders)+2, len(all)-len(h.Folders)-2)
+	}
+	if standing != "" {
+		return errors.Newf("the creating identity %s still holds %s and may not set the policy there, so the roles it holds there are not its own to take off, which this creation's withdrawal never leaves (a grant of the identity's went by other means): whoever administers folder %s, as the break-glass account %s does, takes the identity out of its roles there, and the next run of this creation finishes; nothing is recorded until then", f.req.Root.CreatingIdentity(), standing, seed.OrganizationFolder, h.BreakGlassAccount)
+	}
+
+	return nil
 }

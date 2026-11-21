@@ -52,10 +52,11 @@ type Google interface {
 	// RevokeFolder takes the member out of each of the roles on the folder's policy;
 	// a role the member is not in is left as it is.
 	RevokeFolder(ctx context.Context, folder, member string, roles []string) error
-	// AdministersFolder reports whether the caller may set the folder's policy. Google
-	// answers it for any caller, one that holds nothing on the folder included, so it
-	// is how a creation run again learns whether its identity's withdrawal ended.
-	AdministersFolder(ctx context.Context, folder string) (bool, error)
+	// Held is which of the permissions the caller holds on the folder (folders/N) or the
+	// project (projects/ID), in the order asked. Google answers it for any caller, one
+	// that holds nothing there included, so it is how a creation run again learns what
+	// its identity's withdrawal left, on each folder and project the withdrawal covers.
+	Held(ctx context.Context, resource string, permissions []string) ([]string, error)
 	// ProjectExists reports whether the project stands, active and readable; one Google holds
 	// after its deletion is not there, to use or to delete again.
 	ProjectExists(ctx context.Context, id string) (bool, error)
@@ -116,10 +117,6 @@ type GoogleAsFunc func(ctx context.Context, identity string) (Google, error)
 
 // cloudPlatformScope is the OAuth scope every Google Cloud API accepts.
 const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
-
-// setFolderPolicyPermission is the permission to set a folder's policy, which Folder Admin
-// carries and no other role the creating identity holds does.
-const setFolderPolicyPermission = "resourcemanager.folders.setIamPolicy"
 
 // google is the real seam over the Google APIs.
 type google struct {
@@ -349,17 +346,26 @@ func (g *google) RevokeFolder(ctx context.Context, folder, member string, roles 
 	return revoke(ctx, g.folderPolicy("folders/"+folder), member, roles)
 }
 
-// AdministersFolder asks Google which of the permissions the caller holds on the folder
-// (testIamPermissions, which needs no permission itself) and answers whether the one that
-// sets its policy is among them.
-func (g *google) AdministersFolder(ctx context.Context, folder string) (bool, error) {
-	resource := "folders/" + folder
-	resp, err := g.folders.TestIamPermissions(ctx, &iampb.TestIamPermissionsRequest{Resource: resource, Permissions: []string{setFolderPolicyPermission}})
+// Held asks Google which of the permissions the caller holds on the folder or the project
+// (testIamPermissions, which needs no permission itself) and answers those it names, in
+// the order asked.
+func (g *google) Held(ctx context.Context, resource string, permissions []string) ([]string, error) {
+	test, client := g.folders.TestIamPermissions, "FoldersClient"
+	if strings.HasPrefix(resource, "projects/") {
+		test, client = g.projects.TestIamPermissions, "ProjectsClient"
+	}
+	resp, err := test(ctx, &iampb.TestIamPermissionsRequest{Resource: resource, Permissions: permissions})
 	if err != nil {
-		return false, errors.Wrapf(err, "resourcemanager.FoldersClient.TestIamPermissions(): %s", resource)
+		return nil, errors.Wrapf(err, "resourcemanager.%s.TestIamPermissions(): %s", client, resource)
+	}
+	var held []string
+	for _, permission := range permissions {
+		if slices.Contains(resp.GetPermissions(), permission) {
+			held = append(held, permission)
+		}
 	}
 
-	return slices.Contains(resp.GetPermissions(), setFolderPolicyPermission), nil
+	return held, nil
 }
 
 func (g *google) GrantProject(ctx context.Context, id, role, member string) error {

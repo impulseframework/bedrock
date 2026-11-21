@@ -90,6 +90,14 @@ func (g *FakeGoogle) Stand(resource, parent, maker string) {
 	g.stand(resource, parent, maker)
 }
 
+// Unbind takes the member out of the role on the resource, as a person takes a grant off
+// by other means than the creation: a test's way to a withdrawal whose order was broken.
+func (g *FakeGoogle) Unbind(resource, role, member string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.unbind(resource, member, []string{role})
+}
+
 // Check answers Google's refusal when the member holds no role, on the resource or above
 // it, that carries the permission, and nil when it does: the question a stand-in of
 // another program asks for the calls that program makes as the member.

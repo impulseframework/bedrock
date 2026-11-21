@@ -759,7 +759,7 @@ func TestRunAgainAfterPush(t *testing.T) {
 			}
 			withdrawal := "Took the creating identity's grants off the 4 folders and 6 projects 1-org made, folder " + tfFolder + ", project rgb-boot-gbl-core-e5f6 and folder " + orgFolder + ".\n"
 			if done == removals {
-				withdrawal = "The creating identity administers folder " + orgFolder + " no longer: its withdrawal ended in the run that stopped, and nothing under the folder is left to take off.\n"
+				withdrawal = "The creating identity holds nothing on the 6 folders and 7 projects its withdrawal covers any longer, as Google answers for each: the withdrawal ended in the run that stopped, and nothing is left to take off.\n"
 			}
 			for _, want := range []string{
 				"master of " + owner + "/rgb-infrastructure carries the foundation already (" + head[:7] + ")",
@@ -776,14 +776,56 @@ func TestRunAgainAfterPush(t *testing.T) {
 	}
 }
 
+// pushedFile changes a file of the foundation on master of rgb's repository, as the
+// creation pushed it: a test's way to a push that is not what this creation recorded.
+func (f *flow) pushedFile(path string, change func(content string) string) {
+	f.srv.Update(func() {
+		repo := f.srv.Repos[owner+"/rgb-infrastructure"]
+		file := repo.Trees[repo.Refs["refs/heads/master"].SHA] + ":" + path
+		repo.Files[file] = change(repo.Files[file])
+	})
+}
+
+// pushedPlacement changes the pushed placement.json, read as JSON.
+func (f *flow) pushedPlacement(t *testing.T, change func(placement map[string]any)) {
+	t.Helper()
+	f.pushedFile("placement.json", func(content string) string {
+		var placement map[string]any
+		if err := json.Unmarshal([]byte(content), &placement); err != nil {
+			t.Fatal(err)
+		}
+		change(placement)
+		data, err := json.Marshal(placement)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return string(data)
+	})
+}
+
+// object is the JSON object under the key of the pushed placement.
+func object(t *testing.T, placement map[string]any, key string) map[string]any {
+	t.Helper()
+	o, ok := placement[key].(map[string]any)
+	if !ok {
+		t.Fatalf("the pushed placement's %s is %T, want an object", key, placement[key])
+	}
+
+	return o
+}
+
 // TestRunAgainAfterPushRefused: a creation run again after its push goes on only from what
-// the push recorded and the folders the creation made. A pushed placement without the
-// folders, or a folder that is not found, stops it with no grant taken off and nothing
-// recorded: a withdrawal over less than the creation made would leave the identity
-// holding the rest, under a marker that says it holds nothing.
+// its own push recorded and the folders the creation made. A pushed placement that is not
+// the record's (another boot project, a project or a folder of the creation missing), a
+// folder that is not found, or a folder found by its name that is not the one the pushed
+// 0-bootstrap/terraform.tfvars names stops it with no grant taken off and nothing
+// recorded: a withdrawal over less than the creation made, or over another folder, would
+// leave the identity holding the rest, under a marker that says it holds nothing.
 func TestRunAgainAfterPushRefused(t *testing.T) {
 	t.Parallel()
 
+	const differs = "placement.json on master of " + owner + "/rgb-infrastructure carries this organization's state bucket and is not what this creation's push records ("
 	tests := []struct {
 		name    string
 		spoil   func(t *testing.T, f *flow)
@@ -793,22 +835,43 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 			name: "the pushed placement lacks the folders",
 			spoil: func(t *testing.T, f *flow) {
 				t.Helper()
-				f.srv.Update(func() {
-					repo := f.srv.Repos[owner+"/rgb-infrastructure"]
-					file := repo.Trees[repo.Refs["refs/heads/master"].SHA] + ":placement.json"
-					var placement map[string]any
-					if err := json.Unmarshal([]byte(repo.Files[file]), &placement); err != nil {
-						t.Fatal(err)
-					}
-					delete(placement, "folders")
-					data, err := json.Marshal(placement)
-					if err != nil {
-						t.Fatal(err)
-					}
-					repo.Files[file] = string(data)
+				f.pushedPlacement(t, func(placement map[string]any) { delete(placement, "folders") })
+			},
+			wantErr: differs + "folders.shared is missing, folders.tst is missing, folders.stg is missing, folders.prd is missing): the creation cannot go on from it",
+		},
+		{
+			name: "the pushed placement lacks one of the four folders",
+			spoil: func(t *testing.T, f *flow) {
+				t.Helper()
+				f.pushedPlacement(t, func(placement map[string]any) { delete(object(t, placement, "folders"), "stg") })
+			},
+			wantErr: differs + "folders.stg is missing): the creation cannot go on from it",
+		},
+		{
+			name: "the pushed placement names another boot project",
+			spoil: func(t *testing.T, f *flow) {
+				t.Helper()
+				f.pushedPlacement(t, func(placement map[string]any) {
+					object(t, placement, "projects")["boot"] = "rgb-boot-gbl-core-0000"
 				})
 			},
-			wantErr: "placement.json on master of " + owner + "/rgb-infrastructure carries this organization's state bucket and lacks the boot project's number (projectNumbers.boot) or the folders (folders)",
+			wantErr: differs + "projects.boot is rgb-boot-gbl-core-0000 where the record names rgb-boot-gbl-core-e5f6): the creation cannot go on from it",
+		},
+		{
+			name: "the pushed placement lacks one of the creation's projects",
+			spoil: func(t *testing.T, f *flow) {
+				t.Helper()
+				f.pushedPlacement(t, func(placement map[string]any) { delete(object(t, placement, "projects"), "net") })
+			},
+			wantErr: differs + "projects.net is missing): the creation cannot go on from it",
+		},
+		{
+			name: "the pushed placement lacks the boot project's number",
+			spoil: func(t *testing.T, f *flow) {
+				t.Helper()
+				f.pushedPlacement(t, func(placement map[string]any) { delete(object(t, placement, "projectNumbers"), "boot") })
+			},
+			wantErr: differs + "projectNumbers.boot is missing): the creation cannot go on from it",
 		},
 		{
 			name: "the organization's folder is not found",
@@ -823,6 +886,34 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 				delete(f.google.Folders, "folders/"+f.google.Folders[orgNode+"|rgb"]+"|terraform")
 			},
 			wantErr: "the creating identity finds no folder terraform under folders/",
+		},
+		{
+			// Another folder of the organization's name stands under the node, which the
+			// identity reads by its Folder Creator there: not the one this creation made.
+			name: "the folder found by the organization's name is not the one the push recorded",
+			spoil: func(_ *testing.T, f *flow) {
+				f.google.Stand("folders/900000000099", orgNode, "")
+				f.google.Folders[orgNode+"|rgb"] = "900000000099"
+			},
+			wantErr: "the creating identity finds folder 900000000099 by the name rgb under " + orgNode + ", and 0-bootstrap/terraform.tfvars on master of " + owner + "/rgb-infrastructure records organization_folder_id 900000000001",
+		},
+		{
+			name: "the terraform folder found by its name is not the one the push recorded",
+			spoil: func(_ *testing.T, f *flow) {
+				f.pushedFile("0-bootstrap/terraform.tfvars", func(content string) string {
+					return strings.Replace(content, `terraform_folder_id    = "900000000002"`, `terraform_folder_id    = "900000000077"`, 1)
+				})
+			},
+			wantErr: "the creating identity finds folder 900000000002 by the name terraform under folders/900000000001, and 0-bootstrap/terraform.tfvars on master of " + owner + "/rgb-infrastructure records terraform_folder_id 900000000077",
+		},
+		{
+			name: "the pushed tfvars names no organization folder",
+			spoil: func(_ *testing.T, f *flow) {
+				f.pushedFile("0-bootstrap/terraform.tfvars", func(content string) string {
+					return strings.Replace(content, `organization_folder_id = "`, `organization_folder = "`, 1)
+				})
+			},
+			wantErr: "0-bootstrap/terraform.tfvars on master of " + owner + "/rgb-infrastructure carries no organization_folder_id",
 		},
 	}
 	for _, tt := range tests {
@@ -854,6 +945,146 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 				t.Errorf("the refused run left the identity holding %v (it held %v) and recorded %v, want no grant taken off and nothing recorded", got, held, f.store.objects)
 			}
 		})
+	}
+}
+
+// stopAfterPush runs rgb's creation and stops it after the given number of its
+// withdrawal's removals: the foundation is pushed, and nothing is recorded.
+func stopAfterPush(t *testing.T, f *flow, dir string, root *org.Placement, done int) {
+	t.Helper()
+	revokes := 0
+	f.google.Stop = func(call string) error {
+		if !strings.HasPrefix(call, "Revoke") {
+			return nil
+		}
+		revokes++
+		if revokes > done {
+			return errStopped
+		}
+
+		return nil
+	}
+	var out bytes.Buffer
+	if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err == nil || !strings.Contains(err.Error(), string(errStopped)) {
+		t.Fatalf("Run() error = %v, want the stop; output:\n%s", err, out.String())
+	}
+	f.google.Stop = nil
+	if !f.pushed() || len(f.google.Revoked) != done || len(f.store.objects) != 0 {
+		t.Fatalf("the creation stopped with the foundation pushed: %t, %d removals made (want %d) and the objects %v (want none)", f.pushed(), len(f.google.Revoked), done, f.store.objects)
+	}
+}
+
+// organizationFolderRoles are the roles the creating identity holds on the organization's
+// folder until its withdrawal's last removal: a maker's two, and the two it grants itself.
+var organizationFolderRoles = []string{createtest.FolderAdmin, createtest.FolderEditor, createtest.ProjectCreator, createtest.TagAdmin}
+
+// TestRunAgainAfterPushTakenOffByOtherMeans: the run again decides what is left of the
+// withdrawal from every folder and project the withdrawal covers, not from the
+// organization's folder alone. The identity's roles on that folder come off last, and its
+// Folder Admin there reaches everything beneath; when a person took the identity out of
+// the folder's policy before the withdrawal ended, the grants beneath still stand, each
+// the identity's own to take off (a maker's Folder Admin, a maker's Owner). The run again
+// takes them off, reads no policy the identity may no longer read, and the identity holds
+// nothing under the folder at the end, as the marker and the closing line say.
+func TestRunAgainAfterPushTakenOffByOtherMeans(t *testing.T) {
+	t.Parallel()
+
+	const removals = 13
+	for _, done := range []int{0, 4, 7, 11} {
+		t.Run(fmt.Sprintf("stopped after %d of the %d removals", done, removals), func(t *testing.T) {
+			t.Parallel()
+
+			f := newFlow(t)
+			dir, root := checkout(t)
+			stopAfterPush(t, f, dir, root, done)
+			member := createtest.Member(creatingEmail)
+			orgFolder := f.google.Folders[orgNode+"|rgb"]
+			for _, role := range organizationFolderRoles {
+				f.google.Unbind("folders/"+orgFolder, role, member)
+			}
+			left := removals - 1 - done
+
+			denied := len(f.google.Denied)
+			var out bytes.Buffer
+			if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err != nil {
+				t.Fatalf("Run() again error = %v; Google refused %v; output:\n%s", err, slices.Compact(f.google.Denied[denied:]), out.String())
+			}
+			if refused := f.google.Denied[denied:]; len(refused) != 0 {
+				t.Errorf("the run again was refused: %v", refused)
+			}
+			if got, want := f.google.Holds(member), []string{orgNode + " " + createtest.FolderCreator}; !slices.Equal(got, want) {
+				t.Errorf("the creating identity holds %v at the end, want %v", got, want)
+			}
+			if got := len(f.google.Revoked) - done; got != left {
+				t.Errorf("the run again made %d removals, want the %d that were left beneath the organization's folder: %v", got, left, f.google.Revoked[done:])
+			}
+			if f.store.objects["applied/created/rgb"] == "" {
+				t.Errorf("no marker: objects %v", f.store.objects)
+			}
+			for _, want := range []string{
+				fmt.Sprintf("Took what was left of the creating identity's grants off %d of the %d folders and projects its withdrawal covers: ", left, removals),
+				"; the creating identity holds nothing under the folder now.\n",
+			} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output lacks %q:\n%s", want, out.String())
+				}
+			}
+		})
+	}
+}
+
+// TestRunAgainAfterPushNotItsOwnToTakeOff: Folder Admin alone off the organization's
+// folder leaves the identity its Folder Editor, Project Creator and Tag Administrator
+// there, none of which sets the folder's policy: they are not its own to take off. The
+// run again takes off everything beneath, which is, and then stops with a sentence that
+// names the folder and what the identity still holds there, the marker unwritten and no
+// line saying it holds nothing. Once a person has taken the three off, the next run
+// finishes.
+func TestRunAgainAfterPushNotItsOwnToTakeOff(t *testing.T) {
+	t.Parallel()
+
+	f := newFlow(t)
+	dir, root := checkout(t)
+	stopAfterPush(t, f, dir, root, 0)
+	member := createtest.Member(creatingEmail)
+	orgFolder := f.google.Folders[orgNode+"|rgb"]
+	f.google.Unbind("folders/"+orgFolder, createtest.FolderAdmin, member)
+
+	denied := len(f.google.Denied)
+	var out bytes.Buffer
+	_, err := create.Run(t.Context(), f.clients(), request(root, dir), &out)
+	wantErr := "still holds resourcemanager.folders.getIamPolicy, resourcemanager.projects.create, resourcemanager.tagKeys.create on folder " + orgFolder + " and may not set the policy there"
+	if err == nil || !strings.Contains(err.Error(), wantErr) || !strings.Contains(err.Error(), "the break-glass account "+root.BreakGlassAccount) {
+		t.Fatalf("Run() again error = %v, want %q and the break-glass account; output:\n%s", err, wantErr, out.String())
+	}
+	if refused := f.google.Denied[denied:]; len(refused) != 0 {
+		t.Errorf("the run again was refused by Google, where it asks before it writes: %v", refused)
+	}
+	want := []string{
+		"folders/" + orgFolder + " " + createtest.FolderEditor,
+		"folders/" + orgFolder + " " + createtest.ProjectCreator,
+		"folders/" + orgFolder + " " + createtest.TagAdmin,
+		orgNode + " " + createtest.FolderCreator,
+	}
+	if got := f.google.Holds(member); !slices.Equal(got, want) {
+		t.Errorf("the creating identity holds %v after the refused run, want what is not its own to take off and nothing beneath: %v", got, want)
+	}
+	if len(f.store.objects) != 0 || strings.Contains(out.String(), "holds nothing") {
+		t.Errorf("the refused run recorded %v or said the identity holds nothing; output:\n%s", f.store.objects, out.String())
+	}
+
+	for _, role := range organizationFolderRoles[1:] {
+		f.google.Unbind("folders/"+orgFolder, role, member)
+	}
+	out.Reset()
+	if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err != nil {
+		t.Fatalf("Run() after a person took the roles off error = %v; output:\n%s", err, out.String())
+	}
+	if got, want := f.google.Holds(member), []string{orgNode + " " + createtest.FolderCreator}; !slices.Equal(got, want) {
+		t.Errorf("the creating identity holds %v at the end, want %v", got, want)
+	}
+	if f.store.objects["applied/created/rgb"] == "" || !strings.Contains(out.String(), "The creating identity holds nothing on the 6 folders and 7 projects its withdrawal covers any longer, as Google answers for each") {
+		t.Errorf("the last run recorded %v; output:\n%s", f.store.objects, out.String())
 	}
 }
 
