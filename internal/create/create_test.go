@@ -34,6 +34,10 @@ const (
 	creatingEmail = "imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com"
 	bootIdentity  = "serviceAccount:rgb-boot-gbl-tofu@rgb-boot-gbl-core-e5f6.iam.gserviceaccount.com"
 	policyAdmin   = "projects/imr-root-gbl-core-c3d4/roles/secretPolicyAdmin"
+	// orgNode is the organization node the fixture names, and bootProject rgb's boot
+	// project, as Google names the two as resources.
+	orgNode     = "organizations/123456789012"
+	bootProject = "projects/rgb-boot-gbl-core-e5f6"
 )
 
 // record is the hosting organization rgb as a person records it in the root
@@ -79,9 +83,13 @@ func checkout(t *testing.T) (string, *org.Placement) {
 	return dir, root
 }
 
-// fakeRunner records the programs run and answers success.
+// fakeRunner is the stand-in for tofu: it records the programs run and answers success,
+// unless Google would refuse the identity a program runs as (asIdentity).
 type fakeRunner struct {
-	mu          sync.Mutex
+	mu sync.Mutex
+	// google is the stand-in the programs' calls are checked against, and where 1-org's
+	// first apply puts the folders and the projects it makes.
+	google      *createtest.FakeGoogle
 	ran         []deploy.Command
 	outputsRead []deploy.Command
 	// refuse, when set, answers a command: what it writes and the error, or nil to let it
@@ -90,6 +98,8 @@ type fakeRunner struct {
 	// tainted, when set, is the address of a tainted google_project tofu show -json
 	// answers with.
 	tainted string
+	// organized says 1-org's first apply went through: the folders and the projects stand.
+	organized bool
 }
 
 func (r *fakeRunner) Run(_ context.Context, c deploy.Command, out io.Writer) error {
@@ -97,8 +107,66 @@ func (r *fakeRunner) Run(_ context.Context, c deploy.Command, out io.Writer) err
 	defer r.mu.Unlock()
 	r.ran = append(r.ran, c)
 	if r.refuse != nil {
-		return r.refuse(c, out)
+		if err := r.refuse(c, out); err != nil {
+			return err
+		}
 	}
+	if err := r.asIdentity(c); err != nil {
+		fmt.Fprintf(out, "Error: googleapi: Error 403: %v\n", err)
+
+		return errors.New("exit status 1")
+	}
+
+	return nil
+}
+
+// asIdentity is what Google answers the program's calls, made as the identity the program
+// impersonates: its refusal of the first one the identity may not make, or nil. Every
+// program reads the layer's state, in the bucket of the boot project. 1-org's first apply
+// makes the organization's four folders and six projects under the organization's folder,
+// with the tag keys, as that identity, which Google then holds as their maker; each apply
+// of 1-org after it reads what every one of the six projects holds.
+func (r *fakeRunner) asIdentity(c deploy.Command) error {
+	var member string
+	for _, env := range c.Env {
+		if email, ok := strings.CutPrefix(env, "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT="); ok {
+			member = createtest.Member(email)
+		}
+	}
+	if err := r.google.Check(member, createtest.ObjectsGet, bootProject); err != nil {
+		return err
+	}
+	if c.Args[0] != "apply" || filepath.Base(c.Dir) != "1-org" {
+		return nil
+	}
+	ids, _ := orgProjects()
+	if r.organized {
+		for _, key := range orgProjectKeys {
+			if err := r.google.Check(member, createtest.ServicesList, "projects/"+ids[key]); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+	folder := "folders/" + r.google.Folders[orgNode+"|rgb"]
+	for _, permission := range []string{createtest.FoldersCreate, createtest.ProjectsCreate, createtest.TagKeysCreate} {
+		if err := r.google.Check(member, permission, folder); err != nil {
+			return err
+		}
+	}
+	folders := orgFolders()
+	for _, id := range folders {
+		r.google.Stand("folders/"+id, folder, member)
+	}
+	for _, key := range orgProjectKeys {
+		in := "shared"
+		if slices.Contains([]string{"tst", "stg", "prd"}, key) {
+			in = key
+		}
+		r.google.Stand("projects/"+ids[key], "folders/"+folders[in], member)
+	}
+	r.organized = true
 
 	return nil
 }
@@ -131,14 +199,30 @@ func (r *fakeRunner) Output(_ context.Context, c deploy.Command, _ io.Writer) ([
 	return data, nil
 }
 
-// orgOutputs are 1-org's outputs as tofu output -json prints them.
-func orgOutputs() map[string]any {
-	ids, numbers := map[string]string{}, map[string]string{}
-	for i, key := range []string{"shr", "net", "spn", "tst", "stg", "prd"} {
+// orgProjectKeys are the six projects 1-org makes, in the order the creation's
+// withdrawal takes them.
+var orgProjectKeys = []string{"shr", "net", "spn", "tst", "stg", "prd"}
+
+// orgProjects are the ids and the numbers of the projects 1-org makes, by key.
+func orgProjects() (ids, numbers map[string]string) {
+	ids, numbers = map[string]string{}, map[string]string{}
+	for i, key := range orgProjectKeys {
 		ids[key] = "rgb-" + key + "-gbl-core-e5f6"
 		numbers[key] = "10000000010" + strconv.Itoa(i+1)
 	}
-	folders := map[string]string{"shared": "900000000011", "tst": "900000000012", "stg": "900000000013", "prd": "900000000014"}
+
+	return ids, numbers
+}
+
+// orgFolders are the ids of the folders 1-org makes, by key.
+func orgFolders() map[string]string {
+	return map[string]string{"shared": "900000000011", "tst": "900000000012", "stg": "900000000013", "prd": "900000000014"}
+}
+
+// orgOutputs are 1-org's outputs as tofu output -json prints them.
+func orgOutputs() map[string]any {
+	ids, numbers := orgProjects()
+	folders := orgFolders()
 	value := func(v any) map[string]any { return map[string]any{"value": v} }
 
 	keys, values := map[string]string{}, map[string]string{}
@@ -155,11 +239,17 @@ func orgOutputs() map[string]any {
 type fakeStore struct {
 	mu      sync.Mutex
 	objects map[string]string
+	// refuse, when set, is what a write answers: the test's way of stopping a creation at
+	// its marker.
+	refuse error
 }
 
 func (s *fakeStore) Write(_ context.Context, _, object string, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.refuse != nil {
+		return s.refuse
+	}
 	s.objects[object] = string(data)
 
 	return nil
@@ -206,16 +296,34 @@ func newFlow(t *testing.T) *flow {
 		Files:    map[string]string{"tree0:placement.json": "{}", "tree0:README.md": "# imr\n"},
 	})
 
-	return &flow{google: createtest.New(), runner: &fakeRunner{}, store: &fakeStore{objects: map[string]string{}}, srv: srv, repo: repo}
+	// The creating identity starts with what the bootstrap grants it at the organization
+	// node, Folder Creator, and nothing else: every other grant it uses, it is given as the
+	// maker of a folder or a project, or grants itself.
+	google := createtest.New()
+	google.Bind(orgNode, createtest.FolderCreator, createtest.Member(creatingEmail))
+
+	return &flow{google: google, runner: &fakeRunner{google: google}, store: &fakeStore{objects: map[string]string{}}, srv: srv, repo: repo}
 }
 
+// clients are the creation's seams over the stand-ins. A wait ends at once, and the
+// hundredth of a run fails: a creation waiting on a refusal that no wait ends would spin
+// for its whole three minutes otherwise.
 func (f *flow) clients() *create.Clients {
+	waits := 0
+
 	return &create.Clients{
 		Google: f.google.Open,
 		GitHub: func(token string) *github.Client { return github.New(f.srv.URL, token) },
 		Exec:   f.runner,
 		Store:  f.store,
-		Sleep:  func(context.Context, time.Duration) error { return nil },
+		Sleep: func(context.Context, time.Duration) error {
+			waits++
+			if waits >= 100 {
+				return errors.New("the creation waited a hundred times")
+			}
+
+			return nil
+		},
 	}
 }
 
@@ -309,6 +417,14 @@ func TestRun(t *testing.T) {
 	}
 	if !slices.Equal(f.google.Revoked, wantRevoked) {
 		t.Errorf("revoked:\n%s\nwant:\n%s", strings.Join(f.google.Revoked, "\n"), strings.Join(wantRevoked, "\n"))
+	}
+	// Nothing was refused on the way, and the withdrawal left the creating identity what
+	// it started with: its grant at the organization node, and nothing under the folder.
+	if len(f.google.Denied) != 0 {
+		t.Errorf("Google refused: %v", f.google.Denied)
+	}
+	if got, want := f.google.Holds(createtest.Member(creatingEmail)), []string{orgNode + " " + createtest.FolderCreator}; !slices.Equal(got, want) {
+		t.Errorf("the creating identity holds %v at the end, want %v", got, want)
 	}
 	// The first applies, as the creating identity, in the rendered 0-bootstrap and 1-org,
 	// the second with the infrastructure app's token, and 1-org's outputs read after it.
@@ -501,11 +617,17 @@ func TestRunResumes(t *testing.T) {
 
 	f := newFlow(t)
 	dir, root := checkout(t)
+	// The folders and the project stand as the creating identity made them, so it holds
+	// what Google gives their maker.
+	member := createtest.Member(creatingEmail)
 	f.google.Folders["organizations/123456789012|rgb"] = "900000000007"
+	f.google.Stand("folders/900000000007", orgNode, member)
 	f.google.Folders["folders/900000000007|terraform"] = "900000000008"
+	f.google.Stand("folders/900000000008", "folders/900000000007", member)
 	f.google.Projects["rgb-boot-gbl-core-e5f6"], f.google.Numbers["rgb-boot-gbl-core-e5f6"] = true, "100000000042"
+	f.google.Stand(bootProject, "folders/900000000008", member)
 	f.google.Accounts["rgb-boot-gbl-tofu@rgb-boot-gbl-core-e5f6.iam.gserviceaccount.com"] = true
-	f.google.Buckets["rgb-boot-gbl-state-e5f6"] = true
+	f.google.Buckets["rgb-boot-gbl-state-e5f6"], f.google.BucketProjects["rgb-boot-gbl-state-e5f6"] = true, "rgb-boot-gbl-core-e5f6"
 	f.google.SpendBudgets["012345-6789AB-CDEF01"] = []org.Budget{org.HostingBudget("rgb", 500, "900000000007")}
 	f.google.Zones["rgb-net-gbl-core-e5f6|rgb-net-gbl-dns-apps"] = createtest.ZoneNameServers
 	f.srv.AddRepo(owner, "rgb-infrastructure", &githubtest.Repo{
@@ -542,6 +664,221 @@ func TestRunResumes(t *testing.T) {
 	}
 	if result.Marker.OrganizationFolder != "900000000007" || result.Marker.BootProjectNumber != "100000000042" {
 		t.Errorf("marker = %+v", result.Marker)
+	}
+	if len(f.google.Denied) != 0 {
+		t.Errorf("Google refused: %v", f.google.Denied)
+	}
+}
+
+// errStopped is what a stand-in answers the call a test stops a creation at.
+var errStopped = errorString("stopped by the test")
+
+// TestRunAgainAfterPush: a creation that stopped after its push finishes when run again,
+// from every point it can stop at: right after the push, after each removal of the
+// withdrawal, and after the last, before the marker. The stand-ins refuse what Google
+// would refuse the creating identity by then, and the run again is refused nothing: it
+// runs no first apply and pushes nothing, takes off what the withdrawal left, records the
+// creation and opens the hand-off, and the creating identity holds nothing under the
+// folder at the end.
+func TestRunAgainAfterPush(t *testing.T) {
+	t.Parallel()
+
+	const removals = 13
+	for done := 0; done <= removals; done++ {
+		t.Run(fmt.Sprintf("stopped after %d of the %d removals", done, removals), func(t *testing.T) {
+			t.Parallel()
+
+			f := newFlow(t)
+			dir, root := checkout(t)
+			if done == removals {
+				f.store.refuse = errStopped
+			} else {
+				revokes := 0
+				f.google.Stop = func(call string) error {
+					if !strings.HasPrefix(call, "Revoke") {
+						return nil
+					}
+					revokes++
+					if revokes > done {
+						return errStopped
+					}
+
+					return nil
+				}
+			}
+			var out bytes.Buffer
+			if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err == nil || !strings.Contains(err.Error(), string(errStopped)) {
+				t.Fatalf("Run() error = %v, want the stop; output:\n%s", err, out.String())
+			}
+			hosting := f.srv.Repos[owner+"/rgb-infrastructure"]
+			if !f.pushed() || len(f.google.Revoked) != done || len(f.store.objects) != 0 {
+				t.Fatalf("the creation stopped with the foundation pushed: %t, %d removals made (want %d) and the objects %v (want none)", f.pushed(), len(f.google.Revoked), done, f.store.objects)
+			}
+			head := hosting.Refs["refs/heads/master"].SHA
+			orgFolder := f.google.Folders[orgNode+"|rgb"]
+			tfFolder := f.google.Folders["folders/"+orgFolder+"|terraform"]
+
+			f.google.Stop, f.store.refuse = nil, nil
+			programs, denied := len(f.runner.ran), len(f.google.Denied)
+			out.Reset()
+			result, err := create.Run(t.Context(), f.clients(), request(root, dir), &out)
+			if err != nil {
+				t.Fatalf("Run() again error = %v; Google refused %v; output:\n%s", err, slices.Compact(f.google.Denied[denied:]), out.String())
+			}
+			if again := f.runner.ran[programs:]; len(again) != 0 {
+				t.Errorf("the run again ran %d program(s), want none: the first applies are not run again once the foundation is pushed: %v", len(again), again)
+			}
+			if refused := f.google.Denied[denied:]; len(refused) != 0 {
+				t.Errorf("the run again was refused: %v", refused)
+			}
+			if got := hosting.Refs["refs/heads/master"].SHA; got != head || strings.Contains(out.String(), "Pushed the foundation") {
+				t.Errorf("master of rgb-infrastructure is at %s, was %s: the run again pushes nothing; output:\n%s", got, head, out.String())
+			}
+			if got, want := f.google.Holds(createtest.Member(creatingEmail)), []string{orgNode + " " + createtest.FolderCreator}; !slices.Equal(got, want) {
+				t.Errorf("the creating identity holds %v at the end, want %v", got, want)
+			}
+			var marker create.Marker
+			if err := json.Unmarshal([]byte(f.store.objects["applied/created/rgb"]), &marker); err != nil {
+				t.Fatalf("no marker: %v; objects %v", err, f.store.objects)
+			}
+			if marker.OrganizationFolder != orgFolder || marker.TerraformFolder != tfFolder || marker.BootProjectNumber != "100000000001" || marker.Repository != owner+"/rgb-infrastructure" || marker.CreatedFrom != rootCommit {
+				t.Errorf("marker = %+v", marker)
+			}
+			if len(marker.Projects) != 7 || marker.ProjectNumbers["tst"] != "100000000104" || !maps.Equal(marker.Folders, orgFolders()) || len(marker.PublicInvokerTags) != 3 || marker.AppsZone == nil || marker.AppsZone.Name != "rgb-net-gbl-dns-apps" {
+				t.Errorf("the marker records the projects %v, %v, the folders %v, the tags %v and the zone %+v", marker.Projects, marker.ProjectNumbers, marker.Folders, marker.PublicInvokerTags, marker.AppsZone)
+			}
+			if result.Already || result.PullRequest != "https://github.com/"+owner+"/"+rootRepo+"/pull/1" || len(f.repo.PullRequests) != 1 {
+				t.Errorf("result = %+v, pull requests %v", result, f.repo.PullRequests)
+			}
+			if !maps.Equal(result.Placement.Folders, orgFolders()) || len(result.Placement.PublicInvokerTags) != 3 {
+				t.Errorf("the result's placement records the folders %v and the tags %v, which the root organization's policies are set from", result.Placement.Folders, result.Placement.PublicInvokerTags)
+			}
+			handOffTree := f.repo.Trees[f.repo.Refs["refs/heads/create/rgb"].SHA]
+			if created := f.repo.Files[handOffTree+":organizations/rgb/placement.json"]; !strings.Contains(created, `"boot": "100000000001"`) || !strings.Contains(created, `"spn": "rgb-spn-gbl-core-e5f6"`) || !strings.Contains(created, `"appsZone"`) {
+				t.Errorf("the hand-off's record lacks the projects or the zone:\n%s", created)
+			}
+			withdrawal := "Took the creating identity's grants off the 4 folders and 6 projects 1-org made, folder " + tfFolder + ", project rgb-boot-gbl-core-e5f6 and folder " + orgFolder + ".\n"
+			if done == removals {
+				withdrawal = "The creating identity administers folder " + orgFolder + " no longer: its withdrawal ended in the run that stopped, and nothing under the folder is left to take off.\n"
+			}
+			for _, want := range []string{
+				"master of " + owner + "/rgb-infrastructure carries the foundation already (" + head[:7] + ")",
+				withdrawal,
+				"Recorded the creation of rgb in gs://imr-root-gbl-state-c3d4/applied/created/rgb.\n",
+				"Created rgb: folder " + orgFolder + ", boot project rgb-boot-gbl-core-e5f6 (100000000001), repository " + owner + "/rgb-infrastructure at " + head[:7] + "; the creating identity holds nothing under the folder now.\n",
+				"Opened the hand-off pull request of rgb: " + result.PullRequest + ".\n",
+			} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output lacks %q:\n%s", want, out.String())
+				}
+			}
+		})
+	}
+}
+
+// TestRunAgainAfterPushRefused: a creation run again after its push goes on only from what
+// the push recorded and the folders the creation made. A pushed placement without the
+// folders, or a folder that is not found, stops it with no grant taken off and nothing
+// recorded: a withdrawal over less than the creation made would leave the identity
+// holding the rest, under a marker that says it holds nothing.
+func TestRunAgainAfterPushRefused(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		spoil   func(t *testing.T, f *flow)
+		wantErr string
+	}{
+		{
+			name: "the pushed placement lacks the folders",
+			spoil: func(t *testing.T, f *flow) {
+				t.Helper()
+				f.srv.Update(func() {
+					repo := f.srv.Repos[owner+"/rgb-infrastructure"]
+					file := repo.Trees[repo.Refs["refs/heads/master"].SHA] + ":placement.json"
+					var placement map[string]any
+					if err := json.Unmarshal([]byte(repo.Files[file]), &placement); err != nil {
+						t.Fatal(err)
+					}
+					delete(placement, "folders")
+					data, err := json.Marshal(placement)
+					if err != nil {
+						t.Fatal(err)
+					}
+					repo.Files[file] = string(data)
+				})
+			},
+			wantErr: "placement.json on master of " + owner + "/rgb-infrastructure carries this organization's state bucket and lacks the boot project's number (projectNumbers.boot) or the folders (folders)",
+		},
+		{
+			name: "the organization's folder is not found",
+			spoil: func(_ *testing.T, f *flow) {
+				delete(f.google.Folders, orgNode+"|rgb")
+			},
+			wantErr: "the creating identity finds no folder rgb under " + orgNode,
+		},
+		{
+			name: "the terraform folder is not found",
+			spoil: func(_ *testing.T, f *flow) {
+				delete(f.google.Folders, "folders/"+f.google.Folders[orgNode+"|rgb"]+"|terraform")
+			},
+			wantErr: "the creating identity finds no folder terraform under folders/",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFlow(t)
+			dir, root := checkout(t)
+			f.google.Stop = func(call string) error {
+				if strings.HasPrefix(call, "Revoke") {
+					return errStopped
+				}
+
+				return nil
+			}
+			var out bytes.Buffer
+			if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err == nil || !strings.Contains(err.Error(), string(errStopped)) {
+				t.Fatalf("Run() error = %v, want the stop; output:\n%s", err, out.String())
+			}
+			f.google.Stop = nil
+			tt.spoil(t, f)
+			held := f.google.Holds(createtest.Member(creatingEmail))
+			out.Reset()
+			_, err := create.Run(t.Context(), f.clients(), request(root, dir), &out)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Run() again error = %v, want %q; output:\n%s", err, tt.wantErr, out.String())
+			}
+			if got := f.google.Holds(createtest.Member(creatingEmail)); !slices.Equal(got, held) || len(f.store.objects) != 0 {
+				t.Errorf("the refused run left the identity holding %v (it held %v) and recorded %v, want no grant taken off and nothing recorded", got, held, f.store.objects)
+			}
+		})
+	}
+}
+
+// TestFirstApplyRefused: the stand-in for tofu refuses what Google would refuse the
+// creating identity. Once a creation ended, the identity holds nothing under the folder,
+// and an apply as it is refused at the layer's state; holding the boot project again and
+// none of the projects 1-org made, it is refused at the first of those.
+func TestFirstApplyRefused(t *testing.T) {
+	t.Parallel()
+
+	f := newFlow(t)
+	dir, root := checkout(t)
+	var out bytes.Buffer
+	if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err != nil {
+		t.Fatalf("Run() error = %v; output:\n%s", err, out.String())
+	}
+	apply := deploy.Command{Dir: filepath.Join(dir, "1-org"), Env: []string{"GOOGLE_IMPERSONATE_SERVICE_ACCOUNT=" + creatingEmail}, Name: "tofu", Args: []string{"apply"}}
+	out.Reset()
+	if err := f.runner.Run(t.Context(), apply, &out); err == nil || !strings.Contains(out.String(), "Error 403") || !strings.Contains(out.String(), "'storage.objects.get' denied on resource '"+bootProject+"'") {
+		t.Errorf("an apply as the creating identity after its withdrawal: error %v, output %q, want Google's refusal of the state's read", err, out.String())
+	}
+	f.google.Bind(bootProject, createtest.Owner, createtest.Member(creatingEmail))
+	out.Reset()
+	if err := f.runner.Run(t.Context(), apply, &out); err == nil || !strings.Contains(out.String(), "'serviceusage.services.list' denied on resource 'projects/rgb-shr-gbl-core-e5f6'") {
+		t.Errorf("an apply of 1-org as the creating identity without Owner on its projects: error %v, output %q, want Google's refusal at the first project", err, out.String())
 	}
 }
 

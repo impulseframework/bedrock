@@ -4,9 +4,11 @@
 // organization's creating identity, makes under a new folder what the first applies
 // need and runs them (nothing of a hosting organization is made by hand), pushes the
 // rendered repository, takes its own creator grants off, and hands the organization off with a
-// pull request that records its folder. Every step looks before it makes, so a run
-// that stopped halfway finishes on the next push, and a created organization is
-// left alone: its marker in the root organization's state bucket says so.
+// pull request that records its folder. A run that stopped finishes on the next push,
+// from any point: before its push every step looks before it makes, and from its push on
+// (the foundation is on the new repository's default branch) the run again goes on from
+// there, and makes and applies nothing again (resume.go). A created organization is left
+// alone: its marker in the root organization's state bucket says so.
 package create
 
 import (
@@ -281,7 +283,8 @@ func (f *creation) readMarker(ctx context.Context) (*Marker, error) {
 	return &m, nil
 }
 
-// create makes the organization: the seed, then the foundation on it.
+// create makes the organization: the seed, then the foundation on it. A creation whose
+// foundation an earlier run pushed goes on from that push instead (resume).
 func (f *creation) create(ctx context.Context) (*Result, error) {
 	h, err := f.record()
 	if err != nil {
@@ -293,6 +296,13 @@ func (f *creation) create(ctx context.Context) (*Result, error) {
 	}
 	defer g.Close()
 	fmt.Fprintf(f.out, "=== creation %s as %s ===\n", h.Prefix, f.req.Root.CreatingIdentity())
+	head, pushed, err := f.pushed(ctx, h)
+	if err != nil {
+		return nil, err
+	}
+	if pushed != nil {
+		return f.resume(ctx, g, h, head, pushed)
+	}
 	seed, number, err := f.seed(ctx, g, h)
 	if err != nil {
 		return nil, err
@@ -307,7 +317,7 @@ func (f *creation) create(ctx context.Context) (*Result, error) {
 		return nil, err
 	}
 
-	return f.establish(ctx, g, h, seed, number)
+	return f.establish(ctx, g, h, seed)
 }
 
 // budget makes the organization's spend budget on the billing account, as the creating
@@ -396,9 +406,9 @@ func (f *creation) seed(ctx context.Context, g Google, h *org.Placement) (*org.S
 // apps domain's zone, the render again with the projects 1-org made, the push, the
 // creating identity's withdrawal, the marker and the hand-off. The baseline comes before
 // the push because the organization's own apply trigger applies every layer from the push
-// on; a creation that stopped and runs again reaches the step again, where a policy that
-// stands is left as it is.
-func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, seed *org.Seed, number string) (*Result, error) {
+// on; a creation that stopped before its push and runs again reaches the step again, where
+// a policy that stands is left as it is.
+func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, seed *org.Seed) (*Result, error) {
 	dir, err := os.MkdirTemp("", "bedrock-create-"+h.Prefix+"-")
 	if err != nil {
 		return nil, errors.Wrap(err, "os.MkdirTemp()")
@@ -440,6 +450,14 @@ func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, se
 	if err := f.withdraw(ctx, g, seed, h, folders); err != nil {
 		return nil, err
 	}
+
+	return f.conclude(ctx, h, seed, repository, commit)
+}
+
+// conclude ends a creation whose withdrawal is over: the marker in the root organization's
+// state bucket, from what the placement records by now, and the hand-off.
+func (f *creation) conclude(ctx context.Context, h *org.Placement, seed *org.Seed, repository, commit string) (*Result, error) {
+	number := h.ProjectNumbers[bootKey]
 	marker := Marker{
 		Prefix: h.Prefix, OrganizationFolder: seed.OrganizationFolder, TerraformFolder: seed.TerraformFolder, BootProject: h.Projects[bootKey], BootProjectNumber: number,
 		StateBucket: h.StateBucket, Projects: h.Projects, ProjectNumbers: h.ProjectNumbers, Folders: h.Folders, PublicInvokerTags: h.PublicInvokerTags,
@@ -448,7 +466,7 @@ func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, se
 	if err := f.writeMarker(ctx, &marker); err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(f.out, "Created %s: folder %s, boot project %s (%s), repository %s at %s; the creating identity holds nothing under the folder now.\n", h.Prefix, seed.OrganizationFolder, h.Projects["boot"], number, repository, short(commit))
+	fmt.Fprintf(f.out, "Created %s: folder %s, boot project %s (%s), repository %s at %s; the creating identity holds nothing under the folder now.\n", h.Prefix, seed.OrganizationFolder, h.Projects[bootKey], number, repository, short(commit))
 	url, err := f.handOff(ctx, h, &marker)
 	if err != nil {
 		return nil, err

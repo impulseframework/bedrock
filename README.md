@@ -2759,9 +2759,13 @@ repository from the branch `create/<prefix>` recording the folder in `placement.
 placement as created, and the label of the apps domain handed onward to the zone
 (`domains`), from which the root organization's apply writes the NS record set, branch and
 pull request both as the infrastructure app, whose declaration carries Pull requests for
-it. Every step looks before it makes, so a creation
-that stopped
-finishes on the next push, and a created organization is left alone. `org plan` says on
+it. A creation that stopped finishes on the next push, from any point. Before its own push
+every step looks before it makes. Once the foundation is on the new repository's default
+branch, the run again applies nothing as the creating identity, which gives up the grants
+the first applies need as it withdraws (they are the organization's own from that push on):
+it goes on from the push, takes off what the withdrawal left, records the marker and opens
+the hand-off. No grant is given by hand in between. A created organization is left alone.
+`org plan` says on
 the pull request what its merge creates. Left by hand, after the creation: the consent
 screens and the role groups as the hosting README says; its spend budget the creation made
 on its folder from its record (`monthlyBudget`), and the root organization's apply keeps it

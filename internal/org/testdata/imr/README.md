@@ -758,8 +758,13 @@ grants the new organization's identities their use of the billing account.
    `organizations/<prefix>/`, the label of its apps domain handed onward
    to its zone (`domains`), and this README rendered from the placement,
    branch and pull request as the infrastructure
-   app. A creation that stops finishes on the next push,
-   since every step looks before it makes; a created organization is left
+   app. A creation that stops finishes on the next push, from any point:
+   before its own push every step looks before it makes, and once the
+   foundation is on the new repository's default branch the run again applies
+   nothing as the creating identity (the first applies are the organization's
+   own from that push on) and goes on from the push, with what is left of the
+   withdrawal, the marker and the hand-off, and no grant given by hand. A
+   created organization is left
    alone, and its hand-off is kept by every apply until its merge records the
    folder or the record is taken out of `placement.json`: an open pull request
    moves to a fresh commit when what it records changed, and one closed

@@ -114,8 +114,9 @@ func AwaitBranch(ctx context.Context, gh *github.Client, owner, repo, branch str
 }
 
 // push puts the rendered files on the repository's default branch as one commit on its
-// initial commit, unless the branch carries the placement already (a run that stopped
-// after the push), and answers the commit.
+// initial commit, and answers the commit. A creation whose branch carried the placement
+// when the run started (a run that stopped after its push) does not come here: it goes on
+// from that push (resume.go).
 func (f *creation) push(ctx context.Context, dir string, h *org.Placement) (string, error) {
 	message := "chore: the foundation of " + h.Prefix + ", created by the root organization " + f.req.Root.Prefix + "\n\nRendered by bedrock org create from " + org.RecordsDir + "/" + h.Prefix + "/" + org.PlacementFile + " in " + f.req.Root.SourceRepo + " at " + short(f.req.Commit) + ". The apply trigger applies 0-bootstrap, then 1-org, from this push."
 

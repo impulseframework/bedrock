@@ -1150,6 +1150,18 @@ func (f *Fake) FindFolder(_ context.Context, parent, displayName string) (string
 	return f.Folders[parent+"|"+displayName], nil
 }
 
+// AdministersFolder answers that the caller may set the folder's policy: this stand-in
+// refuses no call for a grant its caller lacks.
+func (f *Fake) AdministersFolder(_ context.Context, folder string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("AdministersFolder", folder); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
 // CreateFolder makes the folder under the parent.
 func (f *Fake) CreateFolder(_ context.Context, parent, displayName string) (string, error) {
 	f.mu.Lock()
