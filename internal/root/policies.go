@@ -20,8 +20,12 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/go-playground/errors/v5"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/impulseframework/bedrock/internal/org"
 )
@@ -274,23 +278,37 @@ func (e *engine) organizationFolder(record org.HostingOrganization) string {
 }
 
 // setPolicies sets each policy of the hosting organization that its folder lacks or holds
-// otherwise, each a change of the policies section.
+// otherwise, each a change of the policies section, in the order given. What stands is
+// read a folder at a time, with one list of the folder's policies made when the first
+// policy wanted on it is reached (standingPolicies): a policy the list lacks is made, one
+// it holds with other rules is replaced, and one it holds that is not wanted here is
+// left as it is.
 func (e *engine) setPolicies(ctx context.Context, prefix string, policies []FolderPolicy) error {
+	standing := map[string]map[string]*Policy{}
 	for _, want := range policies {
-		got, exists, err := e.policies.Policy(ctx, want.Policy.Name)
-		if err != nil {
-			return err
+		onFolder, listed := standing[want.FolderID]
+		if !listed {
+			var err error
+			if onFolder, err = e.standingPolicies(ctx, prefix, want); err != nil {
+				return err
+			}
+			standing[want.FolderID] = onFolder
 		}
+		got, exists := onFolder[want.Constraint]
 		switch {
 		case !exists:
 			if err := e.change(ctx, sectionPolicies, "sets "+want.What(prefix), func(ctx context.Context) error {
-				return e.policies.CreatePolicy(ctx, "folders/"+want.FolderID, &want.Policy)
+				return e.withinQuota(ctx, "to set "+want.What(prefix), func() error {
+					return e.policies.CreatePolicy(ctx, "folders/"+want.FolderID, &want.Policy)
+				})
 			}); err != nil {
 				return err
 			}
 		case !RulesEqual(got.Rules, want.Policy.Rules):
 			if err := e.change(ctx, sectionPolicies, "brings "+want.What(prefix)+" to the baseline", func(ctx context.Context) error {
-				return e.policies.UpdatePolicy(ctx, &want.Policy)
+				return e.withinQuota(ctx, "to bring "+want.What(prefix)+" to the baseline", func() error {
+					return e.policies.UpdatePolicy(ctx, &want.Policy)
+				})
 			}); err != nil {
 				return err
 			}
@@ -298,6 +316,111 @@ func (e *engine) setPolicies(ctx context.Context, prefix string, policies []Fold
 	}
 
 	return nil
+}
+
+// policyOf is what a policy's resource name puts before its constraint: the name is
+// PARENT/policies/CONSTRAINT, the parent a folder here (folders/F).
+const policyOf = "/policies/"
+
+// standingPolicies are the policies that stand on the folder of the policy f, by
+// constraint, read with one list of the folder: a hosting organization's 96 policies are
+// five lists, one for each folder, where a read of each by its name was 96 calls against
+// the quota Google counts for the root project by the minute, and the root's apply over
+// two hosting organizations was refused for it.
+func (e *engine) standingPolicies(ctx context.Context, prefix string, f FolderPolicy) (map[string]*Policy, error) {
+	var listed []*Policy
+	if err := e.withinQuota(ctx, fmt.Sprintf("to list the organization policies on folder %s (%s) of %s", f.FolderKey, f.FolderID, prefix), func() error {
+		var err error
+		listed, err = e.policies.ListPolicies(ctx, "folders/"+f.FolderID)
+
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	standing := make(map[string]*Policy, len(listed))
+	for _, p := range listed {
+		if _, constraint, named := strings.Cut(p.Name, policyOf); named {
+			standing[constraint] = p
+		}
+	}
+
+	return standing, nil
+}
+
+// Google counts the Org Policy calls billed to a project by the minute, each kind on its
+// own: for the root project, where the root organization's are billed (open), the lab
+// read 300 reads of a policy by its name, 300 lists and 100 writes a minute, the limits
+// Google gives by default (2026-11-21). A call past the minute's limit is refused as
+// ResourceExhausted, and what a run spent in one minute is free again in the next.
+//
+// A call refused so is made again, the tries starting policyQuotaFirstWait apart, each
+// wait twice the one before it and none longer than policyQuotaLongestWait, half the
+// minute, so that every minute is tried at least twice; and for no longer than
+// policyQuotaTries in all, two of the quota's minutes. The first minute is all a run
+// needs when nothing else spends the quota, however much the run itself spent before the
+// refusal: a creation's 95 policies are inside the 100 writes of one minute, and a
+// baseline grown past the hundred would wait out one minute for each hundred; a pass
+// over a hosting organization is 5 lists, so the check and the apply of one build are 20
+// over two hosting organizations and 50 over five, of the minute's 300. The second minute
+// is for a quota something else was spending when the first turned: another build of the
+// root organization (a pull request's plan beside a merge's apply), a person's check.
+// Past that the wait is no longer the quota's minute, and the run stops with a sentence
+// instead of sitting in its build step: of the steps that run the engine the check's
+// time limit is the shortest, ten minutes (org.TriggerSteps), which a call that waits
+// its two minutes and stops is well inside, and an apply that stops gives its lock back
+// (ApplyRun), where one killed at its step's limit would leave it for a person to delete.
+const (
+	policyQuotaWindow      = time.Minute
+	policyQuotaTries       = 2 * policyQuotaWindow
+	policyQuotaFirstWait   = 5 * time.Second
+	policyQuotaLongestWait = policyQuotaWindow / 2
+)
+
+// withinQuota makes one Org Policy call (call), named for a person by what it does (to
+// list ..., to set ...), and waits out the quota for it: a call Google refuses for the
+// quota is made again with a backoff, for no longer than policyQuotaTries in all, and a
+// refusal that outlasts it ends the run with a sentence that names the call, the project
+// whose quota it is, what Google answered and the way on. Any other answer is the
+// call's at once.
+func (e *engine) withinQuota(ctx context.Context, what string, call func() error) error {
+	wait, waited := policyQuotaFirstWait, time.Duration(0)
+	for {
+		err := call()
+		if err == nil || !quotaSpent(err) {
+			return err
+		}
+		if waited >= policyQuotaTries {
+			return errors.Newf("Google refuses %s: the quota of the root project %s is spent (%s). The organization policy calls of this run are billed to that project, Google counts them by the minute, and it still refused after %d minutes of tries: another build or person billed to the project may be spending the quota. %s",
+				what, e.d.Project(), status.Convert(errors.Cause(err)).Message(), int(policyQuotaTries.Minutes()), e.again())
+		}
+		wait = min(wait, policyQuotaTries-waited)
+		fmt.Fprintf(e.out, "  (Google refuses %s: the quota of the root project %s, which it counts by the minute, is spent; trying again in %s)\n", what, e.d.Project(), wait)
+		if werr := e.sleep(ctx, wait); werr != nil {
+			return werr
+		}
+		waited += wait
+		wait = min(2*wait, policyQuotaLongestWait)
+	}
+}
+
+// quotaSpent reports whether the error is an API's refusal of a call for a quota.
+func quotaSpent(err error) bool {
+	return status.Code(errors.Cause(err)) == codes.ResourceExhausted
+}
+
+// again says how a person gets past a refusal that a later run does not meet: the run
+// again, as its mode has it run, and what of this run is kept.
+func (e *engine) again() string {
+	switch {
+	case e.req.Bootstrap:
+		return "What this run made stands: run bedrock org bootstrap again, and it goes on from here"
+	case e.req.Mode == Apply:
+		return "What this run made stands: run the apply trigger " + e.p.ApplyTriggerName() + " again, and it goes on from here"
+	case e.req.Mode == Plan:
+		return "Nothing was changed: run the plan trigger " + e.p.PlanTriggerName() + " again"
+	default:
+		return "Nothing was changed: run the check again (bedrock org check, or the trigger whose build ran it)"
+	}
 }
 
 // hostingRecord is the hosting organization's placement the policies are set from: the
