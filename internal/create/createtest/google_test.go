@@ -103,6 +103,9 @@ func TestRefuses(t *testing.T) {
 	if exists, err := g.ProjectExists(ctx, boot); err != nil || !exists {
 		t.Errorf("ProjectExists by Folder Creator at the node = %t, %v, want true", exists, err)
 	}
+	if stands, err := g.ProjectStands(ctx, boot); err != nil || !stands {
+		t.Errorf("ProjectStands by Folder Creator at the node = %t, %v, want true", stands, err)
+	}
 	if got, want := fake.Holds(member), []string{node + " " + createtest.FolderCreator}; !slices.Equal(got, want) {
 		t.Errorf("the identity holds %v, want %v", got, want)
 	}
@@ -122,6 +125,9 @@ func TestRefuses(t *testing.T) {
 	if exists, err := stranger.ProjectExists(ctx, boot); err != nil || exists {
 		t.Errorf("ProjectExists holding nothing = %t, %v, want false", exists, err)
 	}
+	// The same read by the method that takes no refusal for a project gone.
+	_, err = stranger.ProjectStands(ctx, boot)
+	refused(t, "ProjectStands holding nothing", err)
 	_, err = stranger.CreateFolder(ctx, node, "other")
 	refused(t, "CreateFolder holding nothing", err)
 

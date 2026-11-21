@@ -298,6 +298,21 @@ func (g *FakeGoogle) ProjectExists(_ context.Context, id string) (bool, error) {
 	return g.Projects[id] && g.may(ProjectsGet, "projects/"+id), nil
 }
 
+// ProjectStands answers from memory, and refuses the read of a project the caller may not
+// read with Google's PermissionDenied, where ProjectExists takes the refusal for none.
+func (g *FakeGoogle) ProjectStands(_ context.Context, id string) (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := g.call("ProjectStands", id); err != nil {
+		return false, err
+	}
+	if err := g.need("ProjectStands", ProjectsGet, "projects/"+id); err != nil {
+		return false, err
+	}
+
+	return g.Projects[id], nil
+}
+
 // FindProject is the one active project under the folder whose id starts with idPrefix, or
 // empty; several are an error, as Google's are told apart no better.
 func (g *FakeGoogle) FindProject(_ context.Context, folder, idPrefix string) (string, error) {

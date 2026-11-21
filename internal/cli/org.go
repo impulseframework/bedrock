@@ -17,6 +17,8 @@ import (
 	"github.com/go-playground/errors/v5"
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/modfile"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/impulseframework/bedrock/internal/budgets"
 	"github.com/impulseframework/bedrock/internal/create"
@@ -1774,12 +1776,14 @@ infrastructure app with a key of it generated anew (--infrastructure-key).
 
 For a hosting organization it
 destroys 1-org, the GitHub repositories taken out of its state first so that they stay with
-their code, pull requests and releases (the rulesets and the operations environments go), the
+their code, pull requests and releases (the rulesets and the operations environments go), an
+apply with destroy=true recording the projects'
+deletion policy, that no API is disabled first, and the folders' protection lifted, then the
 network project's zones deleted by API ahead of the project (the apps domain's and every vanity
 domain's, each zone's record sets first, so their name servers are free for a zone of the name
 at once: a zone that goes with its project holds them until the project purges, thirty days
-later), an apply with destroy=true recording the projects'
-deletion policy, that no API is disabled first, and the folders' protection lifted, and the destroy tried again after a
+later; they go once that apply has passed, so a destroy that stops at it or before it deletes
+no zone), and the destroy tried again after a
 pause while it fails (a folder refuses for a while after its last project's deletion); then
 0-bootstrap the same way, on a local copy of its state, since the state bucket is in the boot
 project and goes with it. Google keeps a deleted project for 30 days, in which the console can
@@ -1953,19 +1957,29 @@ func (d deps) deleteHostingBudget(ctx context.Context, p *org.Placement, out io.
 // the apps domain's and every vanity domain's, as the root organization's destroy deletes
 // its root project's: 1-org's destroy deletes the project next, and a zone that goes with
 // its project holds its name servers until the project purges, thirty days later. A
-// network project gone already (a destroy run again after 1-org's deleted it) is said and
-// is no error, as the root organization's destroy says of its project. It acts as the
-// person running the destroy, who holds Owner on the organization's folder for the run,
-// through the clients bootProjectStands read the boot project with.
+// network project gone already (a destroy run again after 1-org's deleted it: Google
+// answers that there is none, or that it holds it after its deletion) is said and is no
+// error, as the root organization's destroy says of its project. A read Google refuses is
+// not a project gone: the destroy stops there, since going on would delete the project
+// with its zones in it; and so does a placement that records no network project, whose
+// zones could not be asked for. It acts as the person running the destroy, who holds
+// Owner on the organization's folder for the run, through the clients bootProjectStands
+// read the boot project with.
 func (d deps) deleteNetZones(ctx context.Context, p *org.Placement, out io.Writer) error {
 	clients := d.rootOrg()
 	project := p.Projects[netKey]
+	if project == "" {
+		return errors.New("placement.json records no network project (projects.net) while 1-org's state still holds resources, so the destroy cannot delete the network project's zones ahead of it and stops before 1-org's destroy deletes a project: record the project's id under projects.net and run the destroy again")
+	}
 	google, err := clients.Google(ctx, "")
 	if err != nil {
 		return err
 	}
 	defer google.Close()
-	stands, err := google.ProjectExists(ctx, project)
+	stands, err := google.ProjectStands(ctx, project)
+	if status.Code(errors.Cause(err)) == codes.PermissionDenied {
+		return errors.Wrapf(err, "the account this destroy runs as may not read the network project %s (Google refuses it resourcemanager.projects.get there), so the destroy cannot tell whether the project's zones still stand and stops before 1-org's destroy deletes the project: run it again as an account that holds Owner on the organization's folder, as the break-glass account does for the run", project)
+	}
 	if err != nil {
 		return err
 	}

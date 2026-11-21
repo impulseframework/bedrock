@@ -18,10 +18,12 @@ import (
 )
 
 // handRun scripts the fake tofu of one layer for org destroy: what state list prints,
-// what state pull prints, and how many destroys fail before one succeeds.
+// what state pull prints, whether the apply that records the deletion policies fails, and
+// how many destroys fail before one succeeds.
 type handRun struct {
 	stateList       []string
 	statePull       string
+	applyFails      bool
 	destroyFailures int
 }
 
@@ -109,6 +111,11 @@ func (r *handRunner) Run(_ context.Context, c deploy.Command, out io.Writer) err
 		}
 		_, _ = io.WriteString(out, "Destroy complete! Resources: 3 destroyed.\n")
 	case "apply":
+		if run != nil && run.applyFails {
+			_, _ = io.WriteString(out, "Error: Error updating project: googleapi: Error 429: Quota exceeded\n")
+
+			return errors.New("tofu failed: exit status 1")
+		}
 		_, _ = io.WriteString(out, "Apply complete! Resources: 0 added, 2 changed, 0 destroyed.\n")
 	}
 
@@ -259,8 +266,8 @@ func TestDestroy(t *testing.T) {
 				`1-org: tofu state rm github_repository.app["quill"] [token] [data 1-org.data]`,
 				`1-org: tofu state rm google_tags_tag_key.public_invoker["tst"] [token] [data 1-org.data]`,
 				`1-org: tofu state rm google_tags_tag_value.public_invoker["tst"] [token] [data 1-org.data]`,
-				zonesDeleted,
 				`1-org: tofu apply -input=false -no-color -auto-approve -var destroy=true -target=google_folder.this["shared"] -target=google_folder.this["tst"] -target=module.project["net"].module.project-factory.google_project.main -target=module.project["net"].module.project-factory.module.project_services.google_project_service.project_services["dns.googleapis.com"] -target=module.project["tst"].module.project-factory.google_project.main -target=module.project["tst"].module.project-factory.module.project_services.google_project_service.project_services["compute.googleapis.com"] [token] [data 1-org.data]`,
+				zonesDeleted,
 				"1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true [token] [data 1-org.data]",
 				"0-bootstrap: tofu init -input=false -no-color -reconfigure [data 0-bootstrap.data]",
 				"0-bootstrap: tofu state pull [data 0-bootstrap.data]",
@@ -344,8 +351,8 @@ func TestDestroy(t *testing.T) {
 				"1-org: tofu state list [data 1-org.data]",
 				`1-org: tofu state rm google_tags_tag_key.public_invoker["tst"] [token] [data 1-org.data]`,
 				`1-org: tofu state rm google_tags_tag_value.public_invoker["tst"] [token] [data 1-org.data]`,
-				zonesDeleted,
 				`1-org: tofu apply -input=false -no-color -auto-approve -var destroy=true -target=google_folder.this["shared"] -target=google_folder.this["tst"] -target=module.project["net"].module.project-factory.google_project.main -target=module.project["net"].module.project-factory.module.project_services.google_project_service.project_services["dns.googleapis.com"] -target=module.project["tst"].module.project-factory.google_project.main -target=module.project["tst"].module.project-factory.module.project_services.google_project_service.project_services["compute.googleapis.com"] [token] [data 1-org.data]`,
+				zonesDeleted,
 				"1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true [token] [data 1-org.data]",
 				"1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true [token] [data 1-org.data]",
 				"1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true [token] [data 1-org.data]",
@@ -356,6 +363,22 @@ func TestDestroy(t *testing.T) {
 			},
 			wantOut:  []string{"The destroy of 1-org failed (attempt 1 of 6)", "The destroy of 1-org failed (attempt 2 of 6)", "Destroyed 1-org."},
 			wantCopy: true,
+		},
+		{
+			name:            "deletes no zone when the apply that records the deletion policies fails: the zones go after the last step that can refuse",
+			destroyVariable: true,
+			token:           fixedToken,
+			runs: map[string]*handRun{
+				orgLayer: {stateList: orgState[3:], applyFails: true},
+			},
+			wantErr: "the apply recording 1-org's deletion policies failed; the log says why",
+			wantRan: []string{
+				"1-org: tofu init -input=false -no-color -reconfigure [data 1-org.data]",
+				"1-org: tofu state list [data 1-org.data]",
+				`1-org: tofu state rm google_tags_tag_key.public_invoker["tst"] [token] [data 1-org.data]`,
+				`1-org: tofu state rm google_tags_tag_value.public_invoker["tst"] [token] [data 1-org.data]`,
+				`1-org: tofu apply -input=false -no-color -auto-approve -var destroy=true -target=google_folder.this["shared"] -target=google_folder.this["tst"] -target=module.project["net"].module.project-factory.google_project.main -target=module.project["net"].module.project-factory.module.project_services.google_project_service.project_services["dns.googleapis.com"] -target=module.project["tst"].module.project-factory.google_project.main -target=module.project["tst"].module.project-factory.module.project_services.google_project_service.project_services["compute.googleapis.com"] [token] [data 1-org.data]`,
+			},
 		},
 		{
 			name:            "gives up after the attempts",

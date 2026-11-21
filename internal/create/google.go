@@ -60,6 +60,11 @@ type Google interface {
 	// ProjectExists reports whether the project stands, active and readable; one Google holds
 	// after its deletion is not there, to use or to delete again.
 	ProjectExists(ctx context.Context, id string) (bool, error)
+	// ProjectStands reports whether the project stands, active, for a caller that may not
+	// take a refused read for a project gone: false only when Google answers that there
+	// is no such project or that it holds it after its deletion. Google's refusal of the
+	// read is the error (PermissionDenied its cause), where ProjectExists answers false.
+	ProjectStands(ctx context.Context, id string) (bool, error)
 	// FindProject is the id of the active project directly under the folder (its numeric
 	// id) whose id starts with idPrefix, empty when there is none; two or more are an
 	// error, since the one meant cannot be told.
@@ -484,6 +489,19 @@ func (g *google) ProjectExists(ctx context.Context, id string) (bool, error) {
 	// A project Google holds after its deletion (thirty days, in which the console can
 	// restore it) answers the read but is not there to use, nor to delete again: a
 	// destroy run again finds it gone, and a bootstrap makes its own under a new id.
+	return project.GetState() == resourcemanagerpb.Project_ACTIVE, nil
+}
+
+func (g *google) ProjectStands(ctx context.Context, id string) (bool, error) {
+	project, err := g.projects.GetProject(ctx, &resourcemanagerpb.GetProjectRequest{Name: "projects/" + id})
+	if status.Code(err) == codes.NotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, errors.Wrapf(err, "resourcemanager.ProjectsClient.GetProject(): %s", id)
+	}
+
+	// As ProjectExists counts it: a project Google holds after its deletion is gone.
 	return project.GetState() == resourcemanagerpb.Project_ACTIVE, nil
 }
 

@@ -530,12 +530,21 @@ func (f *Fake) CreateZone(_ context.Context, project string, zone root.Zone) err
 	return nil
 }
 
-// DeleteZone deletes the zone and its record sets.
+// DeleteZone deletes the zone, and refuses one that still holds a record set other than
+// its apex NS and SOA, as Cloud DNS does (its guide to deleting a zone: "Remove all
+// records in the zone except for the SOA and NS records"): a destroy passes here only
+// when it deleted the zone's record sets first.
 func (f *Fake) DeleteZone(_ context.Context, project, zone string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("DeleteZone", project, zone); err != nil {
 		return err
+	}
+	apex := f.ZoneMap[project][zone].DNSName
+	for _, r := range f.Records[project+"/"+zone] {
+		if r.Name != apex || (r.Type != "NS" && r.Type != "SOA") {
+			return errors.Wrapf(&googleapi.Error{Code: http.StatusBadRequest, Message: "The resource named '" + zone + "' cannot be deleted because it is not empty"}, "dns.ManagedZonesService.Delete(): %s in %s", zone, project)
+		}
 	}
 	delete(f.ZoneMap[project], zone)
 	delete(f.Records, project+"/"+zone)
@@ -1181,6 +1190,17 @@ func (f *Fake) ProjectExists(_ context.Context, id string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("ProjectExists", id); err != nil {
+		return false, err
+	}
+
+	return f.Projects[id], nil
+}
+
+// ProjectStands reports whether the project is there; the stand-in refuses no read.
+func (f *Fake) ProjectStands(_ context.Context, id string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("ProjectStands", id); err != nil {
 		return false, err
 	}
 

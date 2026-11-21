@@ -1191,6 +1191,64 @@ func TestDestroyDeletesZonesAheadOfTheProject(t *testing.T) {
 	}
 }
 
+// TestDeleteZonesSaysWhenAZonesRecordsWent: a zone whose record sets are deleted and
+// whose own deletion then fails is said to stand without them, since the names under it
+// have stopped answering by then, and that a run again goes on; the run again deletes no
+// record set twice, deletes the zone, and a failure then claims no record set of its own.
+func TestDeleteZonesSaysWhenAZonesRecordsWent(t *testing.T) {
+	t.Parallel()
+
+	const (
+		project = "imp-net-gbl-core-9c0d"
+		zone    = "imp-net-gbl-dns-apps"
+		name    = "apps.imp.example"
+		went    = "the 2 record set(s) of zone imp-net-gbl-dns-apps (apps.imp.example) are deleted and the zone is not, so the names under apps.imp.example have stopped answering while the zone still holds its name servers; the destroy run again goes on from the zone's deletion"
+		backend = "googleapi: Error 503: Backend Error"
+	)
+	ctx := context.Background()
+	fake := roottest.New()
+	clients := &root.Clients{}
+	fake.Clients(clients)
+	if err := fake.CreateZone(ctx, project, root.Zone{Name: zone, DNSName: name + "."}); err != nil {
+		t.Fatal(err)
+	}
+	records := []root.RecordSet{
+		{Name: "quill." + name + ".", Type: "A", TTL: 300, Data: []string{"203.0.113.10"}},
+		{Name: name + ".", Type: "TXT", TTL: 300, Data: []string{`"v=spf1 -all"`}},
+	}
+	if err := fake.ChangeRecordSets(ctx, project, zone, records, nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Refuse["DeleteZone"] = errors.New("dns.ManagedZonesService.Delete(): " + backend)
+	var out bytes.Buffer
+	err := root.DeleteZones(ctx, clients, project, &out)
+	if err == nil || !strings.Contains(err.Error(), went) || !strings.Contains(err.Error(), backend) {
+		t.Fatalf("DeleteZones() = %v\nwant an error that says %q and carries Cloud DNS's own (%s)", err, went, backend)
+	}
+	if strings.Contains(out.String(), "Deleted the zone") {
+		t.Errorf("DeleteZones() printed:\n%s\nwant no zone said deleted", out.String())
+	}
+	if n := len(fake.Records[project+"/"+zone]); n != 2 {
+		t.Errorf("the zone holds %d record set(s) after the failed run, want its apex NS and SOA alone", n)
+	}
+	// The run again, the zone's deletion still failing: no record set went on this run.
+	asked := len(fake.Calls)
+	err = root.DeleteZones(ctx, clients, project, &out)
+	if err == nil || strings.Contains(err.Error(), "are deleted and the zone is not") || !strings.Contains(err.Error(), backend) {
+		t.Fatalf("DeleteZones() again = %v\nwant Cloud DNS's own error (%s), claiming no record set deleted", err, backend)
+	}
+	delete(fake.Refuse, "DeleteZone")
+	if err := root.DeleteZones(ctx, clients, project, &out); err != nil {
+		t.Fatalf("DeleteZones() once the zone's deletion passes = %v\n%s", err, out.String())
+	}
+	if slices.ContainsFunc(fake.Calls[asked:], func(call string) bool { return strings.HasPrefix(call, "ChangeRecordSets(") }) {
+		t.Errorf("the runs again changed record sets, which the first run had deleted: %v", fake.Calls[asked:])
+	}
+	if !strings.Contains(out.String(), "Deleted the zone imp-net-gbl-dns-apps (apps.imp.example) ahead of the project") || len(fake.ZoneMap[project]) != 0 {
+		t.Errorf("DeleteZones() printed:\n%s\nand the project holds %v, want the zone deleted and said so", out.String(), fake.ZoneMap[project])
+	}
+}
+
 // TestTransferAgentMadeAheadOfTheConsoleStep: the first apply makes the BigQuery Data
 // Transfer Service's agent in the root project and grants it its role, so the console
 // step that points the pricing export at the dataset finds it ready; the next run

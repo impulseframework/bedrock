@@ -1629,18 +1629,23 @@ func TestOrgDestroy(t *testing.T) {
 		zonesAhead = "Deleted the zone imp-net-gbl-dns-apps (apps.imp.example) ahead of the project: its name servers are free for a zone of the name at once, where a zone deleted with its project holds them until the project purges, thirty days later."
 	)
 	tests := []struct {
-		name        string
-		registered  bool
-		bootGone    bool
-		netGone     bool
-		interactive func() bool
-		in          string
-		args        []string
-		wantErr     string
-		wantOut     []string
-		wantAbsent  []string
-		wantRan     int
-		wantJournal string
+		name       string
+		registered bool
+		bootGone   bool
+		netGone    bool
+		// netUnread runs the destroy as an account that may read the boot project and not
+		// the network project, which stands with its zones.
+		netUnread bool
+		// noNetProject takes the network project out of placement.json (projects.net).
+		noNetProject bool
+		interactive  func() bool
+		in           string
+		args         []string
+		wantErr      string
+		wantOut      []string
+		wantAbsent   []string
+		wantRan      int
+		wantJournal  string
 		// wantZonesGone are the zone deletions made by API, in order, each before 1-org's
 		// destroy deletes the network project; none when the zones are not the command's
 		// to delete that way.
@@ -1686,6 +1691,24 @@ func TestOrgDestroy(t *testing.T) {
 			wantJournal: "Google holds them for 30 days, their ids never return. The GitHub repositories stay.\n",
 		},
 		{
+			name:        "refuses a network project the account may not read, where a refused read once passed for a project gone: no zone goes with its project",
+			netUnread:   true,
+			interactive: never,
+			args:        []string{"--yes"},
+			wantErr:     "the account this destroy runs as may not read the network project imp-net-gbl-core-9c0d (Google refuses it resourcemanager.projects.get there), so the destroy cannot tell whether the project's zones still stand and stops before 1-org's destroy deletes the project: run it again as an account that holds Owner on the organization's folder, as the break-glass account does for the run",
+			wantAbsent:  []string{"is gone already", "Deleted the zone", "Destroyed 1-org."},
+			wantRan:     4,
+		},
+		{
+			name:         "refuses a placement that records no network project, where an empty id once passed for a project gone",
+			noNetProject: true,
+			interactive:  never,
+			args:         []string{"--yes"},
+			wantErr:      "placement.json records no network project (projects.net) while 1-org's state still holds resources, so the destroy cannot delete the network project's zones ahead of it and stops before 1-org's destroy deletes a project: record the project's id under projects.net and run the destroy again",
+			wantAbsent:   []string{"is gone already", "Deleted the zone", "Destroyed 1-org."},
+			wantRan:      4,
+		},
+		{
 			name:        "keeps the network project when the layer registers a domain, with --yes",
 			registered:  true,
 			interactive: never,
@@ -1708,6 +1731,19 @@ func TestOrgDestroy(t *testing.T) {
 			t.Parallel()
 
 			dir := destroyRepo(t, tt.registered)
+			if tt.noNetProject {
+				placement, err := os.ReadFile(filepath.Join(dir, orgPlacementFile))
+				if err != nil {
+					t.Fatal(err)
+				}
+				without := strings.Replace(string(placement), `    "net": "`+netProject+"\",\n", "", 1)
+				if without == string(placement) {
+					t.Fatalf("the fixture's placement.json records no projects.net to take out:\n%s", placement)
+				}
+				if err := os.WriteFile(filepath.Join(dir, orgPlacementFile), []byte(without), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			tofu := &destroyTofu{}
 			d := orgDeps(dir)
 			d.interactive = tt.interactive
@@ -1716,6 +1752,13 @@ func TestOrgDestroy(t *testing.T) {
 			google := createtest.New()
 			google.Projects["imp-boot-gbl-core-a1b2"] = !tt.bootGone
 			google.Projects[netProject] = !tt.netGone
+			if tt.netUnread {
+				const person = "break-glass@imp-example.iam.gserviceaccount.com"
+				if _, err := google.Open(context.Background(), person); err != nil {
+					t.Fatal(err)
+				}
+				google.Bind("projects/imp-boot-gbl-core-a1b2", createtest.Owner, createtest.Member(person))
+			}
 			fake := roottest.New()
 			d.org.root = &rootorg.Clients{
 				Google: func(context.Context, string) (create.Google, error) { return google, nil },
