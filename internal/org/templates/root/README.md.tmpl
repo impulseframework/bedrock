@@ -233,8 +233,9 @@ the apply, run on it:
   bucket (`locks/root`) it makes the organization as the merged placement says,
   creates each hosting organization recorded without a folder yet, as the
   creating identity, and leaves a marker (`applied/root`) with the commit. A
-  run that fails leaves the lock; a person deletes the object, and the next
-  push applies again.
+  run that ends in an error gives the lock back, and the next push applies
+  again. A run that is cancelled or killed leaves the lock: a person deletes
+  the object, and the next push applies again.
 
 The steps a run takes are the trigger's own and never this repository's: a
 pull request changes what the steps read, never what they do. A run fetches
