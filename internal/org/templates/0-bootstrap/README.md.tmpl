@@ -525,7 +525,10 @@ protections say.
 When `2-net` registers domains (`registrations` in `2-net/terraform.tfvars`),
 the network project is kept, with its folder and the organization's, because a
 registration cannot move to another project; everything else in it goes.
-`2-net` is destroyed inside it first, on a copy of the layer rendered without
+`2-net` is destroyed inside it once `1-org`'s destroy is planned and before
+anything of `1-org` is destroyed: its destroy deletes the zones, so a token
+GitHub refuses or a plan that fails leaves every zone standing here too. It
+runs on a copy of the layer rendered without
 the zones' `prevent_destroy` (as `zoneReplacement` renders it) and with the
 registrations taken out of its state, so the project holds the registrations
 and nothing else: its zones and records, the load balancer and its address and

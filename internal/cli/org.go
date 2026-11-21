@@ -1797,7 +1797,9 @@ zone deleted. Google keeps a deleted project for 30 days, in which the console c
 restore it; its id never returns after. A layer whose state holds nothing is skipped. When 2-net
 registers domains (registrations in 2-net/terraform.tfvars) the network project is kept, with
 its folder and the organization's, since a registration cannot move to another project; 2-net
-is destroyed inside it first, on a copy rendered without the zones' prevent_destroy and with
+is destroyed inside it once 1-org's destroy is planned and before anything of 1-org is
+destroyed (its destroy deletes the zones, so a token refused or a plan that fails leaves every
+zone standing there too), on a copy rendered without the zones' prevent_destroy and with
 the registrations taken out of its state, so the project holds the registrations and nothing
 else, the domains stop resolving until a zone stands elsewhere and each registration is
 pointed at it, and the registrations are a person's to transfer out or give up (the rendered
@@ -2082,7 +2084,7 @@ func destroyWarning(p *org.Placement, registered []string) string {
 	}
 	fmt.Fprintf(&b, "\nAlso gone: the folders, the spend budget %q on the organization's folder, the custom roles and the tags, the org policies, the entitlements, the audit log sink, and on GitHub the rulesets and the operations environments. The repositories stay, with their code, pull requests and releases.\n", org.HostingBudgetName(p.Prefix))
 	if len(registered) > 0 {
-		fmt.Fprintf(&b, "\nKept: the network project %s, with its folder and the organization's, since 2-net registers %s there (registrations in 2-net/terraform.tfvars) and a registration cannot move to another project. Everything else in it goes: 2-net is destroyed inside it first, so its zones and records, the load balancer and its address and the certificates are gone, and %s stop resolving until a zone stands elsewhere and each registration is pointed at it. The registrations are a person's: transfer each out (sixty days after it was registered, after an unlock, with a year added at the new registrar's price), or give it up by deleting the registration or the project (Google's thirty-day restore window, then nothing but the registrant contact and support).\n", p.Projects[netKey], strings.Join(registered, ", "), strings.Join(registered, ", "))
+		fmt.Fprintf(&b, "\nKept: the network project %s, with its folder and the organization's, since 2-net registers %s there (registrations in 2-net/terraform.tfvars) and a registration cannot move to another project. Everything else in it goes: 2-net is destroyed inside it, once 1-org's destroy is planned and before anything else is destroyed, so its zones and records, the load balancer and its address and the certificates are gone, and %s stop resolving until a zone stands elsewhere and each registration is pointed at it. The registrations are a person's: transfer each out (sixty days after it was registered, after an unlock, with a year added at the new registrar's price), or give it up by deleting the registration or the project (Google's thirty-day restore window, then nothing but the registrant contact and support).\n", p.Projects[netKey], strings.Join(registered, ", "), strings.Join(registered, ", "))
 	}
 	b.WriteString("\nGoogle keeps a deleted project for 30 days, in which the console can restore it; its id never returns after. The Spanner instance and every backup on it (the release backups, the schedules' and the final backups bedrock destroy took) go with the Spanner project and come back with it in those days, and are gone after. Nothing here is undone by bedrock.\n\n")
 

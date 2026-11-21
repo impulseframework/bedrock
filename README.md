@@ -3237,7 +3237,8 @@ instance and every backup on it (the release backups, the schedules' and the fin
 `bedrock destroy` took) go with the Spanner project and come back with it in those days,
 and are gone after. A layer whose state holds nothing is skipped. When 2-net registers domains the network project is kept,
 with its folder and the organization's, since a registration cannot move to another project,
-and 2-net is destroyed inside it first (on a copy rendered without the zones' `prevent_destroy`,
+and 2-net is destroyed inside it, after 1-org's checks and the plan of its destroy and before
+anything of 1-org is destroyed (on a copy rendered without the zones' `prevent_destroy`,
 the registrations out of its state), so the project holds the registrations and nothing else
 and the domains stop resolving until a zone stands elsewhere; the registrations are a person's
 to transfer out or give up. It refuses a layer rendered by an earlier bedrock, which declares no `destroy`
