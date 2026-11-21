@@ -1,13 +1,10 @@
 package cli
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/go-playground/errors/v5"
 
 	"github.com/impulseframework/bedrock/internal/org"
 )
@@ -68,6 +65,7 @@ func TestOrgCreate(t *testing.T) {
 	wantOut := []string{
 		"Recorded rgb: boot project " + filled.Projects["boot"] + ", state bucket " + filled.StateBucket + ", repository imp-example/rgb-infrastructure, under the root organization imr.\n",
 		"The merge of this pull request creates rgb, as the creating identity (imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com):",
+		"(its APIs, its billing link to 012345-6789AB-CDEF01)",
 		"Nothing is granted by hand before the merge: the creating identity holds Folder Creator at the",
 		"Billing Account Administrator on this organization's billing account\n(012345-6789AB-CDEF01), which rgb is billed to, since the bootstrap",
 		"  - its spend budget on the billing account, 500 a month in the account's currency on its\n    folder (monthlyBudget)",
@@ -155,11 +153,12 @@ func TestOrgCreateAppPrefix(t *testing.T) {
 	}
 }
 
-// TestOrgCreateBillingAccount: a hosting organization is billed to its root organization's
-// billing account, the one the creating identity administers, so the record carries that
-// account from the first run, and the second run refuses a record that names another, in
-// one sentence that names the file, the field and both accounts, before it fills the
-// record, lists the organization or says what the merge creates.
+// TestOrgCreateBillingAccount: a hosting organization is billed to the billing account
+// its record names. The first run writes the record with the root organization's account,
+// and a person who names another has it kept: the second run records the organization on
+// that account, says the boot project is linked to it, and says the one grant made by
+// hand before the merge, since the bootstrap made the creating identity an administrator
+// of the root organization's account alone.
 func TestOrgCreateBillingAccount(t *testing.T) {
 	t.Parallel()
 
@@ -179,7 +178,7 @@ func TestOrgCreateBillingAccount(t *testing.T) {
 		t.Errorf("the skeleton's billingAccount = %q, want the root organization's 012345-6789AB-CDEF01", h.BillingAccount)
 	}
 
-	// The person fills in what is the organization's own, and names another account.
+	// The person fills in what is the organization's own, and names its own account.
 	h.BillingAccount = "ABCDEF-012345-6789AB"
 	h.AppsDomain, h.Spanner.Config, h.MonthlyBudget = "apps.rgb.example", "nam10", 500
 	h.Regions[1] = org.Region{Name: "us-west3", Code: "uw3"}
@@ -187,26 +186,30 @@ func TestOrgCreateBillingAccount(t *testing.T) {
 	if err := h.Write(record); err != nil {
 		t.Fatal(err)
 	}
-	written, err := os.ReadFile(record)
+	code, out := runOrg(t, "org", "create", "rgb", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("org create of a record that names its own billing account: %d\n%s", code, out)
+	}
+	filled, err := org.ReadRecord(dir, "rgb")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("the record does not read as a hosting placement: %v", err)
 	}
-	listing, err := os.ReadFile(filepath.Join(dir, org.PlacementFile))
-	if err != nil {
-		t.Fatal(err)
+	if filled.BillingAccount != "ABCDEF-012345-6789AB" {
+		t.Errorf("the record's billingAccount = %q, want its own kept, ABCDEF-012345-6789AB", filled.BillingAccount)
 	}
-	want := "organizations/rgb/placement.json names the billing account ABCDEF-012345-6789AB (billingAccount), and a hosting organization is billed to its root organization's billing account, 012345-6789AB-CDEF01, the one the creating identity administers: name 012345-6789AB-CDEF01, or take billingAccount out and run bedrock org create rgb again, which fills it in"
-	out, err := execute(orgDeps(""), "", "org", "create", "rgb", "--dir", dir)
-	if err == nil || errors.Cause(err).Error() != want {
-		t.Fatalf("org create of a record that names another billing account: error %v, want %q; output:\n%s", err, want, out)
+	wantOut := []string{
+		"(its APIs, its billing link to ABCDEF-012345-6789AB)",
+		"One grant is made by hand before the merge: rgb is billed to a billing account of its own,\nABCDEF-012345-6789AB (billingAccount in organizations/rgb/placement.json)",
+		"administrator of ABCDEF-012345-6789AB grants imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com\nBilling Account Administrator (roles/billing.admin) on it.",
 	}
-	if out != "" {
-		t.Errorf("the refused run printed:\n%s", out)
+	for _, want := range wantOut {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
 	}
-	if after, err := os.ReadFile(record); err != nil || !bytes.Equal(after, written) {
-		t.Errorf("the refused record was written again (error %v):\n%s", err, after)
-	}
-	if after, err := os.ReadFile(filepath.Join(dir, org.PlacementFile)); err != nil || !bytes.Equal(after, listing) {
-		t.Errorf("the refused run changed placement.json (error %v):\n%s", err, after)
+	for _, unwanted := range []string{"Nothing is granted by hand before the merge", "012345-6789AB-CDEF01"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("output says %q of an organization billed to its own account:\n%s", unwanted, out)
+		}
 	}
 }

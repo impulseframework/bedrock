@@ -903,51 +903,29 @@ func TestRunHandOffBranchLeft(t *testing.T) {
 	}
 }
 
-// TestRunRefusals: a record whose boot project is not the listing's, a record billed to
-// another account than the root organization's, and a seam that refuses a step, each stop
-// the creation with the step named, and nothing after it runs. A record refused is
-// refused before Google is asked anything: no folder is looked for and none is made.
+// TestRunRefusals: a record whose boot project is not the listing's, and a seam that
+// refuses a step, each stop the creation with the step named, and nothing after it runs.
 func TestRunRefusals(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		prepare func(t *testing.T, f *flow, root *org.Placement, dir string)
+		prepare func(f *flow, root *org.Placement)
 		wantErr string
-		// asksGoogle says the stop comes after the record is read: a record refused is
-		// refused before Google is asked anything.
-		asksGoogle bool
 	}{
 		{
 			name: "the listing and the record disagree on the boot project",
-			prepare: func(_ *testing.T, _ *flow, root *org.Placement, _ string) {
+			prepare: func(_ *flow, root *org.Placement) {
 				root.HostingOrganization("rgb").BootProject = "rgb-boot-gbl-core-0000"
 			},
 			wantErr: "records boot project rgb-boot-gbl-core-e5f6 and placement.json's hostingOrganizations entry rgb-boot-gbl-core-0000: bedrock org create rgb brings them together",
 		},
 		{
-			name: "the record names another billing account than the root organization's",
-			prepare: func(t *testing.T, _ *flow, _ *org.Placement, dir string) {
-				t.Helper()
-				path := org.RecordPath(dir, "rgb")
-				h, err := org.ReadPlacement(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				h.BillingAccount = "ABCDEF-012345-6789AB"
-				if err := h.Write(path); err != nil {
-					t.Fatal(err)
-				}
-			},
-			wantErr: "organizations/rgb/placement.json names the billing account ABCDEF-012345-6789AB (billingAccount), and a hosting organization is billed to its root organization's billing account, 012345-6789AB-CDEF01, the one the creating identity administers: name 012345-6789AB-CDEF01, or take billingAccount out and run bedrock org create rgb again, which fills it in",
-		},
-		{
 			name: "a folder that cannot be made",
-			prepare: func(_ *testing.T, f *flow, _ *org.Placement, _ string) {
+			prepare: func(f *flow, _ *org.Placement) {
 				f.google.Refuse["CreateFolder"] = errRefused
 			},
-			wantErr:    "refused by the stand-in",
-			asksGoogle: true,
+			wantErr: "refused by the stand-in",
 		},
 	}
 	for _, tt := range tests {
@@ -956,19 +934,65 @@ func TestRunRefusals(t *testing.T) {
 
 			f := newFlow(t)
 			dir, root := checkout(t)
-			tt.prepare(t, f, root, dir)
+			tt.prepare(f, root)
 			var out bytes.Buffer
 			_, err := create.Run(t.Context(), f.clients(), request(root, dir), &out)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("Run() error = %v, want %q; Google was asked %v", err, tt.wantErr, f.google.Calls)
-			}
-			if !tt.asksGoogle && (len(f.google.Calls) != 0 || len(f.google.Identities) != 0) {
-				t.Errorf("Google was opened as %v and asked %v, want a record refused before anything is asked", f.google.Identities, f.google.Calls)
+				t.Fatalf("Run() error = %v, want %q", err, tt.wantErr)
 			}
 			if len(f.runner.ran) != 0 || len(f.srv.Created) != 0 || len(f.store.objects) != 0 {
 				t.Errorf("the creation went on after the refusal: %v, %v, %v", f.runner.ran, f.srv.Created, f.store.objects)
 			}
 		})
+	}
+}
+
+// TestRunOwnBillingAccount: a record that names a billing account of its own is created
+// on that account. The boot project is linked to it, the spend budget is made on it, the
+// boot and org identities are granted Billing Account User on it, and nothing is asked
+// of the root organization's account.
+func TestRunOwnBillingAccount(t *testing.T) {
+	t.Parallel()
+
+	const own = "ABCDEF-012345-6789AB"
+	f := newFlow(t)
+	dir, root := checkout(t)
+	nameBillingAccount(t, dir, own)
+	var out bytes.Buffer
+	if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err != nil {
+		t.Fatalf("Run() error = %v; output:\n%s", err, out.String())
+	}
+	if got := f.google.Billing["rgb-boot-gbl-core-e5f6"]; got != own {
+		t.Errorf("the boot project is linked to %q, want the record's own account %s", got, own)
+	}
+	if budgets := f.google.SpendBudgets[own]; len(budgets) != 1 || budgets[0].DisplayName != "rgb organization" || budgets[0].Units != 500 {
+		t.Errorf("the budgets on %s = %+v, want rgb's own, 500 a month", own, budgets)
+	}
+	for _, identity := range []string{"rgb-boot-gbl-tofu", "rgb-org-gbl-tofu"} {
+		want := "billingAccounts/" + own + " roles/billing.user serviceAccount:" + identity + "@rgb-boot-gbl-core-e5f6.iam.gserviceaccount.com"
+		if !slices.Contains(f.google.Grants, want) {
+			t.Errorf("grants lack %q:\n%s", want, strings.Join(f.google.Grants, "\n"))
+		}
+	}
+	for _, call := range f.google.Calls {
+		if strings.Contains(call, root.BillingAccount) {
+			t.Errorf("the creation asked %s, on the root organization's account, for an organization billed to %s", call, own)
+		}
+	}
+}
+
+// nameBillingAccount writes the billing account into rgb's record, as a person who
+// bills the organization to an account of its own does.
+func nameBillingAccount(t *testing.T, dir, billingAccount string) {
+	t.Helper()
+	path := org.RecordPath(dir, "rgb")
+	h, err := org.ReadPlacement(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.BillingAccount = billingAccount
+	if err := h.Write(path); err != nil {
+		t.Fatal(err)
 	}
 }
 

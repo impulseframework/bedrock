@@ -91,10 +91,11 @@ func ReadRecord(dir, prefix string) (*Placement, error) {
 // after the boot project.
 //
 // Refused where the record names another than the root organization's, and filled in
-// where it names none: the billing account, which every hosting organization is billed
-// to, and the word the apps' names start with (githubAppPrefix).
+// where it names none: the word the apps' names start with (githubAppPrefix).
 //
-// Kept where the record names one, and filled in where it names none: the repository's
+// Kept where the record names one, and filled in where it names none: the billing
+// account (billingAccount: the root organization's unless the record names one, so a
+// hosting organization may be billed to a billing account of its own), the repository's
 // name (sourceRepo), the release app's slug, and the boot project, whose suffix is
 // chosen here.
 //
@@ -121,8 +122,8 @@ func Fill(root, h *Placement) error {
 	if h.IsRoot() {
 		return errors.New("kind is root, and a record is a hosting organization's placement: leave kind out")
 	}
-	if err := fillBillingAccount(root, h); err != nil {
-		return err
+	if h.BillingAccount == "" {
+		h.BillingAccount = root.BillingAccount
 	}
 	if h.SourceRepo == "" {
 		h.SourceRepo = h.Prefix + "-infrastructure"
@@ -163,22 +164,6 @@ func Fill(root, h *Placement) error {
 	}
 
 	return h.Validate()
-}
-
-// fillBillingAccount gives the record the root organization's billing account
-// (billingAccount), and refuses a record that names another: a hosting organization is
-// billed to its root organization's account, the one account the creating identity
-// administers (Desired.BillingGrants in internal/root). On another account the creation
-// would stop at the boot project's billing link, refused, with the organization's
-// folder, the terraform folder and the project made, and stop there again on every
-// later push.
-func fillBillingAccount(root, h *Placement) error {
-	if h.BillingAccount != "" && h.BillingAccount != root.BillingAccount {
-		return errors.Newf("%s/%s/%s names the billing account %s (billingAccount), and a hosting organization is billed to its root organization's billing account, %s, the one the creating identity administers: name %s, or take billingAccount out and run bedrock org create %s again, which fills it in", RecordsDir, h.Prefix, PlacementFile, h.BillingAccount, root.BillingAccount, root.BillingAccount, h.Prefix)
-	}
-	h.BillingAccount = root.BillingAccount
-
-	return nil
 }
 
 // fillAppPrefix gives the record the word the root organization's GitHub Apps' names

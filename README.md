@@ -2729,13 +2729,17 @@ root organization names one, the word the Apps' names start with (`githubAppPref
 Cloud Build authorization, the break-glass account, the bedrock pin and `root`), chooses
 the boot project's four-hex suffix, lists the organization in `placement.json`
 (`hostingOrganizations`) and renders, printing what the merge creates. A hosting
-organization is billed to the root organization's billing account, the one the creating
-identity administers: a record that names another is refused, by `org create` and by the
-merge's apply before it makes anything. The merge's `org
+organization is billed to the billing account its record names (`billingAccount`), and to
+the root organization's where the record names none. The creating identity links the new
+organization's projects to that account, grants its boot and org identities Billing
+Account User on it and makes its spend budget on it, and the bootstrap made the identity
+Billing Account Administrator on the root organization's account alone: on an account of
+the record's own, an administrator of that account grants the creating identity Billing
+Account Administrator (`roles/billing.admin`) before the merge. The merge's `org
 apply` creates each listed organization without a folder yet as the root organization's
 creating identity (`<prefix>-create-gbl-tofu`, made by its bootstrap, which granted it
-Folder Creator at the organization node and Billing Account Administrator on the billing
-account): the folder at the organization node, the `terraform` folder, the boot
+Folder Creator at the organization node and Billing Account Administrator on the root
+organization's billing account): the folder at the organization node, the `terraform` folder, the boot
 project with its billing link and APIs, the boot identity with its roles on the folder
 and the break-glass account's Folder Admin on it, the state bucket, the boot identity's
 policy administration of the four shared secrets; then, against the new bucket, the first

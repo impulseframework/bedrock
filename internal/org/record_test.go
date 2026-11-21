@@ -22,10 +22,9 @@ func hostingRecord() *Placement {
 
 // TestFill: the root organization fills a record with what it supplies, chooses the boot
 // project's suffix and derives the state bucket, keeps what the person wrote, and refuses
-// a record that is the root organization's own prefix, a root kind, another billing
-// account than the root organization's, another primary region than the root
-// organization's regional token, a boot project of another name, or one short of what is
-// the organization's own to decide.
+// a record that is the root organization's own prefix, a root kind, another primary
+// region than the root organization's regional token, a boot project of another name,
+// or one short of what is the organization's own to decide.
 func TestFill(t *testing.T) {
 	t.Parallel()
 
@@ -89,11 +88,7 @@ func TestFill(t *testing.T) {
 		{name: "no apps domain", mutate: func(h *Placement) { h.AppsDomain = "" }, wantErr: "organizations/rgb/placement.json needs what is the organization's own to decide"},
 		{name: "one region", mutate: func(h *Placement) { h.Regions = h.Regions[:1] }, wantErr: "needs what is the organization's own to decide"},
 		{name: "no team group", mutate: func(h *Placement) { h.TeamGroups = nil }, wantErr: "needs what is the organization's own to decide"},
-		{
-			name:    "another billing account than the root organization's",
-			mutate:  func(h *Placement) { h.BillingAccount = "ABCDEF-012345-6789AB" },
-			wantErr: "organizations/rgb/placement.json names the billing account ABCDEF-012345-6789AB (billingAccount), and a hosting organization is billed to its root organization's billing account, 012345-6789AB-CDEF01, the one the creating identity administers: name 012345-6789AB-CDEF01, or take billingAccount out and run bedrock org create rgb again, which fills it in",
-		},
+		{name: "a billing account of its own kept", mutate: func(h *Placement) { h.BillingAccount = "ABCDEF-012345-6789AB" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,6 +97,16 @@ func TestFill(t *testing.T) {
 			h := hostingRecord()
 			tt.mutate(h)
 			err := Fill(root, h)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Fill() error = %v", err)
+				}
+				if h.BillingAccount != "ABCDEF-012345-6789AB" {
+					t.Errorf("billingAccount = %q, want the record's own kept", h.BillingAccount)
+				}
+
+				return
+			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("Fill() error = %v, want %q", err, tt.wantErr)
 			}

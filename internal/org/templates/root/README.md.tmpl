@@ -705,10 +705,13 @@ here, by pull request, not seeded by hand: the creating identity
 `{{.CreatingIdentity}}` does under a new folder what a hand seed and the first
 applies would, and the new organization's own apply trigger takes over from its
 first push. Nobody signs in as the break-glass account for it, and nobody
-grants anything by hand: the identity holds Folder Creator at the organization
-node and Billing Account Administrator on the billing account since the
-bootstrap, grants itself the rest under the folder it creates, for the run, and
-grants the new organization's identities their use of the billing account.
+grants anything by hand for an organization billed to this organization's
+billing account: the identity holds Folder Creator at the organization node and
+Billing Account Administrator on that account since the bootstrap, grants
+itself the rest under the folder it creates, for the run, and grants the new
+organization's identities their use of the billing account. An organization
+billed to a billing account of its own takes one grant by hand, on that
+account (step 1).
 
 1. **The record.** In a terminal, in this repository: `bedrock org create
    <prefix>`, which writes `organizations/<prefix>/placement.json` for a person
@@ -722,11 +725,16 @@ grants the new organization's identities their use of the billing account.
    the break-glass account, the bedrock pin, and `root`, which names this
    organization), chooses the boot project's suffix, lists the organization in
    `placement.json` (`hostingOrganizations`: its prefix and its boot project)
-   and renders. A hosting organization is billed to this organization's
-   billing account, the one the creating identity administers: a record that
-   names another is refused, by `bedrock org create` and by the merge's apply
-   before it makes anything. The pull request carries both files; its plan
-   says what the merge creates.
+   and renders. The new organization is billed to the billing account its
+   record names (`billingAccount`), and to this organization's,
+   `{{.BillingAccount}}`, where the record names none. The creating identity
+   links the new organization's projects to that account, grants its boot and
+   org identities Billing Account User on it and makes its spend budget on it,
+   and the bootstrap made the identity Billing Account Administrator on this
+   organization's account alone: on an account of the record's own, an
+   administrator of that account grants the creating identity Billing Account
+   Administrator (`roles/billing.admin`) before the merge. The pull request
+   carries both files; its plan says what the merge creates.
 2. **The merge.** The apply trigger creates each listed organization without a
    folder yet, in order, as the creating identity: the folder at the
    organization node named after the prefix, the `terraform` folder under it,
