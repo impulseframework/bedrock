@@ -1,9 +1,10 @@
 // budget.go is the spend budget a placement names: a hosting organization's on its own
-// folder, made by the root organization's creation, and a root organization's on the
-// whole billing account, made by the bootstrap; both kept by the root organization's apply,
-// with alerts at half, nine tenths and the whole of the amount to the billing account's
-// administrators and users, which is whom Cloud Billing mails when a budget names no
-// channel. A budget sends alerts and stops nothing.
+// folder, on the billing account it is billed to, made by the root organization's
+// creation, and a root organization's on the whole of its billing account, made by the
+// bootstrap; both kept by the root organization's apply, each on its account, with alerts
+// at half, nine tenths and the whole of the amount to that account's administrators and
+// users, which is whom Cloud Billing mails when a budget names no channel. A budget sends
+// alerts and stops nothing.
 
 package org
 
@@ -13,7 +14,7 @@ import (
 	"strings"
 )
 
-// Budget is one spend budget on the billing account, as Cloud Billing holds it and the
+// Budget is one spend budget on a billing account, as Cloud Billing holds it and the
 // apply keeps it.
 type Budget struct {
 	// Name is the budget's resource name (billingAccounts/B/budgets/ID), empty on one

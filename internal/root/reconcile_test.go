@@ -1071,6 +1071,158 @@ func TestEngineBudgets(t *testing.T) {
 	}
 }
 
+// billedTo rewrites the hosting organization's record in dir, a root repository, so that
+// it names the billing account, as bedrock org create leaves a record that names one of
+// its own.
+func billedTo(t *testing.T, dir, prefix, billingAccount string) {
+	t.Helper()
+
+	h, err := org.ReadRecord(dir, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.BillingAccount = billingAccount
+	if err := h.Write(org.RecordPath(dir, prefix)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// budgetNames are the display names of the budgets that stand on the billing account.
+func budgetNames(fake *roottest.Fake, billingAccount string) []string {
+	names := make([]string, 0, len(fake.SpendBudgets[billingAccount]))
+	for _, b := range fake.SpendBudgets[billingAccount] {
+		names = append(names, b.DisplayName)
+	}
+
+	return names
+}
+
+// TestEngineKeepsAnOrganizationsBudgetOnItsBillingAccount: a hosting organization's spend
+// budget is listed, made and brought back on the billing account the organization is
+// billed to, the one its record names (billingAccount): an account of its own, where the
+// creation made it, or the root organization's. Nothing is made for it on the root
+// organization's account when it is billed elsewhere, which holds the root
+// organization's own budget alone.
+func TestEngineKeepsAnOrganizationsBudgetOnItsBillingAccount(t *testing.T) {
+	t.Parallel()
+
+	const rootAccount, ownAccount = "012345-6789AB-CDEF01", "0A1B2C-3D4E5F-6A7B8C"
+	tests := []struct {
+		name string
+		// billedTo is the billing account the organization's record names; onRoot and
+		// onOwn are the budgets that then stand on each account.
+		billedTo      string
+		onRoot, onOwn []string
+	}{
+		{name: "an account of its own", billedTo: ownAccount, onRoot: []string{"imr billing account"}, onOwn: []string{"imp organization"}},
+		{name: "the root organization's account", billedTo: rootAccount, onRoot: []string{"imr billing account", "imp organization"}, onOwn: []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newWorld(t)
+			billedTo(t, w.dir, "imp", tt.billedTo)
+			budget := func() org.Budget {
+				t.Helper()
+
+				i := slices.IndexFunc(w.fake.SpendBudgets[tt.billedTo], func(b org.Budget) bool { return b.DisplayName == "imp organization" })
+				if i < 0 {
+					t.Fatalf("no budget \"imp organization\" stands on %s: on the root organization's account %v, on the other %v", tt.billedTo, budgetNames(w.fake, rootAccount), budgetNames(w.fake, ownAccount))
+				}
+
+				return w.fake.SpendBudgets[tt.billedTo][i]
+			}
+			stands := func(when string) {
+				t.Helper()
+
+				if got := budgetNames(w.fake, rootAccount); !slices.Equal(got, tt.onRoot) {
+					t.Errorf("%s, the budgets on the root organization's account %s = %v, want %v", when, rootAccount, got, tt.onRoot)
+				}
+				if got := budgetNames(w.fake, ownAccount); !slices.Equal(got, tt.onOwn) {
+					t.Errorf("%s, the budgets on the account %s = %v, want %v", when, ownAccount, got, tt.onOwn)
+				}
+			}
+
+			// Listed: the check names the account each budget is made on.
+			report, _ := w.run(t, root.Check, false)
+			containsAll(t, whats(report),
+				`budgets: makes the spend budget "imr billing account" on billing account `+rootAccount+`: 1500 a month in the account's currency on every project of the account`,
+				`budgets: makes the spend budget "imp organization" on billing account `+tt.billedTo+`: 500 a month in the account's currency on folder 123456789012345`,
+			)
+			if !slices.Contains(w.fake.Calls, "Budgets("+tt.billedTo+")") {
+				t.Errorf("the check did not list the budgets of %s, the account imp is billed to", tt.billedTo)
+			}
+
+			// Made: each on its account, and the check after it has nothing to make.
+			w.run(t, root.Apply, true)
+			stands("after the apply")
+			if got := budget(); got.Units != 500 || !slices.Equal(got.Ancestors, []string{"folders/123456789012345"}) {
+				t.Errorf("the budget made = %+v, want 500 a month on folder 123456789012345", got)
+			}
+			if clean, out := w.run(t, root.Check, false); !clean.Clean() {
+				t.Errorf("the check after the apply is not clean:\n%s\nchanges: %v", out, whats(clean))
+			}
+
+			// Kept: an amount lowered in the console is brought back where it stands, as
+			// the creating identity, and no second budget is made anywhere.
+			i := slices.IndexFunc(w.fake.SpendBudgets[tt.billedTo], func(b org.Budget) bool { return b.DisplayName == "imp organization" })
+			w.fake.SpendBudgets[tt.billedTo][i].Units = 100
+			drift, _ := w.run(t, root.Check, false)
+			if want := `budgets: brings the spend budget "imp organization" on billing account ` + tt.billedTo + ` back to 500 a month on folder 123456789012345, with alerts at 50, 90 and 100 percent`; !slices.Contains(whats(drift), want) || len(drift.Changes) != 1 {
+				t.Errorf("drift changes = %v, want %q alone", whats(drift), want)
+			}
+			w.run(t, root.Apply, false)
+			if got := budget(); got.Units != 500 {
+				t.Errorf("after the apply, the budget = %+v, want 500 a month again", got)
+			}
+			stands("after the hand change was undone")
+			if want := "imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com"; !slices.Equal(w.fake.BudgetIdentities, []string{want}) {
+				t.Errorf("the apply opened the Budgets API as %v, want as the creating identity %s", w.fake.BudgetIdentities, want)
+			}
+			for _, call := range w.fake.Calls {
+				if strings.HasPrefix(call, "CreateBudget(") && call != "CreateBudget("+rootAccount+", imr billing account)" && call != "CreateBudget("+tt.billedTo+", imp organization)" {
+					t.Errorf("the runs made a budget with %s, want the root organization's on %s and imp's on %s alone", call, rootAccount, tt.billedTo)
+				}
+			}
+		})
+	}
+}
+
+// TestEngineNotesBudgetsItMayNotReadOnAnOrganizationsOwnAccount: a run refused the read
+// of the budgets on a billing account a record names, which is not the root
+// organization's, notes it and goes on, the bootstrap too: its break-glass account is an
+// administrator of the root organization's account, and nothing gives it a role on
+// another. The root organization's own budget is kept on its account all the same, and
+// no budget is made for the organization on it.
+func TestEngineNotesBudgetsItMayNotReadOnAnOrganizationsOwnAccount(t *testing.T) {
+	t.Parallel()
+
+	const rootAccount, ownAccount = "012345-6789AB-CDEF01", "0A1B2C-3D4E5F-6A7B8C"
+	w := newWorld(t)
+	billedTo(t, w.dir, "imp", ownAccount)
+	w.fake.BudgetsRefused = map[string]bool{ownAccount: true}
+	note := `the spend budget "imp organization" on billing account ` + ownAccount + ", which imp is billed to (billingAccount in organizations/imp/placement.json), was not compared: Google refused this run the read of that account's budgets"
+	for _, run := range []struct {
+		name      string
+		mode      root.Mode
+		bootstrap bool
+	}{
+		{name: "the bootstrap", mode: root.Apply, bootstrap: true},
+		{name: "a plan", mode: root.Plan},
+		{name: "an apply", mode: root.Apply},
+	} {
+		report, _ := w.run(t, run.mode, run.bootstrap)
+		containsAll(t, report.Notes, note)
+		if got := budgetNames(w.fake, rootAccount); !slices.Equal(got, []string{"imr billing account"}) {
+			t.Errorf("after %s, the budgets on the root organization's account %s = %v, want its own alone", run.name, rootAccount, got)
+		}
+		if got := budgetNames(w.fake, ownAccount); len(got) != 0 {
+			t.Errorf("after %s, the budgets on %s = %v, want none: the read was refused", run.name, ownAccount, got)
+		}
+	}
+}
+
 // TestEngineBillingExport: the dataset the billing export lands in is made when missing
 // (and nothing is looked for in it that run), then the three exports' tables are looked
 // for: one missing, or a usage table unwritten for days, is a finding.

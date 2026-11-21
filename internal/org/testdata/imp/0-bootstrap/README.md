@@ -90,10 +90,16 @@ Nothing here was seeded or applied by hand. The root organization
 organization from a pull request in its repository (`bedrock org create
 imp` there, then the merge), as its creating identity
 `imr-create-gbl-tofu`, which holds Folder Creator at the
-organization node and Billing Account Administrator on the billing account,
-granted by that organization's bootstrap (its `README.md`, "Bootstrapped by one
-command"). The creation did under a new folder what a hand seed and the first
-applies would, and left no person with a grant to trim:
+organization node and Billing Account Administrator on the root organization's
+billing account, granted by that organization's bootstrap (its `README.md`,
+"Bootstrapped by one command"). This organization is billed to
+`012345-6789AB-CDEF01`. Where that is not the root organization's account, the
+bootstrap granted the identity nothing on it: one of the account's
+administrators granted it Billing Account Administrator there before the
+creation, and the creation asked Google whether the identity held what it
+needed on the account before it made anything. The creation did under a new
+folder what a hand seed and the first applies would, and left no person with a
+grant to trim:
 
 1. **The seed, by API.** The organization's folder at the organization root,
    named `imp`, which made the creating identity its administrator, as

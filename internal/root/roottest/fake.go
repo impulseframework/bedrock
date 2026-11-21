@@ -108,6 +108,9 @@ type Fake struct {
 	// API was opened as.
 	SpendBudgets     map[string][]org.Budget
 	BudgetIdentities []string
+	// BudgetsRefused are the billing accounts whose budgets the caller may not read:
+	// Budgets answers Google's refusal for them, and for no other account.
+	BudgetsRefused map[string]bool
 	// Datasets are BigQuery's datasets by "project/id" to location; DatasetTables the
 	// tables by "project/dataset", and Landed the tables (root.ExportTables) Tables
 	// answers, written now, for a dataset that stands and that DatasetTables names none
@@ -196,6 +199,9 @@ func (f *Fake) Budgets(_ context.Context, billingAccount string) ([]org.Budget, 
 	defer f.mu.Unlock()
 	if err := f.call("Budgets", billingAccount); err != nil {
 		return nil, err
+	}
+	if f.BudgetsRefused[billingAccount] {
+		return nil, errors.Wrapf(status.Error(codes.PermissionDenied, "the caller does not have permission"), "billingbudgets.BillingAccounts.Budgets.List(): %s", billingAccount)
 	}
 	out := make([]org.Budget, 0, len(f.SpendBudgets[billingAccount]))
 	for _, b := range f.SpendBudgets[billingAccount] {

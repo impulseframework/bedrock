@@ -2780,9 +2780,13 @@ that stopped
 finishes on the next push, and a created organization is left alone. `org plan` says on
 the pull request what its merge creates. Left by hand, after the creation: the consent
 screens and the role groups as the hosting README says; its spend budget the creation made
-on its folder from its record (`monthlyBudget`), and the root organization's apply keeps it
-beside its own on the whole billing account, with the billing export's dataset in the root
-project (the root `README.md`, "Spend budgets and the billing export"). `org check` in any organization
+on its folder from its record (`monthlyBudget`), on the billing account the organization is
+billed to, and the root organization's apply keeps it there, as it keeps its own on the
+whole of the root organization's account, with the billing export's dataset in the root
+project (the root `README.md`, "Spend budgets and the billing export"). The apply keeps the
+budgets as the creating identity, so the grant an administrator gave it on an account of a
+record's own stays after the creation: without it the apply notes that it did not compare
+that organization's budget, and goes on. `org check` in any organization
 lists each grant on the organization's folder to a principal outside it (neither the
 break-glass account nor an identity in one of its projects), beside the leftover grants of
 a hand apply, in a root organization too. A domain is a bare lowercase name, none under another

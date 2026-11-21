@@ -264,10 +264,13 @@ func (e *engine) open(ctx context.Context) error {
 		return errors.New("no Budgets or BigQuery client is wired: the root organization keeps the spend budgets and the billing export's dataset")
 	}
 	if e.req.Mode == Apply && !e.req.Bootstrap && e.clients.BudgetsAs != nil {
-		// An apply trigger's run holds nothing on the billing account itself: it keeps
-		// the budgets as the creating identity, a Billing Account Administrator, which it
-		// impersonates for the creations too. The bootstrap is the break-glass account,
-		// an administrator of the account in its own right.
+		// An apply trigger's run holds nothing on a billing account itself: it keeps the
+		// budgets as the creating identity, which it impersonates for the creations too:
+		// a Billing Account Administrator on the root organization's account by the
+		// bootstrap, and on an account a hosting organization's record names by that
+		// account's administrators, as the creation asked Google. The bootstrap is the
+		// break-glass account, an administrator of the root organization's account in
+		// its own right, and of no other by anything of bedrock's.
 		e.budgets, err = e.clients.BudgetsAs(ctx, e.d.Creator())
 	} else {
 		e.budgets, err = e.clients.Budgets(ctx, e.d.Project())

@@ -246,9 +246,10 @@ The merge of this pull request creates %s, as the creating identity (%s):
     (its APIs, its billing link to %s), the boot identity %s-boot-gbl-tofu with its roles on
     the folder, the break-glass account's Folder Admin on the folder, and the state bucket
     %s;
-  - its spend budget on the billing account, %d a month in the account's currency on its
-    folder (monthlyBudget), with alerts at 50, 90 and 100 percent to the account's
-    administrators and users, which this organization's apply keeps;
+  - its spend budget on billing account %s, %d a month in the account's currency on
+    its folder (monthlyBudget), with alerts at 50, 90 and 100 percent to the account's
+    administrators and users, which this organization's apply keeps there as the creating
+    identity;
   - the first applies of its 0-bootstrap and 1-org, against that bucket: its connection from
     the Cloud Build authorization this organization recorded, its repository link and its
     two triggers; its folders, its six projects with their identities, recorded in its
@@ -263,7 +264,7 @@ The merge of this pull request creates %s, as the creating identity (%s):
     folder (placement.json, hostingOrganizations) and the placement as created, and hands
     the apps domain's label onward to its zone (domains), from which the apply writes the
     NS record set.
-`, h.Prefix, root.CreatingIdentity(), h.Prefix, h.Projects["boot"], h.BillingAccount, h.Prefix, h.StateBucket, h.MonthlyBudget, h.AppsDomain, h.GithubOrganization, h.SourceRepo)
+`, h.Prefix, root.CreatingIdentity(), h.Prefix, h.Projects["boot"], h.BillingAccount, h.Prefix, h.StateBucket, h.BillingAccount, h.MonthlyBudget, h.AppsDomain, h.GithubOrganization, h.SourceRepo)
 	b.WriteString(billingText(root, h, billing))
 	b.WriteString(`After the merge, for the new organization: its consent screen and role groups follow as its
 README says.

@@ -585,6 +585,33 @@ func TestApplyRunCreated(t *testing.T) {
 	})
 }
 
+// TestApplyRunKeepsACreatedOrganizationsBudgetWhereTheCreationMadeIt: the apply that
+// creates a hosting organization billed to a billing account of its own finds, in its
+// budgets section, the spend budget the creation made on that account, and makes no
+// second one for it on the root organization's account, which holds the root
+// organization's own and the one of the organization billed there.
+func TestApplyRunKeepsACreatedOrganizationsBudgetWhereTheCreationMadeIt(t *testing.T) {
+	t.Parallel()
+
+	const rootAccount, ownAccount = "012345-6789AB-CDEF01", "0A1B2C-3D4E5F-6A7B8C"
+	w, rc, dir := creating(t)
+	billedTo(t, dir, "rgb", ownAccount)
+	rc.Builds = (&fakeBuilds{build: build(w.p, "")}).open
+	var out bytes.Buffer
+	if err := root.ApplyRun(context.Background(), w.clients, rc, &root.RunRequest{BuildID: "b-1", Project: w.p.Projects[org.RootProjectKey], Location: "us-central1", Dir: dir}, &out); err != nil {
+		t.Fatalf("ApplyRun() error = %v\n%s", err, out.String())
+	}
+	if want := `Made the spend budget "rgb organization" on ` + ownAccount + ": 500 USD a month on folder "; !strings.Contains(out.String(), want) {
+		t.Errorf("the creation does not say %q:\n%s", want, out.String())
+	}
+	if got, want := budgetNames(w.fake, ownAccount), []string{"rgb organization"}; !slices.Equal(got, want) {
+		t.Errorf("the budgets on %s, which rgb is billed to = %v, want %v", ownAccount, got, want)
+	}
+	if got, want := budgetNames(w.fake, rootAccount), []string{"imr billing account", "imp organization"}; !slices.Equal(got, want) {
+		t.Errorf("the budgets on the root organization's account %s = %v, want %v: none for rgb, which is billed elsewhere", rootAccount, got, want)
+	}
+}
+
 // TestRunErrors: Run answers no report beside an error, whichever it is. The error of a
 // run that stopped in one of its sections is a StoppedError: it reads as the section's
 // error and has its cause, and it carries the report of what the run had gathered before

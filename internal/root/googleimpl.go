@@ -1370,7 +1370,8 @@ func NewBudgets(ctx context.Context, quotaProject string) (budgets.Client, error
 }
 
 // NewBudgetsAs opens the Budgets API as the identity the credentials impersonate: the
-// applier as the creating identity, which holds Billing Account Administrator.
+// applier as the creating identity, which holds Billing Account Administrator on the
+// billing accounts the apply keeps budgets on.
 func NewBudgetsAs(ctx context.Context, identity string) (budgets.Client, error) {
 	source, err := impersonatedTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: identity, Scopes: []string{cloudPlatformScope}})
 	if err != nil {

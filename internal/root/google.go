@@ -292,8 +292,9 @@ type (
 	// Org Policy client: the bootstrap's and a check's credentials are a person's.
 	BudgetsFunc func(ctx context.Context, quotaProject string) (budgets.Client, error)
 	// BudgetsAsFunc opens the Budgets API as an identity the credentials impersonate: an
-	// apply trigger's run holds nothing on the billing account and keeps the budgets as
-	// the creating identity, a Billing Account Administrator.
+	// apply trigger's run holds nothing on a billing account and keeps the budgets as
+	// the creating identity, a Billing Account Administrator on the root organization's
+	// account and on each account a hosting organization's record names.
 	BudgetsAsFunc func(ctx context.Context, identity string) (budgets.Client, error)
 	// DatasetsFunc opens BigQuery.
 	DatasetsFunc func(ctx context.Context) (Datasets, error)

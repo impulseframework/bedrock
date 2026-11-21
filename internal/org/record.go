@@ -122,9 +122,7 @@ func Fill(root, h *Placement) error {
 	if h.IsRoot() {
 		return errors.New("kind is root, and a record is a hosting organization's placement: leave kind out")
 	}
-	if h.BillingAccount == "" {
-		h.BillingAccount = root.BillingAccount
-	}
+	h.BillingAccount = h.BilledTo(root)
 	if h.SourceRepo == "" {
 		h.SourceRepo = h.Prefix + "-infrastructure"
 	}
@@ -164,6 +162,19 @@ func Fill(root, h *Placement) error {
 	}
 
 	return h.Validate()
+}
+
+// BilledTo is the billing account a hosting organization under the root organization is
+// billed to: the one its record names (billingAccount), and the root organization's
+// where it names none. Fill writes it into the record; the creation links the
+// organization's projects to it and makes its spend budget on it, and the root
+// organization's apply keeps the budget there.
+func (p *Placement) BilledTo(root *Placement) string {
+	if p.BillingAccount != "" {
+		return p.BillingAccount
+	}
+
+	return root.BillingAccount
 }
 
 // fillAppPrefix gives the record the word the root organization's GitHub Apps' names

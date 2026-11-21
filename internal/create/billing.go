@@ -51,8 +51,10 @@ type BillingPermission struct {
 //     the organization's (Google.Budgets, Google.CreateBudget;
 //     https://cloud.google.com/billing/docs/reference/budget/rest/v1/billingAccounts.budgets/list
 //     and .../billingAccounts.budgets/create), and billing.budgets.update brings one
-//     changed by hand back, which the root organization's apply does as the same
-//     identity (https://cloud.google.com/billing/docs/how-to/budgets).
+//     changed by hand back (https://cloud.google.com/billing/docs/how-to/budgets). The
+//     root organization's apply keeps the budget on the same account as the same
+//     identity: it reads the account's budgets on every run, makes the organization's
+//     where it is gone and brings it back where it differs.
 //   - billing.accounts.getIamPolicy and billing.accounts.setIamPolicy grant the boot and
 //     org identities Billing Account User (Google.GrantBillingAccount;
 //     https://cloud.google.com/billing/docs/reference/rest/v1/billingAccounts/getIamPolicy

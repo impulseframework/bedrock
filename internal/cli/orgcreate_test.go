@@ -71,7 +71,7 @@ func TestOrgCreate(t *testing.T) {
 		"Recorded rgb: boot project " + filled.Projects["boot"] + ", state bucket " + filled.StateBucket + ", repository imp-example/rgb-infrastructure, under the root organization imr.\n",
 		"The merge of this pull request creates rgb, as the creating identity (imr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com):",
 		"(its APIs, its billing link to 012345-6789AB-CDEF01)",
-		"  - its spend budget on the billing account, 500 a month in the account's currency on its\n    folder (monthlyBudget)",
+		"  - its spend budget on billing account 012345-6789AB-CDEF01, 500 a month in the account's currency on\n    its folder (monthlyBudget), with alerts at 50, 90 and 100 percent to the account's\n    administrators and users, which this organization's apply keeps there as the creating\n    identity;",
 		// No credentials in this test: the closing text says what was not checked and why,
 		// never what the creating identity is taken to hold.
 		"Not checked: whether the creating identity holds what the creation needs on the billing\naccount rgb is billed to, 012345-6789AB-CDEF01. Only an account that may impersonate the\ncreating identity can ask Google as it, as the apply trigger's run does, and this run could\nnot (no Google credentials in this test).\n",
@@ -212,6 +212,7 @@ func TestOrgCreateBillingAccount(t *testing.T) {
 	}
 	wantOut := []string{
 		"(its APIs, its billing link to ABCDEF-012345-6789AB)",
+		"  - its spend budget on billing account ABCDEF-012345-6789AB, 500 a month in the account's currency on\n    its folder (monthlyBudget)",
 		"Not checked: whether the creating identity holds what the creation needs on the billing\naccount rgb is billed to, ABCDEF-012345-6789AB. Only an account that may impersonate the\ncreating identity can ask Google as it, as the apply trigger's run does, and this run could\nnot (no Google credentials in this test).\n",
 		"Billing Account Administrator (roles/billing.admin) is the one predefined role that carries them all.\nNothing of bedrock grants the creating identity anything on this account, which is not this\norganization's (billingAccount in organizations/rgb/placement.json): before the merge, an\nadministrator of the account grants that role on it to\nimr-create-gbl-tofu@imr-root-gbl-core-c3d4.iam.gserviceaccount.com.\nThe merge's apply asks Google as the creating identity before it makes anything, and refuses\nwith what to grant where a permission is missing.",
 	}

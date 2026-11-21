@@ -289,29 +289,36 @@ that answer nothing, so a root organization is destroyed once no domain is.
 
 ## Spend budgets and the billing export
 
-Two kinds of spend budget stand on the billing account `{{.BillingAccount}}`,
-made by bedrock and kept by the apply, so that none is set by hand and none is
-forgotten:
+Two kinds of spend budget are made by bedrock and kept by the apply, so that
+none is set by hand and none is forgotten:
 
-- `{{.Prefix}} billing account`, on every project of the account: the amount
-  `monthlyBudget` names in `placement.json` here, in whole units of the
-  account's currency a month. The bootstrap made it, so the account's whole
-  spend is watched from the first day.
+- `{{.Prefix}} billing account`, on every project of this organization's
+  billing account `{{.BillingAccount}}`: the amount `monthlyBudget` names in
+  `placement.json` here, in whole units of the account's currency a month. The
+  bootstrap made it, so the account's whole spend is watched from the first
+  day.
 - `<prefix> organization`, one per hosting organization, on its folder: the
   amount its record names (`organizations/<prefix>/placement.json`,
-  `monthlyBudget`). The creation made it, before the organization's first
-  apply.
+  `monthlyBudget`). It stands on the billing account the organization is
+  billed to, which its record names (`billingAccount`): this organization's,
+  or an account of the record's own. The creation made it there, before the
+  organization's first apply, and the apply keeps it there; none is made on
+  this organization's account for an organization billed to another.
 
 Each alerts at 50, 90 and 100 percent of its amount, on actual spend, by mail
-to the billing account's administrators and users, which is whom Cloud Billing
+to its billing account's administrators and users, which is whom Cloud Billing
 mails when a budget names no channel; a budget sends alerts and stops nothing.
-The apply tells each budget by its name and brings its amount, its folder and
-its thresholds back, so a change made in the console is undone on the next
-merge: an amount changes by pull request, in `placement.json` here or in the
-organization's record. The apply trigger keeps the budgets as the creating
-identity, a Billing Account Administrator; the plan trigger's runner holds
-nothing on the billing account and notes that it did not compare them, as does
-`bedrock org check` unless a billing administrator runs it.
+The apply tells each budget by its name on its account and brings its amount,
+its folder and its thresholds back, so a change made in the console is undone
+on the next merge: an amount changes by pull request, in `placement.json` here
+or in the organization's record. The apply trigger keeps the budgets as the
+creating identity, a Billing Account Administrator on this organization's
+account by the bootstrap, and on an account of a record's own by the grant one
+of that account's administrators gave before the creation. That grant stays
+after the creation: without it the apply notes that it did not compare that
+organization's budget, and goes on. The plan trigger's runner holds nothing on
+a billing account and notes that it did not compare the budgets, as does
+`bedrock org check` unless an administrator of the account runs it.
 
 The billing export is the account's detail: every charge, by project, service,
 SKU and label, in BigQuery, from which cost is reported by application,

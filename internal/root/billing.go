@@ -1,13 +1,15 @@
-// billing.go is what the root organization keeps on the billing account and for its
-// reporting: the spend budgets, its own on the whole account and one per hosting
-// organization on its folder, and the dataset in the root project the billing export
-// lands in, whose tables say whether the export was pointed at it and still lands.
+// billing.go is what the root organization keeps on the billing accounts and for its
+// reporting: the spend budgets, its own on the whole of its account and one per hosting
+// organization on its folder, on the account that organization is billed to, and the
+// dataset in the root project the billing export lands in, whose tables say whether the
+// export was pointed at it and still lands.
 
 package root
 
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -46,48 +48,97 @@ var exportNames = []string{"standard usage cost export", "detailed usage cost ex
 
 const usageTables = 2
 
-// budgetsSection makes the spend budgets the billing account lacks and brings one that
-// differs back: the root organization's own on every project of the account, and one
-// per hosting organization created, on its folder, with the amount its record names.
-// A budget is told by its display name; its amount, its folders and its thresholds are
-// compared. A run refused the read of the account's budgets (a plan trigger's, whose
-// runner holds nothing on the billing account) notes it and goes on.
+// accountBudgets are the spend budgets the apply keeps on one billing account.
+type accountBudgets struct {
+	// account is the billing account's id.
+	account string
+	// want are the budgets kept on it: on the root organization's account its own, and
+	// on any account the one of each hosting organization billed to it.
+	want []org.Budget
+	// organizations are the hosting organizations billed to the account, by prefix.
+	organizations []string
+}
+
+// budgetsSection makes the spend budgets their billing accounts lack and brings one that
+// differs back: the root organization's own, on every project of its account, and one
+// per hosting organization created, on its folder, with the amount its record names, on
+// the account that organization is billed to (budgetAccounts). A budget is told by its
+// display name on its account; its amount, its folders and its thresholds are compared.
 func (e *engine) budgetsSection(ctx context.Context) error {
-	want := []org.Budget{e.d.TotalBudget()}
+	accounts, err := e.budgetAccounts()
+	if err != nil {
+		return err
+	}
+	for _, a := range accounts {
+		if err := e.keepBudgets(ctx, a); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// budgetAccounts are the billing accounts the apply keeps budgets on, each with its
+// budgets: the root organization's first, with its own budget, then each other account
+// a created hosting organization is billed to, in record order. An organization is
+// billed to the account its record names (org.Placement.BilledTo), the root
+// organization's or one of its own, and its budget stands there, where the creation made
+// it: none is made for it on another account.
+func (e *engine) budgetAccounts() ([]*accountBudgets, error) {
+	accounts := []*accountBudgets{{account: e.p.BillingAccount, want: []org.Budget{e.d.TotalBudget()}}}
 	for _, record := range e.p.HostingOrganizations {
 		h, ok, err := e.hostingRecord(record)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		folder := e.organizationFolder(record)
 		if !ok || folder == "" {
 			continue
 		}
-		want = append(want, org.HostingBudget(h.Prefix, h.MonthlyBudget, folder))
+		account := h.BilledTo(e.p)
+		i := slices.IndexFunc(accounts, func(a *accountBudgets) bool { return a.account == account })
+		if i < 0 {
+			accounts = append(accounts, &accountBudgets{account: account})
+			i = len(accounts) - 1
+		}
+		accounts[i].want = append(accounts[i].want, org.HostingBudget(h.Prefix, h.MonthlyBudget, folder))
+		accounts[i].organizations = append(accounts[i].organizations, h.Prefix)
 	}
-	got, err := e.budgets.Budgets(ctx, e.p.BillingAccount)
+
+	return accounts, nil
+}
+
+// keepBudgets lists the billing account's budgets, makes each of the account's that it
+// lacks and brings one that differs back. A run refused the read notes it and goes on to
+// the next account: a plan trigger's, whose runner holds nothing on a billing account,
+// and any run on an account a record names that is not the root organization's, where
+// nothing of bedrock grants anybody a role (budgetsNotCompared). The bootstrap stops at
+// a read refused on the root organization's account alone, which its break-glass account
+// administers.
+func (e *engine) keepBudgets(ctx context.Context, a *accountBudgets) error {
+	got, err := e.budgets.Budgets(ctx, a.account)
 	if err != nil {
-		if e.req.Bootstrap || status.Code(errors.Cause(err)) != codes.PermissionDenied {
+		if status.Code(errors.Cause(err)) != codes.PermissionDenied || (e.req.Bootstrap && a.account == e.p.BillingAccount) {
 			return err
 		}
-		e.note("the spend budgets on billing account " + e.p.BillingAccount + " were not compared: this run holds no read of the billing account, as the triggers' runners hold their roles under the organization's folder alone; the apply keeps them as the creating identity, and so does bedrock org check run by a Billing Account Administrator")
+		e.budgetsNotCompared(a)
 
 		return nil
 	}
-	for _, w := range want {
+	for _, w := range a.want {
 		i := slices.IndexFunc(got, func(b org.Budget) bool { return b.DisplayName == w.DisplayName })
 		switch {
 		case i < 0:
-			if err := e.change(ctx, sectionBudgets, fmt.Sprintf("makes the spend budget %q on billing account %s: %d a month in the account's currency %s, with alerts at 50, 90 and 100 percent of it to the account's administrators and users", w.DisplayName, e.p.BillingAccount, w.Units, counting(w)), func(ctx context.Context) error {
+			if err := e.change(ctx, sectionBudgets, fmt.Sprintf("makes the spend budget %q on billing account %s: %d a month in the account's currency %s, with alerts at 50, 90 and 100 percent of it to the account's administrators and users", w.DisplayName, a.account, w.Units, counting(w)), func(ctx context.Context) error {
 				b := w
 
-				return e.budgets.CreateBudget(ctx, e.p.BillingAccount, &b)
+				return e.budgets.CreateBudget(ctx, a.account, &b)
 			}); err != nil {
 				return err
 			}
 		case !got[i].Same(w):
 			w.Name = got[i].Name
-			if err := e.change(ctx, sectionBudgets, fmt.Sprintf("brings the spend budget %q on billing account %s back to %d a month %s, with alerts at 50, 90 and 100 percent", w.DisplayName, e.p.BillingAccount, w.Units, counting(w)), func(ctx context.Context) error {
+			if err := e.change(ctx, sectionBudgets, fmt.Sprintf("brings the spend budget %q on billing account %s back to %d a month %s, with alerts at 50, 90 and 100 percent", w.DisplayName, a.account, w.Units, counting(w)), func(ctx context.Context) error {
 				b := w
 
 				return e.budgets.UpdateBudget(ctx, &b)
@@ -98,6 +149,24 @@ func (e *engine) budgetsSection(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// budgetsNotCompared notes that the run was refused the read of the account's budgets.
+// On the root organization's account that is a run whose credentials hold nothing there,
+// a plan trigger's. On an account a record names it is any run but the creating
+// identity's, the bootstrap's too, and the creating identity's once the account's
+// administrator has taken its grant off: each organization billed to the account is
+// named with its record, where the account is written.
+func (e *engine) budgetsNotCompared(a *accountBudgets) {
+	if a.account == e.p.BillingAccount {
+		e.note("the spend budgets on billing account " + a.account + " were not compared: this run holds no read of the billing account, as the triggers' runners hold their roles under the organization's folder alone; the apply keeps them as the creating identity, and so does bedrock org check run by a Billing Account Administrator")
+
+		return
+	}
+	for _, prefix := range a.organizations {
+		e.note(fmt.Sprintf("the spend budget %q on billing account %s, which %s is billed to (billingAccount in %s), was not compared: Google refused this run the read of that account's budgets; the apply keeps the budget as the creating identity (%s), by the grant the account's administrators gave it for the creation (Billing Account Administrator), and bedrock org check compares it when one of them runs it",
+			org.HostingBudgetName(prefix), a.account, prefix, filepath.ToSlash(filepath.Join(org.RecordsDir, prefix, org.PlacementFile)), e.d.Creator()))
+	}
 }
 
 // counting says what a budget counts: every project of the account, or its folders.
