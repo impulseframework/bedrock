@@ -804,6 +804,32 @@ func (f *flow) pushedPlacement(t *testing.T, change func(placement map[string]an
 	})
 }
 
+// laterPlacement puts a commit on master of rgb's repository after the creation's push,
+// which changes placement.json and nothing else: the branch's head is no longer the
+// commit the creation pushed.
+func (f *flow) laterPlacement(t *testing.T, change func(placement map[string]any)) {
+	t.Helper()
+	const later, tree = "c0ffee0000000000000000000000000000000001", "treelater"
+	f.srv.Update(func() {
+		repo := f.srv.Repos[owner+"/rgb-infrastructure"]
+		pushed := repo.Refs["refs/heads/master"].SHA
+		files := map[string]string{}
+		for file, content := range repo.Files {
+			if path, ok := strings.CutPrefix(file, repo.Trees[pushed]+":"); ok {
+				files[tree+":"+path] = content
+			}
+		}
+		maps.Copy(repo.Files, files)
+		repo.Trees[later] = tree
+		if repo.Ancestry == nil {
+			repo.Ancestry = map[string][]string{}
+		}
+		repo.Ancestry[later] = append([]string{later}, repo.Ancestry[pushed]...)
+		repo.Refs["refs/heads/master"] = github.Object{Type: "commit", SHA: later}
+	})
+	f.pushedPlacement(t, change)
+}
+
 // object is the JSON object under the key of the pushed placement.
 func object(t *testing.T, placement map[string]any, key string) map[string]any {
 	t.Helper()
@@ -905,6 +931,31 @@ func TestRunAgainAfterPushRefused(t *testing.T) {
 				})
 			},
 			wantErr: "the creating identity finds folder 900000000002 by the name terraform under folders/900000000001, and 0-bootstrap/terraform.tfvars on master of " + owner + "/rgb-infrastructure records terraform_folder_id 900000000077",
+		},
+		{
+			// The record names no commit as the creation's push, and the run again reads the
+			// placement at the branch's head. The identity's Folder Admin on the
+			// organization's folder still stands here, and reaches every folder and project
+			// beneath: one the placement records that answers nothing is not the creation's.
+			name: "a later commit changed a folder's id",
+			spoil: func(t *testing.T, f *flow) {
+				t.Helper()
+				f.laterPlacement(t, func(placement map[string]any) {
+					object(t, placement, "folders")["tst"] = "900000000077"
+				})
+			},
+			wantErr: "Google answers that it holds nothing on folder 900000000077 (folders.tst), which placement.json on master of " + owner + "/rgb-infrastructure records: what the file records there is not under the organization's folder, so a commit after this creation's push changed the file, or what the creation made was moved or deleted since; a withdrawal that passed over it would record that the identity holds nothing while a grant of its own may still stand, so nothing is taken off and nothing is recorded: a file changed since is put back as the creation's push left it, and this creation run again",
+		},
+		{
+			name: "a later commit changed a project's id and a folder's",
+			spoil: func(t *testing.T, f *flow) {
+				t.Helper()
+				f.laterPlacement(t, func(placement map[string]any) {
+					object(t, placement, "projects")["net"] = "rgb-net-gbl-core-0000"
+					object(t, placement, "folders")["shared"] = "900000000078"
+				})
+			},
+			wantErr: "Google answers that it holds nothing on folder 900000000078 (folders.shared), project rgb-net-gbl-core-0000 (projects.net), which placement.json on master of " + owner + "/rgb-infrastructure records: ",
 		},
 		{
 			name: "the pushed tfvars names no organization folder",
@@ -1085,6 +1136,70 @@ func TestRunAgainAfterPushNotItsOwnToTakeOff(t *testing.T) {
 	}
 	if f.store.objects["applied/created/rgb"] == "" || !strings.Contains(out.String(), "The creating identity holds nothing on the 6 folders and 7 projects its withdrawal covers any longer, as Google answers for each") {
 		t.Errorf("the last run recorded %v; output:\n%s", f.store.objects, out.String())
+	}
+}
+
+// TestRunAgainAfterPushNamesEveryGrant: Folder Admin off the organization's folder and off
+// folder tst, by other means, leaves the identity its Folder Editor on both, which sets
+// neither's policy. The run again takes off everything that is its own and stops with a
+// sentence that names both folders, the organization's first. A person who takes the
+// identity out of its roles on every folder the sentence names, and on no other, has done
+// what it asks, and the next run finishes, as it says.
+func TestRunAgainAfterPushNamesEveryGrant(t *testing.T) {
+	t.Parallel()
+
+	f := newFlow(t)
+	dir, root := checkout(t)
+	stopAfterPush(t, f, dir, root, 0)
+	member := createtest.Member(creatingEmail)
+	orgFolder := f.google.Folders[orgNode+"|rgb"]
+	const tst = "900000000012"
+	f.google.Unbind("folders/"+orgFolder, createtest.FolderAdmin, member)
+	f.google.Unbind("folders/"+tst, createtest.FolderAdmin, member)
+
+	denied := len(f.google.Denied)
+	var out bytes.Buffer
+	_, err := create.Run(t.Context(), f.clients(), request(root, dir), &out)
+	if err == nil {
+		t.Fatalf("Run() again finished, want it to stop at the grants that are not the identity's own to take off; output:\n%s", out.String())
+	}
+	wantErr := "still holds resourcemanager.folders.getIamPolicy, resourcemanager.projects.create, resourcemanager.tagKeys.create on folder " + orgFolder + "; resourcemanager.folders.getIamPolicy on folder " + tst + " and may not set the policy there"
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Errorf("Run() again error = %v, want %q: every folder the identity still holds something on, the organization's first", err, wantErr)
+	}
+	if refused := f.google.Denied[denied:]; len(refused) != 0 {
+		t.Errorf("the run again was refused by Google, where it asks before it writes: %v", refused)
+	}
+	want := []string{
+		"folders/" + orgFolder + " " + createtest.FolderEditor,
+		"folders/" + orgFolder + " " + createtest.ProjectCreator,
+		"folders/" + orgFolder + " " + createtest.TagAdmin,
+		"folders/" + tst + " " + createtest.FolderEditor,
+		orgNode + " " + createtest.FolderCreator,
+	}
+	if got := f.google.Holds(member); !slices.Equal(got, want) {
+		t.Errorf("the creating identity holds %v after the refused run, want what is not its own to take off and nothing else: %v", got, want)
+	}
+	if len(f.store.objects) != 0 || strings.Contains(out.String(), "holds nothing") {
+		t.Errorf("the refused run recorded %v or said the identity holds nothing; output:\n%s", f.store.objects, out.String())
+	}
+
+	// A person does what the sentence asks, on the folders it names and no other.
+	for _, held := range f.google.Holds(member) {
+		resource, role, _ := strings.Cut(held, " ")
+		if folder, ok := strings.CutPrefix(resource, "folders/"); ok && strings.Contains(err.Error(), "on folder "+folder) {
+			f.google.Unbind(resource, role, member)
+		}
+	}
+	out.Reset()
+	if _, err := create.Run(t.Context(), f.clients(), request(root, dir), &out); err != nil {
+		t.Fatalf("Run() after a person took the identity out of its roles on every folder the refusal named error = %v, want the creation finished, as the refusal said; output:\n%s", err, out.String())
+	}
+	if got, want := f.google.Holds(member), []string{orgNode + " " + createtest.FolderCreator}; !slices.Equal(got, want) {
+		t.Errorf("the creating identity holds %v at the end, want %v", got, want)
+	}
+	if f.store.objects["applied/created/rgb"] == "" {
+		t.Errorf("the last run recorded %v, want the marker; output:\n%s", f.store.objects, out.String())
 	}
 }
 

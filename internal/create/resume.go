@@ -4,11 +4,13 @@
 // applies) needs the grants the withdrawal takes: run again, they would be refused, and
 // only a person granting the identity by hand would get the creation past them. So a run
 // that finds the foundation on the new repository's default branch does none of them
-// again. It reads what the creation made from the pushed placement, which it holds to the
-// record, finds the two folders by their names and holds them to the ids the push
-// recorded, takes off what the withdrawal left, and ends as every creation does: the
-// marker, and the hand-off. The first applies are the new organization's own from the
-// push on, which its apply trigger runs as its own identities.
+// again. It reads what the creation made from the placement on the branch, which it holds
+// to the record, finds the two folders by their names and holds them to the ids the push
+// recorded, holds the folders and projects the placement records to what stands under
+// the organization's folder while the identity can still tell, takes off what the
+// withdrawal left, and ends as every creation does: the marker, and the hand-off. The
+// first applies are the new organization's own from the push on, which its apply trigger
+// runs as its own identities.
 
 package create
 
@@ -35,7 +37,10 @@ const seededTfvars = bootstrapLayer + "/terraform.tfvars"
 // repository's default branch carries this organization's placement (Foundation). It
 // answers the branch's head and the placement on it, which records what the creation made
 // before its push; no placement when nothing was pushed, which a repository that does not
-// stand yet, or one without the branch the placement names, says too.
+// stand yet, or one without the branch the placement names, says too. The record names no
+// commit as the creation's push, so the head may be a later commit that changed the
+// placement: the run again holds it to the record (differs) and to what Google answers
+// under the organization's folder (beneath).
 func (f *creation) pushed(ctx context.Context, h *org.Placement) (head string, placed *org.Placement, err error) {
 	owner, repo, branch := h.GithubOrganization, h.SourceRepo, h.GithubDefaultBranch
 	head, carries, _, err := Foundation(ctx, f.gh, h)
@@ -64,8 +69,9 @@ func (f *creation) pushed(ctx context.Context, h *org.Placement) (head string, p
 // the folders, the tags and the zone. The organization's folder and its terraform folder
 // are found by their names, by the identity's Folder Creator at the organization node,
 // which the withdrawal does not touch, and held to the ids the push recorded (seeded).
-// What the withdrawal left is taken off (withdrawLeft), and the marker and the hand-off
-// follow.
+// What the withdrawal left is taken off (withdrawLeft), from a placement whose folders
+// and projects stand under the organization's folder (beneath), and the marker and the
+// hand-off follow.
 func (f *creation) resume(ctx context.Context, g Google, h *org.Placement, head string, placed *org.Placement) (*Result, error) {
 	owner, repo, branch := h.GithubOrganization, h.SourceRepo, h.GithubDefaultBranch
 	if differences := differs(h, placed); len(differences) > 0 {
@@ -200,9 +206,64 @@ func (r removal) takes(held []string) bool {
 	return slices.Contains(held, folderSetPolicyPermission)
 }
 
+// beneath refuses a placement on the branch that is not the one this creation pushed, as
+// far as Google can tell. The record names no commit as the creation's push, so the run
+// again reads the placement at the branch's head, and a commit after the push may have
+// changed a folder's or a project's id there. Asked about an id that is not the
+// creation's, Google answers that the identity holds nothing; the withdrawal would pass
+// over what the creation made, and the marker and the closing line would say the identity
+// holds nothing while its grants stand there.
+//
+// While the identity may still set the policy of the organization's folder, what it holds
+// there (its Folder Admin) reaches every folder and project beneath, so every one the
+// creation made answers. One the placement records that answers nothing is then not
+// under the folder, and the run stops before anything is taken off. Once the identity may
+// not set that policy (the withdrawal's last removal was made, or a person took its
+// Folder Admin off), nothing tells an id changed since from a folder or a project the
+// withdrawal is done with, and the placement is taken as it stands.
+func (f *creation) beneath(ctx context.Context, g Google, seed *org.Seed, h *org.Placement, all []removal) error {
+	organization := all[len(all)-1]
+	held, err := g.Held(ctx, organization.resource(), organization.asks())
+	if err != nil {
+		return err
+	}
+	if !organization.takes(held) {
+		return nil
+	}
+	places := map[string]string{}
+	for key, id := range h.Folders {
+		places["folder "+id] = "folders." + key
+	}
+	for key, id := range h.Projects {
+		places["project "+id] = "projects." + key
+	}
+	var silent []string
+	for _, r := range all[:len(all)-1] {
+		held, err := g.Held(ctx, r.resource(), r.asks())
+		if err != nil {
+			return err
+		}
+		if len(held) > 0 {
+			continue
+		}
+		name := r.String()
+		if place, ok := places[name]; ok {
+			name += " (" + place + ")"
+		}
+		silent = append(silent, name)
+	}
+	if len(silent) == 0 {
+		return nil
+	}
+
+	return errors.Newf("the creating identity %s may still set the policy of the organization's folder %s, so what it holds there reaches every folder and project beneath it, and Google answers that it holds nothing on %s, which %s on %s of %s/%s records: what the file records there is not under the organization's folder, so a commit after this creation's push changed the file, or what the creation made was moved or deleted since; a withdrawal that passed over it would record that the identity holds nothing while a grant of its own may still stand, so nothing is taken off and nothing is recorded: a file changed since is put back as the creation's push left it, and this creation run again", f.req.Root.CreatingIdentity(), seed.OrganizationFolder, strings.Join(silent, ", "), org.PlacementFile, h.GithubDefaultBranch, h.GithubOrganization, h.SourceRepo)
+}
+
 // withdrawLeft takes off what the withdrawal left, deciding at every folder and project
 // the withdrawal covers, in its order, from what Google answers the identity holds there
-// (Held, which Google answers a caller that holds nothing).
+// (Held, which Google answers a caller that holds nothing). It asks first whether what
+// the placement records is what the creation made (beneath), and takes nothing off a
+// placement that is not.
 //
 // Where it holds none of the permissions asked, no role of the withdrawal stands there for
 // it, and nothing is read: the identity may read no policy there any longer. Where it may
@@ -214,13 +275,18 @@ func (r removal) takes(held []string) bool {
 // Where it holds something and may not set the policy, that order was broken by other
 // means than this creation (a person took its Folder Admin off), and what it still holds
 // there is not its own to take off. The run then stops, after everything that is its own
-// is off, with nothing recorded. What the identity holds on the organization's folder
-// reaches the folders beneath, so when that folder is one of them it is the one named.
+// is off, with nothing recorded, and names every folder and project that still answers,
+// the organization's folder first: a person who took the identity out of its roles on
+// that folder alone would be refused again at the next one. A role on a folder answers
+// for the folders and projects beneath it too, so one named may carry no role of its own,
+// which the refusal says.
 func (f *creation) withdrawLeft(ctx context.Context, g Google, seed *org.Seed, h *org.Placement) error {
 	member := f.req.Root.CreatingIdentityMember()
 	all := removals(seed, h, h.Folders)
+	if err := f.beneath(ctx, g, seed, h, all); err != nil {
+		return err
+	}
 	var took, stands []string
-	var organization string
 	for _, r := range all {
 		held, err := g.Held(ctx, r.resource(), r.asks())
 		if err != nil {
@@ -235,15 +301,12 @@ func (f *creation) withdrawLeft(ctx context.Context, g Google, seed *org.Seed, h
 			}
 			took = append(took, r.String())
 		case r.folder == seed.OrganizationFolder:
-			organization = strings.Join(held, ", ") + " on " + r.String()
+			stands = slices.Insert(stands, 0, strings.Join(held, ", ")+" on "+r.String())
 		default:
 			stands = append(stands, strings.Join(held, ", ")+" on "+r.String())
 		}
 	}
 	standing := strings.Join(stands, "; ")
-	if organization != "" {
-		standing = organization
-	}
 	switch {
 	case len(took) == len(all):
 		f.withdrew(seed, h, h.Folders, all)
@@ -253,7 +316,7 @@ func (f *creation) withdrawLeft(ctx context.Context, g Google, seed *org.Seed, h
 		fmt.Fprintf(f.out, "The creating identity holds nothing on the %d folders and %d projects its withdrawal covers any longer, as Google answers for each: the withdrawal ended in the run that stopped, and nothing is left to take off.\n", len(h.Folders)+2, len(all)-len(h.Folders)-2)
 	}
 	if standing != "" {
-		return errors.Newf("the creating identity %s still holds %s and may not set the policy there, so the roles it holds there are not its own to take off, which this creation's withdrawal never leaves (a grant of the identity's went by other means): whoever administers folder %s, as the break-glass account %s does, takes the identity out of its roles there, and the next run of this creation finishes; nothing is recorded until then", f.req.Root.CreatingIdentity(), standing, seed.OrganizationFolder, h.BreakGlassAccount)
+		return errors.Newf("the creating identity %s still holds %s and may not set the policy there, so the roles it holds there are not its own to take off, which this creation's withdrawal never leaves (a grant of the identity's went by other means): whoever administers folder %s, as the break-glass account %s does, takes the identity out of its roles on every folder and project named here (a role on a folder answers for the folders and projects beneath it too, so one named here may carry no role of its own), and the next run of this creation then finishes; nothing is recorded until then", f.req.Root.CreatingIdentity(), standing, seed.OrganizationFolder, h.BreakGlassAccount)
 	}
 
 	return nil
