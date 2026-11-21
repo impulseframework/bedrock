@@ -108,8 +108,8 @@ func (d deps) orgCreate(ctx context.Context, dir, placement, prefix string, out 
 	}
 	var billing billingStanding
 	if listed := root.HostingOrganization(prefix); listed == nil || !listed.Created() {
-		billing, err = d.billingStanding(ctx, root, h)
-		if err != nil {
+		billing = d.billingStanding(ctx, root, h)
+		if err := billing.refusal(); err != nil {
 			return err
 		}
 	}
@@ -151,25 +151,31 @@ type billingStanding struct {
 
 // billingStanding asks Google, as the creating identity, what the identity holds on the
 // billing account the organization is billed to (create.AskBillingAccess), the root
-// organization's like any other. A permission Google answers missing is refused in the
-// sentence the creation refuses with. A run that cannot ask as the creating identity
-// (no credentials, or an account that may not impersonate it, as a person at a terminal
-// as a rule may not) refuses nothing and passes nothing: the closing text says the
-// permissions were not checked and why, and the merge's apply asks again before it makes
-// anything.
-func (d deps) billingStanding(ctx context.Context, root, h *org.Placement) (billingStanding, error) {
+// organization's like any other. A run that cannot ask as the creating identity (no
+// credentials, or an account that may not impersonate it, as a person at a terminal as a
+// rule may not) is answered nothing, and keeps why: the closing text says the permissions
+// were not checked and why, and the merge's apply asks again before it makes anything.
+func (d deps) billingStanding(ctx context.Context, root, h *org.Placement) billingStanding {
 	if d.org == nil || d.org.googleAs == nil {
-		return billingStanding{unasked: errors.New("no Google client as an identity is wired")}, nil
+		return billingStanding{unasked: errors.New("no Google client as an identity is wired")}
 	}
 	access, err := create.AskBillingAccess(ctx, d.org.googleAs, root, h)
 	if err != nil {
-		return billingStanding{unasked: err}, nil
-	}
-	if len(access.Missing) > 0 {
-		return billingStanding{}, access.Refusal("run bedrock org create " + h.Prefix + " again; nothing was written")
+		return billingStanding{unasked: err}
 	}
 
-	return billingStanding{access: access}, nil
+	return billingStanding{access: access}
+}
+
+// refusal refuses a record on whose billing account Google answers the creating identity
+// lacks a permission, in the sentence the creation refuses with; an account that grants
+// everything, and one Google was not asked about, are refused nothing.
+func (b billingStanding) refusal() error {
+	if b.access == nil || len(b.access.Missing) == 0 {
+		return nil
+	}
+
+	return b.access.Refusal("run bedrock org create " + b.access.Prefix + " again; nothing was written")
 }
 
 // readRecord reads the record as a person wrote it: a hosting placement that
