@@ -2751,7 +2751,9 @@ identity itself, by its token as a TXT record at the domain's apex in the zone i
 and nobody is made an owner by hand); then the
 repository `<prefix>-infrastructure`, private in the GitHub
 organization, with the rendered foundation as its first push, which the new apply trigger
-runs on, every layer as its own identity; then the creating identity's grants off
+runs on, every layer as its own identity, and whose commit the creation records in the root
+organization's state bucket (`applied/pushed/<prefix>`) before the branch moves to it; then
+the creating identity's grants off
 everything it made (Owner on each project, Folder Admin and Folder Editor on each folder,
 its roles on the organization's folder), a marker in the root organization's state bucket
 (`applied/created/<prefix>`), and the hand-off, a pull request in the root organization's
@@ -2759,9 +2761,14 @@ repository from the branch `create/<prefix>` recording the folder in `placement.
 placement as created, and the label of the apps domain handed onward to the zone
 (`domains`), from which the root organization's apply writes the NS record set, branch and
 pull request both as the infrastructure app, whose declaration carries Pull requests for
-it. Every step looks before it makes, so a creation
-that stopped
-finishes on the next push, and a created organization is left alone. `org plan` says on
+it. A creation that stopped finishes on the next push, from any point. Before its own push
+every step looks before it makes. Once the foundation is on the new repository's default
+branch, the run again applies nothing as the creating identity, which gives up the grants
+the first applies need as it withdraws (they are the organization's own from that push on):
+it goes on from the push, reading what the creation made at the commit it recorded, whatever
+the branch has taken since, takes off what the withdrawal left, records the marker and opens
+the hand-off. No grant is given by hand in between. A created organization is left alone.
+`org plan` says on
 the pull request what its merge creates. Left by hand, after the creation: the consent
 screens and the role groups as the hosting README says; its spend budget the creation made
 on its folder from its record (`monthlyBudget`), and the root organization's apply keeps it
@@ -3216,7 +3223,10 @@ for the run; `GITHUB_TOKEN`, or gh's token, for
 organization owner's). It says what goes, project by project, and asks for the prefix typed
 back before anything runs (`--yes` stands in for it where there is no terminal). It destroys
 1-org, its GitHub repositories taken out of the state first so that they stay with their
-code, pull requests and releases (the rulesets and the operations environments go), then
+code, pull requests and releases (the rulesets and the operations environments go) and the
+network project's zones deleted by API ahead of the project (a zone that goes with its
+project holds its name servers until the project purges, thirty days later; deleted first,
+they are free for a zone of the name at once), then
 0-bootstrap on a local copy of its state, since the
 state bucket goes with the boot project; in each an apply with `destroy=true` records the
 projects' deletion policy, that no API is disabled first (one a resource outside the layer's
@@ -3227,7 +3237,8 @@ instance and every backup on it (the release backups, the schedules' and the fin
 `bedrock destroy` took) go with the Spanner project and come back with it in those days,
 and are gone after. A layer whose state holds nothing is skipped. When 2-net registers domains the network project is kept,
 with its folder and the organization's, since a registration cannot move to another project,
-and 2-net is destroyed inside it first (on a copy rendered without the zones' `prevent_destroy`,
+and 2-net is destroyed inside it, after 1-org's checks and the plan of its destroy and before
+anything of 1-org is destroyed (on a copy rendered without the zones' `prevent_destroy`,
 the registrations out of its state), so the project holds the registrations and nothing else
 and the domains stop resolving until a zone stands elsewhere; the registrations are a person's
 to transfer out or give up. It refuses a layer rendered by an earlier bedrock, which declares no `destroy`

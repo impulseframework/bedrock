@@ -1558,13 +1558,27 @@ func TestOrgRegisterNext(t *testing.T) {
 }
 
 // destroyTofu is tofu in org destroy's tests: it records every command by the layer it
-// ran in and answers each layer's state list with one project, the repository in 1-org.
+// ran in and answers each layer's state list: 1-org's with the repository, a folder, the
+// network project and an environment's, or, with netOutOfState, with the folders alone,
+// as a destroy that stopped after the projects went leaves it. destroying, when set, runs
+// as 1-org's destroy starts, the command that deletes the organization's projects: a test
+// reads there what stood by then. applied, when set, runs once 1-org's apply has passed,
+// the one that lifts the protections.
 type destroyTofu struct {
-	ran []string
+	ran           []string
+	netOutOfState bool
+	destroying    func()
+	applied       func()
 }
 
 func (f *destroyTofu) Run(_ context.Context, c deploy.Command, _ io.Writer) error {
 	f.ran = append(f.ran, filepath.Base(c.Dir)+": "+c.String())
+	if f.destroying != nil && filepath.Base(c.Dir) == "1-org" && c.Args[0] == "destroy" {
+		f.destroying()
+	}
+	if f.applied != nil && filepath.Base(c.Dir) == "1-org" && c.Args[0] == "apply" {
+		f.applied()
+	}
 
 	return nil
 }
@@ -1574,8 +1588,10 @@ func (f *destroyTofu) Output(_ context.Context, c deploy.Command, _ io.Writer) (
 	switch {
 	case c.Args[1] == "pull":
 		return []byte(`{"version": 4}`), nil
+	case filepath.Base(c.Dir) == "1-org" && f.netOutOfState:
+		return []byte("google_folder.this[\"shared\"]\ngoogle_folder.this[\"tst\"]\n"), nil
 	case filepath.Base(c.Dir) == "1-org":
-		return []byte("github_repository.infrastructure\nmodule.project[\"tst\"].module.project-factory.google_project.main\n"), nil
+		return []byte("github_repository.infrastructure\ngoogle_folder.this[\"shared\"]\nmodule.project[\"net\"].module.project-factory.google_project.main\nmodule.project[\"tst\"].module.project-factory.google_project.main\n"), nil
 	case filepath.Base(c.Dir) == "2-net":
 		return []byte("google_clouddomains_registration.this[\"example.dev\"]\ngoogle_dns_managed_zone.apps\n"), nil
 	default:
@@ -1615,18 +1631,44 @@ func destroyRepo(t *testing.T, registered bool) string {
 func TestOrgDestroy(t *testing.T) {
 	t.Parallel()
 
-	const warning = "bedrock org destroy deletes every project of the imp organization"
+	const (
+		warning    = "bedrock org destroy deletes every project of the imp organization"
+		netProject = "imp-net-gbl-core-9c0d"
+		appsZone   = "imp-net-gbl-dns-apps"
+		vanityZone = "imp-net-gbl-dns-example-dev"
+		zonesAhead = "Deleted the zone imp-net-gbl-dns-apps (apps.imp.example) ahead of the project: its name servers are free for a zone of the name at once, where a zone deleted with its project holds them until the project purges, thirty days later."
+	)
 	tests := []struct {
-		name        string
-		registered  bool
-		bootGone    bool
-		interactive func() bool
-		in          string
-		args        []string
-		wantErr     string
-		wantOut     []string
-		wantRan     int
-		wantJournal string
+		name       string
+		registered bool
+		bootGone   bool
+		netGone    bool
+		// netUnread runs the destroy as an account that may read the boot project and not
+		// the network project, which stands with its zones.
+		netUnread bool
+		// netUnreadLater is a network project the account reads when the destroy begins
+		// and may not read once 1-org's apply has passed: its grant ran out in between.
+		netUnreadLater bool
+		// noNetProject takes the network project out of placement.json (projects.net).
+		noNetProject bool
+		// netOutOfState is 1-org's state without the network project, the folders still in
+		// it: a destroy run earlier deleted the projects and stopped at a folder.
+		netOutOfState bool
+		interactive   func() bool
+		in            string
+		args          []string
+		wantErr       string
+		wantOut       []string
+		wantAbsent    []string
+		wantRan       int
+		// wantUnchanged asks that tofu changed nothing: no state rm, no plan, no apply and no
+		// destroy ran, in any layer.
+		wantUnchanged bool
+		wantJournal   string
+		// wantZonesGone are the zone deletions made by API, in order, each before 1-org's
+		// destroy deletes the network project; none when the zones are not the command's
+		// to delete that way.
+		wantZonesGone []string
 	}{
 		{
 			name:        "refuses without a terminal and without --yes",
@@ -1641,12 +1683,13 @@ func TestOrgDestroy(t *testing.T) {
 			wantOut:     []string{"Type the prefix (imp) to go on; anything else stops:", "Stopped: nothing was deleted."},
 		},
 		{
-			name:        "destroys when the prefix is typed, and writes the journal",
-			interactive: always,
-			in:          "imp\n",
-			wantOut:     []string{warning, `Deleted the spend budget "imp organization" off billing account 012345-6789AB-CDEF01.`, "Took github_repository.infrastructure out of 1-org's state", "Destroyed 1-org.", "Destroyed 0-bootstrap.", "Deleted the imp organization's projects; a line went into JOURNAL.md.", "To start over: the organization's entry out of the root organization's placement.json"},
-			wantRan:     11,
-			wantJournal: "bedrock org destroy deleted the organization's projects (imp-boot-gbl-core-a1b2, imp-shr-gbl-core-7a8b, imp-net-gbl-core-9c0d, imp-spn-gbl-core-2e3f, imp-tst-gbl-core-1a2b, imp-stg-gbl-core-3c4d, imp-prd-gbl-core-5e6f) and its spend budget off the billing account: Google holds them for 30 days, their ids never return. The GitHub repositories stay.\n",
+			name:          "destroys when the prefix is typed, and writes the journal",
+			interactive:   always,
+			in:            "imp\n",
+			wantOut:       []string{warning, `Deleted the spend budget "imp organization" off billing account 012345-6789AB-CDEF01.`, zonesAhead, "Deleted the zone imp-net-gbl-dns-example-dev (example.dev) ahead of the project", "Took github_repository.infrastructure out of 1-org's state", "Destroyed 1-org.", "Destroyed 0-bootstrap.", "Deleted the imp organization's projects; a line went into JOURNAL.md.", "To start over: the organization's entry out of the root organization's placement.json"},
+			wantRan:       12,
+			wantZonesGone: []string{"zone " + netProject + "/" + appsZone, "zone " + netProject + "/" + vanityZone},
+			wantJournal:   "bedrock org destroy deleted the organization's projects (imp-boot-gbl-core-a1b2, imp-shr-gbl-core-7a8b, imp-net-gbl-core-9c0d, imp-spn-gbl-core-2e3f, imp-tst-gbl-core-1a2b, imp-stg-gbl-core-3c4d, imp-prd-gbl-core-5e6f) and its spend budget off the billing account: Google holds them for 30 days, their ids never return. The GitHub repositories stay.\n",
 		},
 		{
 			name:        "a run again with the boot project gone destroys no layer and says so",
@@ -1654,6 +1697,71 @@ func TestOrgDestroy(t *testing.T) {
 			interactive: never,
 			args:        []string{"--yes"},
 			wantOut:     []string{`No spend budget "imp organization" stands on billing account 012345-6789AB-CDEF01: nothing to delete.`, "The boot project imp-boot-gbl-core-a1b2 is gone already, and with it the state bucket and every layer's state (Google holds the project for 30 days): the layers were destroyed on an earlier run, whose line the journal has, and nothing is left to destroy."},
+			wantAbsent:  []string{"ahead of the project"},
+		},
+		{
+			name:        "a run again with the network project gone asks Cloud DNS nothing and goes on",
+			netGone:     true,
+			interactive: never,
+			args:        []string{"--yes"},
+			wantOut:     []string{"The network project imp-net-gbl-core-9c0d is gone already: no zone is left to delete ahead of it.", "Destroyed 1-org.", "Destroyed 0-bootstrap.", "Deleted the imp organization's projects; a line went into JOURNAL.md."},
+			wantAbsent:  []string{"Deleted the zone"},
+			wantRan:     12,
+			wantJournal: "Google holds them for 30 days, their ids never return. The GitHub repositories stay.\n",
+		},
+		{
+			name:          "refuses a network project the account may not read while 1-org's state holds it, before anything of 1-org changes: no zone goes with its project and no protection is lifted",
+			netUnread:     true,
+			interactive:   never,
+			args:          []string{"--yes"},
+			wantErr:       "the account this destroy runs as may not read the network project imp-net-gbl-core-9c0d, or the project no longer exists (Google refuses it resourcemanager.projects.get there, and answers a project that is not there the same way), while 1-org's state still holds it, so the destroy cannot tell whether the project's zones still stand and stops with nothing of 1-org changed: run it again as an account that holds Owner on the organization's folder, as the break-glass account does for the run; a project that is gone for good (Google purges a deleted one after thirty days) is taken out of 1-org's state first (tofu state rm 'module.project[\"net\"]' in 1-org)",
+			wantAbsent:    []string{"is gone already", "Deleted the zone", "Destroyed 1-org."},
+			wantRan:       2,
+			wantUnchanged: true,
+		},
+		{
+			name:           "a read refused only once the apply has passed stops before the project goes and says the protection is lifted",
+			netUnreadLater: true,
+			interactive:    never,
+			args:           []string{"--yes"},
+			wantErr:        "so the destroy cannot tell whether the project's zones still stand and stops before 1-org's destroy deletes the project, after the apply that lifted the protection of 1-org's projects and folders, which stays lifted until 1-org's next apply: run it again as an account that holds Owner on the organization's folder",
+			wantAbsent:     []string{"is gone already", "Deleted the zone", "Destroyed 1-org."},
+			wantRan:        5,
+		},
+		{
+			name:          "refuses a placement that records no network project while 1-org's state holds one, before anything of 1-org changes",
+			noNetProject:  true,
+			interactive:   never,
+			args:          []string{"--yes"},
+			wantErr:       "placement.json records no network project (projects.net) while 1-org's state still holds one, so the destroy cannot delete the network project's zones ahead of it and stops with nothing of 1-org changed: record the project's id under projects.net and run the destroy again",
+			wantAbsent:    []string{"is gone already", "Deleted the zone", "Destroyed 1-org."},
+			wantRan:       2,
+			wantUnchanged: true,
+		},
+		{
+			// Google answers a project that no longer exists (purged thirty days after its
+			// deletion) as it answers one the caller may not read. A destroy picked up then,
+			// 1-org's state holding the folders and not the project, reads no project.
+			name:          "a run again whose 1-org state no longer holds the network project reads none, refused or not, and finishes",
+			netUnread:     true,
+			netOutOfState: true,
+			interactive:   never,
+			args:          []string{"--yes"},
+			wantOut:       []string{"1-org's state holds no network project (a destroy run earlier deleted it, its zones first, or 1-org never made it): this run reads none and deletes no zone by API.", "Destroyed 1-org.", "Destroyed 0-bootstrap.", "Deleted the imp organization's projects; a line went into JOURNAL.md."},
+			wantAbsent:    []string{"is gone already", "Deleted the zone", "may not read"},
+			wantRan:       11,
+			wantJournal:   "Google holds them for 30 days, their ids never return. The GitHub repositories stay.\n",
+		},
+		{
+			name:          "the same run with no network project recorded finishes too",
+			noNetProject:  true,
+			netOutOfState: true,
+			interactive:   never,
+			args:          []string{"--yes"},
+			wantOut:       []string{"1-org's state holds no network project", "Destroyed 1-org.", "Destroyed 0-bootstrap."},
+			wantAbsent:    []string{"is gone already", "Deleted the zone", "records no network project"},
+			wantRan:       11,
+			wantJournal:   "Google holds them for 30 days, their ids never return. The GitHub repositories stay.\n",
 		},
 		{
 			name:        "keeps the network project when the layer registers a domain, with --yes",
@@ -1668,7 +1776,8 @@ func TestOrgDestroy(t *testing.T) {
 				"The network project imp-net-gbl-core-9c0d stays with its registrations and nothing else: 2-net's zones, load balancer and certificates are gone",
 				`No spend budget "imp organization" stands on billing account 012345-6789AB-CDEF01: nothing to delete.`,
 			},
-			wantRan:     15,
+			wantAbsent:  []string{"ahead of the project"},
+			wantRan:     16,
 			wantJournal: "(imp-boot-gbl-core-a1b2, imp-shr-gbl-core-7a8b, imp-spn-gbl-core-2e3f, imp-tst-gbl-core-1a2b, imp-stg-gbl-core-3c4d, imp-prd-gbl-core-5e6f) and its spend budget off the billing account: Google holds them for 30 days, their ids never return. The GitHub repositories stay. The network project imp-net-gbl-core-9c0d was kept with its registrations and nothing else: 2-net was destroyed inside it.\n",
 		},
 	}
@@ -1677,16 +1786,62 @@ func TestOrgDestroy(t *testing.T) {
 			t.Parallel()
 
 			dir := destroyRepo(t, tt.registered)
-			tofu := &destroyTofu{}
+			if tt.noNetProject {
+				placement, err := os.ReadFile(filepath.Join(dir, orgPlacementFile))
+				if err != nil {
+					t.Fatal(err)
+				}
+				without := strings.Replace(string(placement), `    "net": "`+netProject+"\",\n", "", 1)
+				if without == string(placement) {
+					t.Fatalf("the fixture's placement.json records no projects.net to take out:\n%s", placement)
+				}
+				if err := os.WriteFile(filepath.Join(dir, orgPlacementFile), []byte(without), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tofu := &destroyTofu{netOutOfState: tt.netOutOfState}
 			d := orgDeps(dir)
 			d.interactive = tt.interactive
 			d.deploy = &deploy.Clients{Exec: tofu}
 			d.githubToken = func(context.Context) (string, error) { return "ghs_token", nil }
 			google := createtest.New()
 			google.Projects["imp-boot-gbl-core-a1b2"] = !tt.bootGone
-			d.org.root = &rootorg.Clients{Google: func(context.Context, string) (create.Google, error) { return google, nil }}
+			google.Projects[netProject] = !tt.netGone
+			if tt.netUnread || tt.netUnreadLater {
+				const person = "break-glass@imp-example.iam.gserviceaccount.com"
+				if _, err := google.Open(context.Background(), person); err != nil {
+					t.Fatal(err)
+				}
+				google.Bind("projects/imp-boot-gbl-core-a1b2", createtest.Owner, createtest.Member(person))
+				if tt.netUnreadLater {
+					google.Bind("projects/"+netProject, createtest.Owner, createtest.Member(person))
+					tofu.applied = func() {
+						google.Unbind("projects/"+netProject, createtest.Owner, createtest.Member(person))
+					}
+				}
+			}
 			fake := roottest.New()
-			if !tt.registered && !tt.bootGone {
+			d.org.root = &rootorg.Clients{
+				Google: func(context.Context, string) (create.Google, error) { return google, nil },
+				DNS:    func(context.Context) (rootorg.DNS, error) { return fake, nil },
+			}
+			// The network project holds the apps domain's zone, with a record of an
+			// application beside its apex NS and SOA, and a vanity domain's zone.
+			fake.ZoneMap[netProject] = map[string]rootorg.Zone{
+				appsZone:   {Name: appsZone, DNSName: "apps.imp.example."},
+				vanityZone: {Name: vanityZone, DNSName: "example.dev."},
+			}
+			fake.Records[netProject+"/"+appsZone] = []rootorg.RecordSet{
+				{Name: "apps.imp.example.", Type: "NS", TTL: 21600, Data: []string{"ns-cloud-e1.googledomains.com."}},
+				{Name: "apps.imp.example.", Type: "SOA", TTL: 21600, Data: []string{"ns-cloud-e1.googledomains.com. cloud-dns-hostmaster.google.com. 1 21600 3600 259200 300"}},
+				{Name: "quill.apps.imp.example.", Type: "A", TTL: 300, Data: []string{"203.0.113.10"}},
+			}
+			// What Cloud DNS had been asked by the time 1-org's destroy deleted the projects.
+			var aheadOfProjects []string
+			tofu.destroying = func() {
+				aheadOfProjects = slices.Clone(fake.Deletions)
+			}
+			if !tt.registered && !tt.bootGone && !tt.netGone {
 				fake.SpendBudgets["012345-6789AB-CDEF01"] = []org.Budget{{Name: "billingAccounts/012345-6789AB-CDEF01/budgets/7", DisplayName: "imp organization", Units: 500, CurrencyCode: "USD", Ancestors: []string{"folders/300"}, Thresholds: org.BudgetThresholds}}
 			}
 			var quota string
@@ -1700,15 +1855,34 @@ func TestOrgDestroy(t *testing.T) {
 			case tt.wantErr == "" && err != nil:
 				t.Fatalf("org destroy = %v, want no error; printed:\n%s", err, out)
 			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
-				t.Fatalf("org destroy = %v, want an error containing %q", err, tt.wantErr)
+				t.Errorf("org destroy = %v, want an error containing %q", err, tt.wantErr)
 			}
 			for _, want := range tt.wantOut {
 				if !strings.Contains(out, want) {
 					t.Errorf("printed:\n%s\nwant it to contain %q", out, want)
 				}
 			}
+			for _, absent := range tt.wantAbsent {
+				if strings.Contains(out, absent) {
+					t.Errorf("printed:\n%s\nwant it without %q", out, absent)
+				}
+			}
+			if !slices.Equal(aheadOfProjects, tt.wantZonesGone) || !slices.Equal(fake.Deletions, tt.wantZonesGone) {
+				t.Errorf("Cloud DNS deleted %v by the time 1-org's destroy deleted the projects and %v in all, want %v both times: every zone of the network project ahead of the project, and none when the project is kept or gone", aheadOfProjects, fake.Deletions, tt.wantZonesGone)
+			}
+			if tt.wantZonesGone != nil && (len(fake.ZoneMap[netProject]) != 0 || !slices.Contains(fake.Calls, "ChangeRecordSets("+netProject+", "+appsZone+", 0 additions, 1 deletions)")) {
+				t.Errorf("the network project still holds the zones %v, or the apps zone's record went with no change of its own (its apex NS and SOA stay for the zone's deletion): Cloud DNS was asked %v", fake.ZoneMap[netProject], fake.Calls)
+			}
+			if tt.wantZonesGone == nil && slices.ContainsFunc(fake.Calls, func(call string) bool { return strings.HasPrefix(call, "Zones(") }) {
+				t.Errorf("Cloud DNS was asked for the network project's zones, which this run has none to delete of by API: %v", fake.Calls)
+			}
 			if len(tofu.ran) != tt.wantRan {
 				t.Errorf("%d tofu commands ran, want %d:\n%s", len(tofu.ran), tt.wantRan, strings.Join(tofu.ran, "\n"))
+			}
+			if tt.wantUnchanged && slices.ContainsFunc(tofu.ran, func(ran string) bool {
+				return strings.Contains(ran, " state rm ") || strings.Contains(ran, " plan ") || strings.Contains(ran, " apply ") || strings.Contains(ran, " destroy ")
+			}) {
+				t.Errorf("tofu changed something on a destroy refused at its preconditions, want its state read and nothing else:\n%s", strings.Join(tofu.ran, "\n"))
 			}
 			journal, err := os.ReadFile(filepath.Join(dir, "JOURNAL.md"))
 			if err != nil {

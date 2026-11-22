@@ -4,9 +4,11 @@
 // organization's creating identity, makes under a new folder what the first applies
 // need and runs them (nothing of a hosting organization is made by hand), pushes the
 // rendered repository, takes its own creator grants off, and hands the organization off with a
-// pull request that records its folder. Every step looks before it makes, so a run
-// that stopped halfway finishes on the next push, and a created organization is
-// left alone: its marker in the root organization's state bucket says so.
+// pull request that records its folder. A run that stopped finishes on the next push,
+// from any point: before its push every step looks before it makes, and from its push on
+// (the foundation is on the new repository's default branch) the run again goes on from
+// there, and makes and applies nothing again (resume.go). A created organization is left
+// alone: its marker in the root organization's state bucket says so.
 package create
 
 import (
@@ -32,7 +34,7 @@ import (
 
 // Clients are the creation's seams: Google as the creating identity, GitHub with the
 // infrastructure app's token, the programs a step runs (tofu), the root organization's
-// state bucket for the marker, and the wait between tries.
+// state bucket for the record of the push and the marker, and the wait between tries.
 type Clients struct {
 	Google GoogleAsFunc
 	GitHub deploy.GitHubFunc
@@ -157,6 +159,25 @@ const (
 	folderEditorRole       = "roles/resourcemanager.folderEditor"
 	ownerRole              = "roles/owner"
 	billingUserRole        = "roles/billing.user"
+	// The permissions a creation run again asks Google about on each folder and project
+	// its withdrawal covers (Google.Held). Reading and setting a policy are what a removal
+	// needs; of the roles the withdrawal takes off, Folder Admin and Owner carry both and
+	// Folder Editor the read alone. Project Creator and Tag Administrator carry neither,
+	// and are told by the one permission each is granted for. Folder Creator, which the
+	// identity keeps at the organization node, carries none of the six (Google's reference
+	// of the predefined roles).
+	folderGetPolicyPermission  = "resourcemanager.folders.getIamPolicy"
+	folderSetPolicyPermission  = "resourcemanager.folders.setIamPolicy"
+	projectGetPolicyPermission = "resourcemanager.projects.getIamPolicy"
+	projectSetPolicyPermission = "resourcemanager.projects.setIamPolicy"
+	projectCreatePermission    = "resourcemanager.projects.create"
+	tagKeyCreatePermission     = "resourcemanager.tagKeys.create"
+	// sharedFolderKey is the key of the folder 1-org makes for the shared projects, beside
+	// one per environment.
+	sharedFolderKey = "shared"
+	// The two folders' ids as the pushed 0-bootstrap/terraform.tfvars names them.
+	organizationFolderVariable = "organization_folder_id"
+	terraformFolderVariable    = "terraform_folder_id"
 	// grantSettle is how long the creation waits for a new project's creator grant to
 	// reach IAM before it gives up (the bootstrap polls the same way for the root project).
 	grantSettle = 3 * time.Minute
@@ -281,7 +302,8 @@ func (f *creation) readMarker(ctx context.Context) (*Marker, error) {
 	return &m, nil
 }
 
-// create makes the organization: the seed, then the foundation on it.
+// create makes the organization: the seed, then the foundation on it. A creation whose
+// foundation an earlier run pushed goes on from that push instead (resume).
 func (f *creation) create(ctx context.Context) (*Result, error) {
 	h, err := f.record()
 	if err != nil {
@@ -293,6 +315,13 @@ func (f *creation) create(ctx context.Context) (*Result, error) {
 	}
 	defer g.Close()
 	fmt.Fprintf(f.out, "=== creation %s as %s ===\n", h.Prefix, f.req.Root.CreatingIdentity())
+	pushed, err := f.pushed(ctx, h)
+	if err != nil {
+		return nil, err
+	}
+	if pushed != nil {
+		return f.resume(ctx, g, h, pushed)
+	}
 	seed, number, err := f.seed(ctx, g, h)
 	if err != nil {
 		return nil, err
@@ -307,7 +336,7 @@ func (f *creation) create(ctx context.Context) (*Result, error) {
 		return nil, err
 	}
 
-	return f.establish(ctx, g, h, seed, number)
+	return f.establish(ctx, g, h, seed)
 }
 
 // budget makes the organization's spend budget on the billing account, as the creating
@@ -396,9 +425,9 @@ func (f *creation) seed(ctx context.Context, g Google, h *org.Placement) (*org.S
 // apps domain's zone, the render again with the projects 1-org made, the push, the
 // creating identity's withdrawal, the marker and the hand-off. The baseline comes before
 // the push because the organization's own apply trigger applies every layer from the push
-// on; a creation that stopped and runs again reaches the step again, where a policy that
-// stands is left as it is.
-func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, seed *org.Seed, number string) (*Result, error) {
+// on; a creation that stopped before its push and runs again reaches the step again, where
+// a policy that stands is left as it is.
+func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, seed *org.Seed) (*Result, error) {
 	dir, err := os.MkdirTemp("", "bedrock-create-"+h.Prefix+"-")
 	if err != nil {
 		return nil, errors.Wrap(err, "os.MkdirTemp()")
@@ -440,6 +469,14 @@ func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, se
 	if err := f.withdraw(ctx, g, seed, h, folders); err != nil {
 		return nil, err
 	}
+
+	return f.conclude(ctx, h, seed, repository, commit)
+}
+
+// conclude ends a creation whose withdrawal is over: the marker in the root organization's
+// state bucket, from what the placement records by now, and the hand-off.
+func (f *creation) conclude(ctx context.Context, h *org.Placement, seed *org.Seed, repository, commit string) (*Result, error) {
+	number := h.ProjectNumbers[bootKey]
 	marker := Marker{
 		Prefix: h.Prefix, OrganizationFolder: seed.OrganizationFolder, TerraformFolder: seed.TerraformFolder, BootProject: h.Projects[bootKey], BootProjectNumber: number,
 		StateBucket: h.StateBucket, Projects: h.Projects, ProjectNumbers: h.ProjectNumbers, Folders: h.Folders, PublicInvokerTags: h.PublicInvokerTags,
@@ -448,7 +485,7 @@ func (f *creation) establish(ctx context.Context, g Google, h *org.Placement, se
 	if err := f.writeMarker(ctx, &marker); err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(f.out, "Created %s: folder %s, boot project %s (%s), repository %s at %s; the creating identity holds nothing under the folder now.\n", h.Prefix, seed.OrganizationFolder, h.Projects["boot"], number, repository, short(commit))
+	fmt.Fprintf(f.out, "Created %s: folder %s, boot project %s (%s), repository %s at %s; the creating identity holds nothing under the folder now.\n", h.Prefix, seed.OrganizationFolder, h.Projects[bootKey], number, repository, short(commit))
 	url, err := f.handOff(ctx, h, &marker)
 	if err != nil {
 		return nil, err
@@ -592,42 +629,88 @@ func (f *creation) render(h *org.Placement, seed *org.Seed, dir string) error {
 	return h.Write(filepath.Join(dir, org.PlacementFile))
 }
 
-// withdraw takes the creating identity's creator grants off, so that no grant of the
-// creation outlives it (0-bootstrap/README.md, "Created by the root organization"):
-// Folder Admin and Folder Editor on each folder 1-org made and on the terraform folder,
-// Owner on each project 1-org made and on the boot project, and on the organization's
-// folder the same two with the roles it granted itself for the first applies, last, so
-// that each removal is still its to make.
-func (f *creation) withdraw(ctx context.Context, g Google, seed *org.Seed, h *org.Placement, folders map[string]string) error {
-	member := f.req.Root.CreatingIdentityMember()
-	creator := []string{folderAdminRole, folderEditorRole}
-	for _, key := range sortedKeys(folders) {
-		if err := g.RevokeFolder(ctx, folders[key], member, creator); err != nil {
-			return err
-		}
+// removal is one removal of the withdrawal: the creating identity out of its roles on a
+// folder (its numeric id) or on a project (its id), one of the two.
+type removal struct {
+	folder  string
+	project string
+	roles   []string
+}
+
+// resource is the folder or the project as Google names it.
+func (r removal) resource() string {
+	if r.project != "" {
+		return "projects/" + r.project
 	}
-	projects := 0
+
+	return "folders/" + r.folder
+}
+
+// String is the folder or the project as a line names it.
+func (r removal) String() string {
+	if r.project != "" {
+		return "project " + r.project
+	}
+
+	return "folder " + r.folder
+}
+
+// take makes the removal: the member out of the roles on the folder's or the project's
+// policy, which is read, and written when the member is in one of them.
+func (r removal) take(ctx context.Context, g Google, member string) error {
+	if r.project != "" {
+		return g.RevokeProject(ctx, r.project, member, r.roles)
+	}
+
+	return g.RevokeFolder(ctx, r.folder, member, r.roles)
+}
+
+// removals are the withdrawal's removals, in its order: Folder Admin and Folder Editor,
+// which Google gives a folder's maker, on each folder 1-org made; Owner, a project's
+// maker's, on each project 1-org made; the same on the terraform folder and on the boot
+// project; and on the organization's folder a maker's two with the roles the identity
+// granted itself for the first applies, last and in one write, so that each removal is
+// still its own to make.
+func removals(seed *org.Seed, h *org.Placement, folders map[string]string) []removal {
+	maker := []string{folderAdminRole, folderEditorRole}
+	var all []removal
+	for _, key := range sortedKeys(folders) {
+		all = append(all, removal{folder: folders[key], roles: maker})
+	}
 	for _, key := range h.ProjectKeys() {
 		if key == bootKey || h.Projects[key] == "" {
 			continue
 		}
-		if err := g.RevokeProject(ctx, h.Projects[key], member, []string{ownerRole}); err != nil {
+		all = append(all, removal{project: h.Projects[key], roles: []string{ownerRole}})
+	}
+
+	return append(all,
+		removal{folder: seed.TerraformFolder, roles: maker},
+		removal{project: h.Projects[bootKey], roles: []string{ownerRole}},
+		removal{folder: seed.OrganizationFolder, roles: slices.Concat(maker, creatingFolderRoles)},
+	)
+}
+
+// withdraw takes the creating identity's creator grants off, so that no grant of the
+// creation outlives it (0-bootstrap/README.md, "Created by the root organization"): every
+// removal of the withdrawal (removals), in its order.
+func (f *creation) withdraw(ctx context.Context, g Google, seed *org.Seed, h *org.Placement, folders map[string]string) error {
+	member := f.req.Root.CreatingIdentityMember()
+	all := removals(seed, h, folders)
+	for _, r := range all {
+		if err := r.take(ctx, g, member); err != nil {
 			return err
 		}
-		projects++
 	}
-	if err := g.RevokeFolder(ctx, seed.TerraformFolder, member, creator); err != nil {
-		return err
-	}
-	if err := g.RevokeProject(ctx, h.Projects[bootKey], member, []string{ownerRole}); err != nil {
-		return err
-	}
-	if err := g.RevokeFolder(ctx, seed.OrganizationFolder, member, slices.Concat(creator, creatingFolderRoles)); err != nil {
-		return err
-	}
-	fmt.Fprintf(f.out, "Took the creating identity's grants off the %d folders and %d projects 1-org made, folder %s, project %s and folder %s.\n", len(folders), projects, seed.TerraformFolder, h.Projects[bootKey], seed.OrganizationFolder)
+	f.withdrew(seed, h, folders, all)
 
 	return nil
+}
+
+// withdrew says the withdrawal ran whole: the folders and projects 1-org made, and the
+// three of the seed.
+func (f *creation) withdrew(seed *org.Seed, h *org.Placement, folders map[string]string, all []removal) {
+	fmt.Fprintf(f.out, "Took the creating identity's grants off the %d folders and %d projects 1-org made, folder %s, project %s and folder %s.\n", len(folders), len(all)-len(folders)-3, seed.TerraformFolder, h.Projects[bootKey], seed.OrganizationFolder)
 }
 
 // sortedKeys are the map's keys in order, so the withdrawal runs the same way each time.

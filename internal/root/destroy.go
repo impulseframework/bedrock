@@ -91,7 +91,7 @@ func Destroy(ctx context.Context, clients *Clients, req *DestroyRequest, out io.
 	}
 	if project != "" {
 		if exists {
-			if err := deleteZones(ctx, clients, project, out); err != nil {
+			if err := DeleteZones(ctx, clients, project, out); err != nil {
 				return err
 			}
 			if err := iam.DeleteProject(ctx, project); err != nil {
@@ -150,12 +150,16 @@ func deleteBudget(ctx context.Context, clients *Clients, p *org.Placement, proje
 	return nil
 }
 
-// deleteZones deletes the project's zones ahead of the project, each zone's record sets
+// DeleteZones deletes the project's zones ahead of the project, each zone's record sets
 // but its apex NS and SOA first: a zone deleted with its project keeps its name servers
 // until the project purges, thirty days later, and Cloud DNS gives a name and its
-// subdomains five name-server sets in all across every project, so a root organization
-// bootstrapped again within the month would be refused its zone.
-func deleteZones(ctx context.Context, clients *Clients, project string, out io.Writer) error {
+// subdomains five name-server sets in all across every project, so an organization made
+// again within the month would be refused its zone. A zone whose record sets went and
+// whose own deletion then fails is said so in the error, since the names under it have
+// stopped answering by then; a run again finds the zone without them and goes on from
+// its deletion. The root organization's destroy runs it on the root project, and a
+// hosting organization's on its network project (internal/cli).
+func DeleteZones(ctx context.Context, clients *Clients, project string, out io.Writer) error {
 	dns, err := clients.DNS(ctx)
 	if err != nil {
 		return err
@@ -182,10 +186,15 @@ func deleteZones(ctx context.Context, clients *Clients, project string, out io.W
 				return err
 			}
 		}
+		domain := strings.TrimSuffix(z.DNSName, ".")
 		if err := dns.DeleteZone(ctx, project, z.Name); err != nil {
-			return err
+			if len(deletions) == 0 {
+				return err
+			}
+
+			return errors.Wrapf(err, "the %d record set(s) of zone %s (%s) are deleted and the zone is not, so the names under %s have stopped answering while the zone still holds its name servers; the destroy run again goes on from the zone's deletion", len(deletions), z.Name, domain, domain)
 		}
-		fmt.Fprintf(out, "Deleted the zone %s (%s) ahead of the project: its name servers are free for a zone of the name at once, where a zone deleted with its project holds them until the project purges, thirty days later.\n", z.Name, strings.TrimSuffix(z.DNSName, "."))
+		fmt.Fprintf(out, "Deleted the zone %s (%s) ahead of the project: its name servers are free for a zone of the name at once, where a zone deleted with its project holds them until the project purges, thirty days later.\n", z.Name, domain)
 	}
 
 	return nil

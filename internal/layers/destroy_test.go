@@ -18,10 +18,14 @@ import (
 )
 
 // handRun scripts the fake tofu of one layer for org destroy: what state list prints,
-// what state pull prints, and how many destroys fail before one succeeds.
+// what state pull prints, whether the plan of the destroy fails (GitHub refusing the
+// token a read), whether the apply that records the deletion policies fails, and how many
+// destroys fail before one succeeds.
 type handRun struct {
 	stateList       []string
 	statePull       string
+	planFails       bool
+	applyFails      bool
 	destroyFailures int
 }
 
@@ -108,7 +112,19 @@ func (r *handRunner) Run(_ context.Context, c deploy.Command, out io.Writer) err
 			return errors.New("tofu failed: exit status 1")
 		}
 		_, _ = io.WriteString(out, "Destroy complete! Resources: 3 destroyed.\n")
+	case "plan":
+		if run != nil && run.planFails {
+			_, _ = io.WriteString(out, "Error: GET https://api.github.com/repos/imp-example/quill/rulesets/7: 403 Resource not accessible by personal access token\n")
+
+			return errors.New("tofu failed: exit status 1")
+		}
+		_, _ = io.WriteString(out, "Plan: 0 to add, 0 to change, 9 to destroy.\n")
 	case "apply":
+		if run != nil && run.applyFails {
+			_, _ = io.WriteString(out, "Error: Error updating project: googleapi: Error 429: Quota exceeded\n")
+
+			return errors.New("tofu failed: exit status 1")
+		}
 		_, _ = io.WriteString(out, "Apply complete! Resources: 0 added, 2 changed, 0 destroyed.\n")
 	}
 
@@ -206,6 +222,28 @@ var (
 	}
 )
 
+// zonesChecked and zonesDeleted are the lines the tests' check of the network project and
+// their zone deletion leave among the commands: where each stands says what had run by
+// then.
+const (
+	zonesChecked = "the network project is read: its zones can be asked for"
+	zonesDeleted = "the network project's zones are deleted by API"
+)
+
+// netUnread is what the tests' check of the network project answers when it refuses.
+const netUnread = "the account this destroy runs as may not read the network project"
+
+// The plan of 1-org's destroy and the destroy as the tests expect them, whatever the
+// state holds.
+const (
+	orgPlanLine    = "1-org: tofu plan -destroy -input=false -no-color -var destroy=true [token] [data 1-org.data]"
+	orgDestroyLine = "1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true [token] [data 1-org.data]"
+	// The plan when the network project is kept, and 2-net's destroy inside it, which
+	// deletes the zones.
+	orgKeptPlanLine = `1-org: tofu plan -destroy -input=false -no-color -var destroy=true -exclude=module.project["net"] [token] [data 1-org.data]`
+	netDestroyLine  = "2-net: tofu destroy -input=false -no-color -auto-approve [data 2-net.data]"
+)
+
 func fixedToken(context.Context) (string, error) {
 	return "ghs_token", nil
 }
@@ -225,11 +263,17 @@ func TestDestroy(t *testing.T) {
 		name            string
 		destroyVariable bool
 		keepNet         bool
-		token           func(context.Context) (string, error)
-		runs            map[string]*handRun
-		wantErr         string
-		wantRan         []string
-		wantOut         []string
+		// noZoneDeletion leaves the request without what deletes the network project's
+		// zones.
+		noZoneDeletion bool
+		// checkRefuses makes the check of the network project refuse, as the command's
+		// does a project it may not read.
+		checkRefuses bool
+		token        func(context.Context) (string, error)
+		runs         map[string]*handRun
+		wantErr      string
+		wantRan      []string
+		wantOut      []string
 		// wantAbsent are texts the output may not hold.
 		wantAbsent []string
 		wantCopy   bool
@@ -248,11 +292,14 @@ func TestDestroy(t *testing.T) {
 			wantRan: []string{
 				"1-org: tofu init -input=false -no-color -reconfigure [data 1-org.data]",
 				"1-org: tofu state list [data 1-org.data]",
+				zonesChecked,
 				"1-org: tofu state rm github_repository.infrastructure [token] [data 1-org.data]",
 				`1-org: tofu state rm github_repository.app["quill"] [token] [data 1-org.data]`,
 				`1-org: tofu state rm google_tags_tag_key.public_invoker["tst"] [token] [data 1-org.data]`,
 				`1-org: tofu state rm google_tags_tag_value.public_invoker["tst"] [token] [data 1-org.data]`,
+				orgPlanLine,
 				`1-org: tofu apply -input=false -no-color -auto-approve -var destroy=true -target=google_folder.this["shared"] -target=google_folder.this["tst"] -target=module.project["net"].module.project-factory.google_project.main -target=module.project["net"].module.project-factory.module.project_services.google_project_service.project_services["dns.googleapis.com"] -target=module.project["tst"].module.project-factory.google_project.main -target=module.project["tst"].module.project-factory.module.project_services.google_project_service.project_services["compute.googleapis.com"] [token] [data 1-org.data]`,
+				zonesDeleted,
 				"1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true [token] [data 1-org.data]",
 				"0-bootstrap: tofu init -input=false -no-color -reconfigure [data 0-bootstrap.data]",
 				"0-bootstrap: tofu state pull [data 0-bootstrap.data]",
@@ -265,7 +312,7 @@ func TestDestroy(t *testing.T) {
 			wantCopy: true,
 		},
 		{
-			name:            "keeps the network project and the organization's folder when the layer registers domains, 2-net destroyed inside it first with the registrations out of its state",
+			name:            "keeps the network project and the organization's folder when the layer registers domains, 2-net destroyed inside it with the registrations out of its state, after 1-org's checks and plan and before anything of 1-org is destroyed",
 			destroyVariable: true,
 			keepNet:         true,
 			token:           fixedToken,
@@ -275,16 +322,17 @@ func TestDestroy(t *testing.T) {
 				BootstrapLayer: {stateList: bootState, statePull: pulledState},
 			},
 			wantRan: []string{
-				"2-net: tofu init -input=false -no-color -reconfigure [data 2-net.data]",
-				"2-net: tofu state list [data 2-net.data]",
-				`2-net: tofu state rm google_clouddomains_registration.this["example.dev"] [data 2-net.data]`,
-				"2-net: tofu destroy -input=false -no-color -auto-approve [data 2-net.data]",
 				"1-org: tofu init -input=false -no-color -reconfigure [data 1-org.data]",
 				"1-org: tofu state list [data 1-org.data]",
 				"1-org: tofu state rm github_repository.infrastructure [token] [data 1-org.data]",
 				`1-org: tofu state rm github_repository.app["quill"] [token] [data 1-org.data]`,
 				`1-org: tofu state rm google_tags_tag_key.public_invoker["tst"] [token] [data 1-org.data]`,
 				`1-org: tofu state rm google_tags_tag_value.public_invoker["tst"] [token] [data 1-org.data]`,
+				orgKeptPlanLine,
+				"2-net: tofu init -input=false -no-color -reconfigure [data 2-net.data]",
+				"2-net: tofu state list [data 2-net.data]",
+				`2-net: tofu state rm google_clouddomains_registration.this["example.dev"] [data 2-net.data]`,
+				netDestroyLine,
 				`1-org: tofu apply -input=false -no-color -auto-approve -var destroy=true -target=google_folder.this["shared"] -target=google_folder.this["tst"] -target=module.project["tst"].module.project-factory.google_project.main -target=module.project["tst"].module.project-factory.module.project_services.google_project_service.project_services["compute.googleapis.com"] [token] [data 1-org.data]`,
 				`1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true -exclude=module.project["net"] [token] [data 1-org.data]`,
 				"0-bootstrap: tofu init -input=false -no-color -reconfigure [data 0-bootstrap.data]",
@@ -295,14 +343,42 @@ func TestDestroy(t *testing.T) {
 				"0-bootstrap(copy): tofu destroy -input=false -no-color -auto-approve -var destroy=true -exclude=google_folder.organization",
 			},
 			wantOut: []string{
-				"=== destroy of 2-net, inside the network project kept for its registrations ===",
+				"=== destroy of 1-org: its checks and its plan first, before 2-net's destroy deletes a zone ===\n",
+				"so a read GitHub or Google refuses stops the destroy here, before the projects' and folders' protection is lifted and before 2-net's destroy deletes a zone.\n" +
+					"Plan: 0 to add, 0 to change, 9 to destroy.\n" +
+					"=== destroy of 2-net, inside the network project kept for its registrations ===\n",
 				`Took google_clouddomains_registration.this["example.dev"] out of 2-net's state: the registration stays in the kept project, a person's to transfer out or give up.`,
-				"Destroyed 2-net.",
-				"The network project holds the registrations and nothing else now: 2-net's zones and records, load balancer and certificates are gone, and the domains registered there stop resolving until a zone stands elsewhere and each registration is pointed at it.",
+				"Destroyed 2-net.\n" +
+					"The network project holds the registrations and nothing else now: 2-net's zones and records, load balancer and certificates are gone, and the domains registered there stop resolving until a zone stands elsewhere and each registration is pointed at it.\n" +
+					"=== destroy of 1-org, as planned above ===\n" +
+					"Recording on 1-org that the destroy deletes 2 project(s) with 2 service(s) and 2 folder(s), disabling no API first.\n",
 				"Destroyed 1-org.", "Destroyed 0-bootstrap.",
 			},
-			wantCopy: true,
-			wantNet:  true,
+			wantAbsent: []string{"before a zone is deleted by API"},
+			wantCopy:   true,
+			wantNet:    true,
+		},
+		{
+			name:            "keeps every zone when the network project is kept and the plan of 1-org's destroy fails: 2-net's destroy, which deletes the zones, comes after the plan",
+			destroyVariable: true,
+			keepNet:         true,
+			token:           fixedToken,
+			runs: map[string]*handRun{
+				netLayer: {stateList: netState},
+				orgLayer: {stateList: orgState, planFails: true},
+			},
+			wantErr: "the plan of 1-org's destroy failed, so nothing of 1-org was destroyed: no protection was lifted and 2-net was not destroyed, so no zone was deleted; what was taken out of its state above (the GitHub repositories, the tags) stays out of it, and the destroy run again goes on from there; the log says why",
+			wantRan: []string{
+				"1-org: tofu init -input=false -no-color -reconfigure [data 1-org.data]",
+				"1-org: tofu state list [data 1-org.data]",
+				"1-org: tofu state rm github_repository.infrastructure [token] [data 1-org.data]",
+				`1-org: tofu state rm github_repository.app["quill"] [token] [data 1-org.data]`,
+				`1-org: tofu state rm google_tags_tag_key.public_invoker["tst"] [token] [data 1-org.data]`,
+				`1-org: tofu state rm google_tags_tag_value.public_invoker["tst"] [token] [data 1-org.data]`,
+				orgKeptPlanLine,
+			},
+			wantOut:    []string{"Planning the destroy of 1-org first, which deletes nothing: the plan reads everything the destroy reads, with the same GitHub token and sign-in, so a read GitHub or Google refuses stops the destroy here, before the projects' and folders' protection is lifted and before 2-net's destroy deletes a zone.\n"},
+			wantAbsent: []string{"=== destroy of 2-net", "Destroyed 2-net."},
 		},
 		{
 			name:            "skips a layer whose state holds nothing, without asking for a token",
@@ -334,9 +410,12 @@ func TestDestroy(t *testing.T) {
 			wantRan: []string{
 				"1-org: tofu init -input=false -no-color -reconfigure [data 1-org.data]",
 				"1-org: tofu state list [data 1-org.data]",
+				zonesChecked,
 				`1-org: tofu state rm google_tags_tag_key.public_invoker["tst"] [token] [data 1-org.data]`,
 				`1-org: tofu state rm google_tags_tag_value.public_invoker["tst"] [token] [data 1-org.data]`,
+				orgPlanLine,
 				`1-org: tofu apply -input=false -no-color -auto-approve -var destroy=true -target=google_folder.this["shared"] -target=google_folder.this["tst"] -target=module.project["net"].module.project-factory.google_project.main -target=module.project["net"].module.project-factory.module.project_services.google_project_service.project_services["dns.googleapis.com"] -target=module.project["tst"].module.project-factory.google_project.main -target=module.project["tst"].module.project-factory.module.project_services.google_project_service.project_services["compute.googleapis.com"] [token] [data 1-org.data]`,
+				zonesDeleted,
 				"1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true [token] [data 1-org.data]",
 				"1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true [token] [data 1-org.data]",
 				"1-org: tofu destroy -input=false -no-color -auto-approve -var destroy=true [token] [data 1-org.data]",
@@ -346,6 +425,78 @@ func TestDestroy(t *testing.T) {
 				"0-bootstrap(copy): tofu state list",
 			},
 			wantOut:  []string{"The destroy of 1-org failed (attempt 1 of 6)", "The destroy of 1-org failed (attempt 2 of 6)", "Destroyed 1-org."},
+			wantCopy: true,
+		},
+		{
+			name:            "deletes no zone when the apply that records the deletion policies fails: the zones go after the last step that can refuse",
+			destroyVariable: true,
+			token:           fixedToken,
+			runs: map[string]*handRun{
+				orgLayer: {stateList: orgState[3:], applyFails: true},
+			},
+			wantErr: "the apply recording 1-org's deletion policies failed; the log says why",
+			wantRan: []string{
+				"1-org: tofu init -input=false -no-color -reconfigure [data 1-org.data]",
+				"1-org: tofu state list [data 1-org.data]",
+				zonesChecked,
+				`1-org: tofu state rm google_tags_tag_key.public_invoker["tst"] [token] [data 1-org.data]`,
+				`1-org: tofu state rm google_tags_tag_value.public_invoker["tst"] [token] [data 1-org.data]`,
+				orgPlanLine,
+				`1-org: tofu apply -input=false -no-color -auto-approve -var destroy=true -target=google_folder.this["shared"] -target=google_folder.this["tst"] -target=module.project["net"].module.project-factory.google_project.main -target=module.project["net"].module.project-factory.module.project_services.google_project_service.project_services["dns.googleapis.com"] -target=module.project["tst"].module.project-factory.google_project.main -target=module.project["tst"].module.project-factory.module.project_services.google_project_service.project_services["compute.googleapis.com"] [token] [data 1-org.data]`,
+			},
+		},
+		{
+			name:            "deletes no zone when the plan of the destroy fails: a token GitHub refuses a read is refused before any zone goes and before the protection is lifted",
+			destroyVariable: true,
+			token:           fixedToken,
+			runs: map[string]*handRun{
+				orgLayer: {stateList: orgState[3:], planFails: true},
+			},
+			wantErr: "the plan of 1-org's destroy failed, so nothing of 1-org was destroyed: no protection was lifted and no zone was deleted by API; what was taken out of its state above (the GitHub repositories, the tags) stays out of it, and the destroy run again goes on from there; the log says why",
+			wantRan: []string{
+				"1-org: tofu init -input=false -no-color -reconfigure [data 1-org.data]",
+				"1-org: tofu state list [data 1-org.data]",
+				zonesChecked,
+				`1-org: tofu state rm google_tags_tag_key.public_invoker["tst"] [token] [data 1-org.data]`,
+				`1-org: tofu state rm google_tags_tag_value.public_invoker["tst"] [token] [data 1-org.data]`,
+				orgPlanLine,
+			},
+			wantOut: []string{"Planning the destroy of 1-org first, which deletes nothing: the plan reads everything the destroy reads, with the same GitHub token and sign-in, so a read GitHub or Google refuses stops the destroy here, before the projects' and folders' protection is lifted and before a zone is deleted by API."},
+		},
+		{
+			name:            "stops at a network project that cannot be read before anything of 1-org changes: no state rm, no plan, no apply",
+			destroyVariable: true,
+			checkRefuses:    true,
+			token:           fixedToken,
+			runs:            map[string]*handRun{orgLayer: {stateList: orgState}},
+			wantErr:         netUnread,
+			wantRan: []string{
+				"1-org: tofu init -input=false -no-color -reconfigure [data 1-org.data]",
+				"1-org: tofu state list [data 1-org.data]",
+				zonesChecked,
+			},
+		},
+		{
+			name:            "reads no network project and deletes no zone when 1-org's state no longer holds the project: an earlier run deleted it, its zones first",
+			destroyVariable: true,
+			checkRefuses:    true,
+			token:           fixedToken,
+			runs: map[string]*handRun{
+				orgLayer:       {stateList: []string{`google_folder.this["shared"]`, `google_folder.this["tst"]`}},
+				BootstrapLayer: {statePull: pulledState},
+			},
+			wantRan: []string{
+				"1-org: tofu init -input=false -no-color -reconfigure [data 1-org.data]",
+				"1-org: tofu state list [data 1-org.data]",
+				orgPlanLine,
+				`1-org: tofu apply -input=false -no-color -auto-approve -var destroy=true -target=google_folder.this["shared"] -target=google_folder.this["tst"] [token] [data 1-org.data]`,
+				orgDestroyLine,
+				"0-bootstrap: tofu init -input=false -no-color -reconfigure [data 0-bootstrap.data]",
+				"0-bootstrap: tofu state pull [data 0-bootstrap.data]",
+				"0-bootstrap(copy): tofu init -input=false -no-color -reconfigure",
+				"0-bootstrap(copy): tofu state list",
+			},
+			wantOut:  []string{"1-org's state holds no network project (a destroy run earlier deleted it, its zones first, or 1-org never made it): this run reads none and deletes no zone by API.", "Destroyed 1-org."},
 			wantCopy: true,
 		},
 		{
@@ -366,6 +517,15 @@ func TestDestroy(t *testing.T) {
 			wantErr:         "1-org/variables.tf declares no destroy variable, which bedrock org destroy sets",
 		},
 		{
+			name:            "refuses a request with nothing to delete the network project's zones, before anything runs",
+			destroyVariable: true,
+			noZoneDeletion:  true,
+			token:           fixedToken,
+			runs:            map[string]*handRun{orgLayer: {stateList: orgState}},
+			wantErr:         "no zone deletion is wired: the destroy deletes the network project's zones ahead of the project",
+			wantRan:         []string{},
+		},
+		{
 			name:            "refuses 1-org without a GitHub token, before anything changes",
 			destroyVariable: true,
 			token:           noToken,
@@ -374,6 +534,7 @@ func TestDestroy(t *testing.T) {
 			wantRan: []string{
 				"1-org: tofu init -input=false -no-color -reconfigure [data 1-org.data]",
 				"1-org: tofu state list [data 1-org.data]",
+				zonesChecked,
 			},
 		},
 	}
@@ -384,12 +545,32 @@ func TestDestroy(t *testing.T) {
 			dir := destroyCheckout(t, tt.destroyVariable)
 			runner := &handRunner{runs: tt.runs}
 			var out bytes.Buffer
-			err := Destroy(context.Background(), runner, &DestroyRequest{Dir: dir, Placement: placement, GithubToken: tt.token, KeepNet: tt.keepNet}, &out)
+			deleteZones := func(context.Context) error {
+				runner.mu.Lock()
+				defer runner.mu.Unlock()
+				runner.ran = append(runner.ran, zonesDeleted)
+
+				return nil
+			}
+			checkZones := func(context.Context) error {
+				runner.mu.Lock()
+				defer runner.mu.Unlock()
+				runner.ran = append(runner.ran, zonesChecked)
+				if tt.checkRefuses {
+					return errors.New(netUnread)
+				}
+
+				return nil
+			}
+			if tt.noZoneDeletion {
+				checkZones, deleteZones = nil, nil
+			}
+			err := Destroy(context.Background(), runner, &DestroyRequest{Dir: dir, Placement: placement, GithubToken: tt.token, KeepNet: tt.keepNet, CheckZones: checkZones, DeleteZones: deleteZones}, &out)
 			switch {
 			case tt.wantErr == "" && err != nil:
 				t.Fatalf("Destroy() = %v, want no error; printed:\n%s", err, out.String())
 			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
-				t.Fatalf("Destroy() = %v, want an error containing %q", err, tt.wantErr)
+				t.Errorf("Destroy() = %v, want an error containing %q", err, tt.wantErr)
 			}
 			if tt.wantRan != nil && strings.Join(runner.ran, "\n") != strings.Join(tt.wantRan, "\n") {
 				t.Errorf("commands ran:\n%s\nwant:\n%s", strings.Join(runner.ran, "\n"), strings.Join(tt.wantRan, "\n"))
