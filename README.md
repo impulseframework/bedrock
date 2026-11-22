@@ -3216,8 +3216,8 @@ stands in an environment (`bedrock destroy --all` from its checkout, which takes
 backups of its databases and the data down). The code typed back gates the run (`--yes`
 stands in for it). A retired application is registered again as a new one.
 
-`org destroy` deletes every project of the organization and takes its spend budget off the
-billing account, by a person at their own computer with their own sign-in (the break-glass account, holding Owner on the organization's folder
+`org destroy` deletes every project of the organization and takes its spend budget and its
+boot and org identities' Billing Account User off the billing account, by a person at their own computer with their own sign-in (the break-glass account, holding Owner on the organization's folder
 for the run; `GITHUB_TOKEN`, or gh's token, for
 1-org's GitHub provider: the infrastructure GitHub App's installation token, or an
 organization owner's). It says what goes, project by project, and asks for the prefix typed
