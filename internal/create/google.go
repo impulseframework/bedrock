@@ -84,6 +84,14 @@ type Google interface {
 	// GrantBillingAccount adds the member to the role on the billing account's policy; a
 	// member already in the role is left as it is.
 	GrantBillingAccount(ctx context.Context, billingAccount, role, member string) error
+	// BillingAccountMembers are the members of the role on the billing account's policy, in the
+	// policy's order and as Google spells them (a deleted service account's as
+	// deleted:serviceAccount:<email>?uid=<id>); a binding under a condition is left out.
+	BillingAccountMembers(ctx context.Context, billingAccount, role string) ([]string, error)
+	// RevokeBillingAccount takes the members out of the role on the billing account's policy in
+	// one change; a member not in the role is left as it is, and a policy that holds none of
+	// them is not set.
+	RevokeBillingAccount(ctx context.Context, billingAccount, role string, members []string) error
 	// EnableServices enables the APIs in the project and waits for them.
 	EnableServices(ctx context.Context, id string, services []string) error
 	// ServiceAgent makes the service's agent in the project and answers its email; an
@@ -575,6 +583,79 @@ func (g *google) GrantBillingAccount(ctx context.Context, billingAccount, role, 
 	}
 
 	return nil
+}
+
+func (g *google) BillingAccountMembers(ctx context.Context, billingAccount, role string) ([]string, error) {
+	p, err := g.billing.BillingAccounts.GetIamPolicy("billingAccounts/" + billingAccount).Context(ctx).Do()
+	if err != nil {
+		return nil, errors.Wrapf(err, "cloudbilling.BillingAccounts.GetIamPolicy(): %s", billingAccount)
+	}
+
+	return roleMembers(p.Bindings, role), nil
+}
+
+func (g *google) RevokeBillingAccount(ctx context.Context, billingAccount, role string, members []string) error {
+	resource := "billingAccounts/" + billingAccount
+	p, err := g.billing.BillingAccounts.GetIamPolicy(resource).Context(ctx).Do()
+	if err != nil {
+		return errors.Wrapf(err, "cloudbilling.BillingAccounts.GetIamPolicy(): %s", billingAccount)
+	}
+	bindings, changed := withoutMembers(p.Bindings, role, members)
+	if !changed {
+		return nil
+	}
+	p.Bindings = bindings
+	if _, err := g.billing.BillingAccounts.SetIamPolicy(resource, &cloudbilling.SetIamPolicyRequest{Policy: p}).Context(ctx).Do(); err != nil {
+		return errors.Wrapf(err, "cloudbilling.BillingAccounts.SetIamPolicy(): %s", billingAccount)
+	}
+
+	return nil
+}
+
+// roleMembers are the members of the role's bindings that have no condition, in the order
+// the bindings hold them.
+func roleMembers(bindings []*cloudbilling.Binding, role string) []string {
+	var members []string
+	for _, b := range bindings {
+		if b.Role == role && b.Condition == nil {
+			members = append(members, b.Members...)
+		}
+	}
+
+	return members
+}
+
+// withoutMembers are the bindings with the members taken out of each binding of the role
+// that has no condition, a binding left with no member dropped, and whether any member was
+// taken out. Every other binding, and every other member, is the one read; an edited
+// binding is a copy, so the bindings read are not changed.
+func withoutMembers(bindings []*cloudbilling.Binding, role string, members []string) ([]*cloudbilling.Binding, bool) {
+	changed := false
+	kept := make([]*cloudbilling.Binding, 0, len(bindings))
+	for _, b := range bindings {
+		if b.Role != role || b.Condition != nil {
+			kept = append(kept, b)
+
+			continue
+		}
+		left := slices.DeleteFunc(slices.Clone(b.Members), func(m string) bool { return slices.Contains(members, m) })
+		if len(left) == len(b.Members) {
+			kept = append(kept, b)
+
+			continue
+		}
+		changed = true
+		if len(left) > 0 {
+			edited := *b
+			edited.Members = left
+			kept = append(kept, &edited)
+		}
+	}
+	if !changed {
+		return bindings, false
+	}
+
+	return kept, true
 }
 
 func (g *google) LinkBilling(ctx context.Context, id, billingAccount string) error {

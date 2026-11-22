@@ -1159,6 +1159,38 @@ func (f *Fake) GrantBillingAccount(_ context.Context, account, role, member stri
 	return f.grantCall("GrantBillingAccount", "billingAccounts/"+account, role, member)
 }
 
+// BillingAccountMembers are the role's members on the billing account.
+func (f *Fake) BillingAccountMembers(_ context.Context, account, role string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("BillingAccountMembers", account, role); err != nil {
+		return nil, err
+	}
+	var members []string
+	for _, b := range f.Policies["billingAccounts/"+account] {
+		if b.Role == role {
+			members = append(members, b.Members...)
+		}
+	}
+
+	return members, nil
+}
+
+// RevokeBillingAccount takes the members out of the role on the billing account.
+func (f *Fake) RevokeBillingAccount(_ context.Context, account, role string, members []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("RevokeBillingAccount", account, role, strings.Join(members, "+")); err != nil {
+		return err
+	}
+	resource := "billingAccounts/" + account
+	for _, member := range members {
+		f.Policies[resource] = revoke(f.Policies[resource], member, []string{role})
+	}
+
+	return nil
+}
+
 // FindFolder is the folder's id by its parent and name, or empty.
 func (f *Fake) FindFolder(_ context.Context, parent, displayName string) (string, error) {
 	f.mu.Lock()
