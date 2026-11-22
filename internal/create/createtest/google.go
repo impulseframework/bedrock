@@ -43,8 +43,8 @@ type FakeGoogle struct {
 	// is checked against nothing.
 	BucketProjects map[string]string
 	// Policies are the roles held, by resource (organizations/N, folders/N, projects/ID,
-	// billingAccounts/ID), then by role: the members. Parents is each folder's and project's parent, by which a
-	// grant on a folder reaches what is under it.
+	// billingAccounts/ID), then by role: the members. Parents is each folder's and project's
+	// parent, by which a grant on a folder reaches what is under it.
 	Policies map[string]map[string][]string
 	Parents  map[string]string
 	// Denied are the calls refused for a grant the caller lacks, in order.

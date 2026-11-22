@@ -1968,7 +1968,7 @@ func (d deps) deleteHostingBudget(ctx context.Context, p *org.Placement, out io.
 	deleted, err := budgets.DeleteNamed(ctx, client, p.BillingAccount, name)
 	switch {
 	case err != nil:
-		fmt.Fprintf(out, "The spend budgets of billing account %s could not be read (%v): if the budget %q still stands, it is deleted in the Billing console.\n", p.BillingAccount, err, name)
+		fmt.Fprintf(out, "The spend budgets of billing account %s could not be read (%v): if the budget %q still stands, it is deleted in the Billing console.\n", p.BillingAccount, errors.Cause(err), name)
 	case deleted:
 		fmt.Fprintf(out, "Deleted the spend budget %q off billing account %s.\n", name, p.BillingAccount)
 	default:
@@ -2007,7 +2007,7 @@ func (d deps) revokeHostingBillingUsers(ctx context.Context, p *org.Placement, o
 	users := create.BillingUsers(p)
 	held, err := google.BillingAccountMembers(ctx, p.BillingAccount, create.BillingUserRole)
 	if err != nil {
-		fmt.Fprintf(out, "The policy of billing account %s could not be read (%v): if %s and %s still hold Billing Account User there, it is taken off in the Billing console.\n", p.BillingAccount, err, users[0], users[1])
+		fmt.Fprintf(out, "The policy of billing account %s could not be read (%v): if %s and %s still hold Billing Account User there, it is taken off in the Billing console.\n", p.BillingAccount, errors.Cause(err), users[0], users[1])
 
 		return nil
 	}
@@ -2018,7 +2018,7 @@ func (d deps) revokeHostingBillingUsers(ctx context.Context, p *org.Placement, o
 		return nil
 	}
 	if err := google.RevokeBillingAccount(ctx, p.BillingAccount, create.BillingUserRole, members); err != nil {
-		fmt.Fprintf(out, "The policy of billing account %s could not be changed (%v): if %s and %s still hold Billing Account User there, it is taken off in the Billing console.\n", p.BillingAccount, err, users[0], users[1])
+		fmt.Fprintf(out, "The policy of billing account %s could not be changed (%v): if %s and %s still hold Billing Account User there, it is taken off in the Billing console.\n", p.BillingAccount, errors.Cause(err), users[0], users[1])
 
 		return nil
 	}
