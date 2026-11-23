@@ -147,18 +147,20 @@ const (
 	// OwnershipCode is Cloud DNS's refusal of a zone whose maker does not own the domain
 	// in Google's webmaster verification.
 	OwnershipCode = "verifyManagedZoneDnsNameOwnership"
+	// BillingUserRole is Billing Account User, which the creation grants the boot and org
+	// identities on the billing account (BillingUsers) and a hosting organization's destroy
+	// takes off.
+	BillingUserRole = "roles/billing.user"
 	// The roles the creation grants and takes off: Project Creator and Tag Administrator,
 	// its identity's own on the organization's folder for the first applies
 	// (creatingFolderRoles); Folder Admin, the break-glass account's on that folder, and,
 	// with Folder Editor and Owner, what Google gives the creator of a folder and of a
-	// project, which the withdrawal takes off; and Billing Account User, the boot and org
-	// identities' on the billing account.
+	// project, which the withdrawal takes off.
 	bootProjectRoleCreator = "roles/resourcemanager.projectCreator"
 	tagAdminRole           = "roles/resourcemanager.tagAdmin"
 	folderAdminRole        = "roles/resourcemanager.folderAdmin"
 	folderEditorRole       = "roles/resourcemanager.folderEditor"
 	ownerRole              = "roles/owner"
-	billingUserRole        = "roles/billing.user"
 	// The permissions a creation run again asks Google about on each folder and project
 	// its withdrawal covers (Google.Held). Reading and setting a policy are what a removal
 	// needs; of the roles the withdrawal takes off, Folder Admin and Owner carry both and
@@ -494,15 +496,24 @@ func (f *creation) conclude(ctx context.Context, h *org.Placement, seed *org.See
 	return &Result{Placement: h, Marker: marker, PullRequest: url}, nil
 }
 
+// BillingUsers are the members the creation grants Billing Account User on the billing
+// account, and a hosting organization's destroy takes off: the organization's boot and
+// org identities, both in its boot project, in that order.
+func BillingUsers(h *org.Placement) []string {
+	return []string{
+		"serviceAccount:" + h.Prefix + "-boot-gbl-tofu@" + h.Projects[bootKey] + ".iam.gserviceaccount.com",
+		"serviceAccount:" + h.Prefix + "-org-gbl-tofu@" + h.Projects[bootKey] + ".iam.gserviceaccount.com",
+	}
+}
+
 // billingUsers grants the new organization's boot and org identities Billing Account User
 // on the billing account, which 1-org needs the day it links a project it creates: the
 // creating identity holds Billing Account Administrator, granted by the bootstrap, so no
 // billing administrator is asked. Done once 0-bootstrap's first apply has made the org
 // identity.
 func (f *creation) billingUsers(ctx context.Context, g Google, h *org.Placement) error {
-	for _, name := range []string{h.Prefix + "-boot-gbl-tofu", h.Prefix + "-org-gbl-tofu"} {
-		member := "serviceAccount:" + name + "@" + h.Projects[bootKey] + ".iam.gserviceaccount.com"
-		if err := g.GrantBillingAccount(ctx, h.BillingAccount, billingUserRole, member); err != nil {
+	for _, member := range BillingUsers(h) {
+		if err := g.GrantBillingAccount(ctx, h.BillingAccount, BillingUserRole, member); err != nil {
 			return err
 		}
 	}

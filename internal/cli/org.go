@@ -1873,7 +1873,7 @@ func (d deps) destroyOrg(cmd *cobra.Command, dir, key string, yes bool) error {
 		if d.deploy != nil {
 			exec = d.deploy.Exec
 		}
-		if err := d.deleteHostingBudget(cmd.Context(), p, out); err != nil {
+		if err := d.takeOffHostingBilling(cmd.Context(), p, out); err != nil {
 			return err
 		}
 		stands, err := d.bootProjectStands(cmd.Context(), p.Projects[bootKey])
@@ -1930,6 +1930,17 @@ func (d deps) keyToken(p *org.Placement, file string) github.TokenFunc {
 	}
 }
 
+// takeOffHostingBilling takes what the creation put on the billing account off it, before
+// the destroy deletes anything: the organization's spend budget, then its boot and org
+// identities' Billing Account User.
+func (d deps) takeOffHostingBilling(ctx context.Context, p *org.Placement, out io.Writer) error {
+	if err := d.deleteHostingBudget(ctx, p, out); err != nil {
+		return err
+	}
+
+	return d.revokeHostingBillingUsers(ctx, p, out)
+}
+
 // deleteHostingBudget takes the organization's spend budget (org.HostingBudgetName, the
 // one the creation made on its folder) off the billing account, as the person running
 // the destroy, who holds Billing Account Administrator as the break-glass account does.
@@ -1957,7 +1968,7 @@ func (d deps) deleteHostingBudget(ctx context.Context, p *org.Placement, out io.
 	deleted, err := budgets.DeleteNamed(ctx, client, p.BillingAccount, name)
 	switch {
 	case err != nil:
-		fmt.Fprintf(out, "The spend budgets of billing account %s could not be read (%v): if the budget %q still stands, it is deleted in the Billing console.\n", p.BillingAccount, err, name)
+		fmt.Fprintf(out, "The spend budgets of billing account %s could not be read (%v): if the budget %q still stands, it is deleted in the Billing console.\n", p.BillingAccount, errors.Cause(err), name)
 	case deleted:
 		fmt.Fprintf(out, "Deleted the spend budget %q off billing account %s.\n", name, p.BillingAccount)
 	default:
@@ -1965,6 +1976,71 @@ func (d deps) deleteHostingBudget(ctx context.Context, p *org.Placement, out io.
 	}
 
 	return nil
+}
+
+// revokeHostingBillingUsers takes the Billing Account User the creation granted the
+// organization's boot and org identities (create.BillingUsers) off the billing account, in
+// one change of its policy, as the person running the destroy. The Cloud Billing API wants
+// a quota project for a person's credentials, so the seam is billed to the root project,
+// as the budget's step bills the Budgets API. A member is the organization's as granted,
+// or as Google spells it once the identity is deleted,
+// deleted:serviceAccount:<email>?uid=<id>: Google's reference for a binding's members
+// gives that form, and the lab's reading of 2026-11-21 found a destroyed organization's
+// two identities so spelled on its billing account. A run again finds that form after a
+// first run that could not change the policy deleted the identities. A policy that cannot
+// be read or changed leaves the grants to the Billing console, named, and the destroy
+// goes on.
+func (d deps) revokeHostingBillingUsers(ctx context.Context, p *org.Placement, out io.Writer) error {
+	clients := d.rootOrg()
+	if clients == nil || clients.Google == nil {
+		return errors.New("no Google client is wired: the destroy takes the boot and org identities' Billing Account User off the billing account")
+	}
+	quota := ""
+	if p.Root != nil {
+		quota = p.Root.Project
+	}
+	google, err := clients.Google(ctx, quota)
+	if err != nil {
+		return err
+	}
+	defer google.Close()
+	users := create.BillingUsers(p)
+	held, err := google.BillingAccountMembers(ctx, p.BillingAccount, create.BillingUserRole)
+	if err != nil {
+		fmt.Fprintf(out, "The policy of billing account %s could not be read (%v): if %s and %s still hold Billing Account User there, it is taken off in the Billing console.\n", p.BillingAccount, errors.Cause(err), users[0], users[1])
+
+		return nil
+	}
+	members := organizationMembers(held, users)
+	if len(members) == 0 {
+		fmt.Fprintf(out, "The boot and org identities hold no Billing Account User on billing account %s: nothing to take off.\n", p.BillingAccount)
+
+		return nil
+	}
+	if err := google.RevokeBillingAccount(ctx, p.BillingAccount, create.BillingUserRole, members); err != nil {
+		fmt.Fprintf(out, "The policy of billing account %s could not be changed (%v): if %s and %s still hold Billing Account User there, it is taken off in the Billing console.\n", p.BillingAccount, errors.Cause(err), users[0], users[1])
+
+		return nil
+	}
+	fmt.Fprintf(out, "Took the boot and org identities' Billing Account User off billing account %s.\n", p.BillingAccount)
+
+	return nil
+}
+
+// organizationMembers are the members held that are one of the organization's, as granted
+// or as Google spells it once the identity is deleted (the exact member, then ?uid=), in
+// the order held and spelled as held.
+func organizationMembers(held, users []string) []string {
+	var members []string
+	for _, member := range held {
+		if slices.ContainsFunc(users, func(user string) bool {
+			return member == user || strings.HasPrefix(member, "deleted:"+user+"?uid=")
+		}) {
+			members = append(members, member)
+		}
+	}
+
+	return members
 }
 
 // Where a hosting organization's destroy stops when it cannot read its network project:
@@ -2082,7 +2158,7 @@ func destroyWarning(p *org.Placement, registered []string) string {
 		}
 		fmt.Fprintf(&b, "  %s (%s): %s\n", p.Projects[key], key, projectContentsOf(key))
 	}
-	fmt.Fprintf(&b, "\nAlso gone: the folders, the spend budget %q on the organization's folder, the custom roles and the tags, the org policies, the entitlements, the audit log sink, and on GitHub the rulesets and the operations environments. The repositories stay, with their code, pull requests and releases.\n", org.HostingBudgetName(p.Prefix))
+	fmt.Fprintf(&b, "\nAlso gone: the folders, the spend budget %q on the organization's folder, the boot and org identities' Billing Account User on the billing account, the custom roles and the tags, the org policies, the entitlements, the audit log sink, and on GitHub the rulesets and the operations environments. The repositories stay, with their code, pull requests and releases.\n", org.HostingBudgetName(p.Prefix))
 	if len(registered) > 0 {
 		fmt.Fprintf(&b, "\nKept: the network project %s, with its folder and the organization's, since 2-net registers %s there (registrations in 2-net/terraform.tfvars) and a registration cannot move to another project. Everything else in it goes: 2-net is destroyed inside it, once 1-org's destroy is planned and before anything else is destroyed, so its zones and records, the load balancer and its address and the certificates are gone, and %s stop resolving until a zone stands elsewhere and each registration is pointed at it. The registrations are a person's: transfer each out (sixty days after it was registered, after an unlock, with a year added at the new registrar's price), or give it up by deleting the registration or the project (Google's thirty-day restore window, then nothing but the registrant contact and support).\n", p.Projects[netKey], strings.Join(registered, ", "), strings.Join(registered, ", "))
 	}

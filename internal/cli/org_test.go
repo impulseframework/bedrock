@@ -1637,6 +1637,18 @@ func TestOrgDestroy(t *testing.T) {
 		appsZone   = "imp-net-gbl-dns-apps"
 		vanityZone = "imp-net-gbl-dns-example-dev"
 		zonesAhead = "Deleted the zone imp-net-gbl-dns-apps (apps.imp.example) ahead of the project: its name servers are free for a zone of the name at once, where a zone deleted with its project holds them until the project purges, thirty days later."
+		// The billing account's Billing Account User: the organization's two identities,
+		// another organization's whose prefix begins with this one's, and a person.
+		billingAccount = "billingAccounts/012345-6789AB-CDEF01"
+		bootMember     = "serviceAccount:imp-boot-gbl-tofu@imp-boot-gbl-core-a1b2.iam.gserviceaccount.com"
+		orgMember      = "serviceAccount:imp-org-gbl-tofu@imp-boot-gbl-core-a1b2.iam.gserviceaccount.com"
+		otherMember    = "serviceAccount:impx-org-gbl-tofu@impx-boot-gbl-core-e5f6.iam.gserviceaccount.com"
+		personMember   = "user:owner@imp.example"
+		budgetGone     = `Deleted the spend budget "imp organization" off billing account 012345-6789AB-CDEF01.`
+		billingOff     = "Took the boot and org identities' Billing Account User off billing account 012345-6789AB-CDEF01."
+		billingRefused = "if " + bootMember + " and " + orgMember + " still hold Billing Account User there, it is taken off in the Billing console."
+		journalEnd     = "Google holds them for 30 days, their ids never return. The GitHub repositories stay.\n"
+		refused        = "googleapi: Error 403: The caller does not have permission, forbidden"
 	)
 	tests := []struct {
 		name       string
@@ -1669,18 +1681,99 @@ func TestOrgDestroy(t *testing.T) {
 		// destroy deletes the network project; none when the zones are not the command's
 		// to delete that way.
 		wantZonesGone []string
+		// billingUsers are the members of Billing Account User on the billing account
+		// before the run; refuse is a call of the Google seam refused.
+		billingUsers []string
+		refuse       string
+		// wantBillingUsers are that role's members after the run, and by the time 1-org's
+		// destroy deletes the projects; wantRevoke the members of the one change of the
+		// role, joined with "+", none when the role is not to be changed.
+		wantBillingUsers []string
+		wantRevoke       string
 	}{
 		{
 			name:        "refuses without a terminal and without --yes",
 			interactive: never,
 			wantErr:     "asks for the prefix typed back at the terminal, and this run has none: --yes stands in for it",
-			wantOut:     []string{warning, "imp-tst-gbl-core-1a2b (tst): every application's tst services, jobs, secrets, records and files, and the tst Spanner instance"},
+			wantOut: []string{
+				warning, "imp-tst-gbl-core-1a2b (tst): every application's tst services, jobs, secrets, records and files, and the tst Spanner instance",
+				`Also gone: the folders, the spend budget "imp organization" on the organization's folder, the boot and org identities' Billing Account User on the billing account, the custom roles and the tags,`,
+			},
 		},
 		{
-			name:        "stops when something else than the prefix is typed",
-			interactive: always,
-			in:          "no\n",
-			wantOut:     []string{"Type the prefix (imp) to go on; anything else stops:", "Stopped: nothing was deleted."},
+			name:             "takes the two identities' Billing Account User off the billing account right after the budget, before anything is destroyed, and no one else's",
+			interactive:      never,
+			args:             []string{"--yes"},
+			billingUsers:     []string{bootMember, otherMember, orgMember, personMember},
+			wantOut:          []string{budgetGone + "\n" + billingOff + "\n", "Destroyed 1-org.", "Deleted the imp organization's projects; a line went into JOURNAL.md."},
+			wantRan:          12,
+			wantZonesGone:    []string{"zone " + netProject + "/" + appsZone, "zone " + netProject + "/" + vanityZone},
+			wantJournal:      journalEnd,
+			wantBillingUsers: []string{otherMember, personMember},
+			wantRevoke:       bootMember + "+" + orgMember,
+		},
+		{
+			name:             "says there is nothing to take off when neither identity holds the role, and changes nothing",
+			interactive:      never,
+			args:             []string{"--yes"},
+			billingUsers:     []string{otherMember, personMember},
+			wantOut:          []string{"The boot and org identities hold no Billing Account User on billing account 012345-6789AB-CDEF01: nothing to take off.", "Destroyed 1-org."},
+			wantRan:          12,
+			wantZonesGone:    []string{"zone " + netProject + "/" + appsZone, "zone " + netProject + "/" + vanityZone},
+			wantJournal:      journalEnd,
+			wantBillingUsers: []string{otherMember, personMember},
+		},
+		{
+			name:        "a run again with the identities deleted takes them off as Google spells them then, and no other organization's",
+			bootGone:    true,
+			interactive: never,
+			args:        []string{"--yes"},
+			billingUsers: []string{
+				"deleted:" + bootMember + "?uid=104729384756102938475",
+				"deleted:" + orgMember + "?uid=118273645501928374650",
+				"deleted:" + otherMember + "?uid=120394857610293847561",
+				"serviceAccount:imp-boot-gbl-tofu@imp-boot-gbl-core-zzzz.iam.gserviceaccount.com",
+			},
+			wantOut: []string{billingOff + "\nThe boot project imp-boot-gbl-core-a1b2 is gone already"},
+			wantBillingUsers: []string{
+				"deleted:" + otherMember + "?uid=120394857610293847561",
+				"serviceAccount:imp-boot-gbl-tofu@imp-boot-gbl-core-zzzz.iam.gserviceaccount.com",
+			},
+			wantRevoke: "deleted:" + bootMember + "?uid=104729384756102938475+deleted:" + orgMember + "?uid=118273645501928374650",
+		},
+		{
+			name:          "a billing account policy it may not read is said with both members and where they go, and the destroy goes on",
+			interactive:   never,
+			args:          []string{"--yes"},
+			billingUsers:  []string{bootMember, orgMember},
+			refuse:        "BillingAccountMembers",
+			wantOut:       []string{"The policy of billing account 012345-6789AB-CDEF01 could not be read (" + refused + "): " + billingRefused, "Destroyed 0-bootstrap.", "Deleted the imp organization's projects; a line went into JOURNAL.md."},
+			wantRan:       12,
+			wantZonesGone: []string{"zone " + netProject + "/" + appsZone, "zone " + netProject + "/" + vanityZone},
+			wantJournal:   journalEnd,
+			// The members stand: the policy went unread.
+			wantBillingUsers: []string{bootMember, orgMember},
+		},
+		{
+			name:             "a billing account policy it may not change is said with both members and where they go, and the destroy goes on",
+			interactive:      never,
+			args:             []string{"--yes"},
+			billingUsers:     []string{bootMember, orgMember},
+			refuse:           "RevokeBillingAccount",
+			wantOut:          []string{"The policy of billing account 012345-6789AB-CDEF01 could not be changed (" + refused + "): " + billingRefused, "Destroyed 0-bootstrap.", "Deleted the imp organization's projects; a line went into JOURNAL.md."},
+			wantRan:          12,
+			wantZonesGone:    []string{"zone " + netProject + "/" + appsZone, "zone " + netProject + "/" + vanityZone},
+			wantJournal:      journalEnd,
+			wantBillingUsers: []string{bootMember, orgMember},
+			wantRevoke:       bootMember + "+" + orgMember,
+		},
+		{
+			name:             "stops when something else than the prefix is typed",
+			interactive:      always,
+			in:               "no\n",
+			wantOut:          []string{"Type the prefix (imp) to go on; anything else stops:", "Stopped: nothing was deleted."},
+			billingUsers:     []string{bootMember, orgMember},
+			wantBillingUsers: []string{bootMember, orgMember},
 		},
 		{
 			name:          "destroys when the prefix is typed, and writes the journal",
@@ -1820,10 +1913,20 @@ func TestOrgDestroy(t *testing.T) {
 					}
 				}
 			}
+			for _, member := range tt.billingUsers {
+				google.Bind(billingAccount, create.BillingUserRole, member)
+			}
+			if tt.refuse != "" {
+				google.Refuse[tt.refuse] = errors.New(refused)
+			}
+			// The quota project of each seam the billing account's members were read through.
+			var billingReads []string
 			fake := roottest.New()
 			d.org.root = &rootorg.Clients{
-				Google: func(context.Context, string) (create.Google, error) { return google, nil },
-				DNS:    func(context.Context) (rootorg.DNS, error) { return fake, nil },
+				Google: func(_ context.Context, quotaProject string) (create.Google, error) {
+					return billedGoogle{Google: google, quotaProject: quotaProject, reads: &billingReads}, nil
+				},
+				DNS: func(context.Context) (rootorg.DNS, error) { return fake, nil },
 			}
 			// The network project holds the apps domain's zone, with a record of an
 			// application beside its apex NS and SOA, and a vanity domain's zone.
@@ -1837,9 +1940,12 @@ func TestOrgDestroy(t *testing.T) {
 				{Name: "quill.apps.imp.example.", Type: "A", TTL: 300, Data: []string{"203.0.113.10"}},
 			}
 			// What Cloud DNS had been asked by the time 1-org's destroy deleted the projects.
-			var aheadOfProjects []string
+			var aheadOfProjects, billingAhead []string
+			destroying := false
 			tofu.destroying = func() {
 				aheadOfProjects = slices.Clone(fake.Deletions)
+				billingAhead = slices.Clone(google.Policies[billingAccount][create.BillingUserRole])
+				destroying = true
 			}
 			if !tt.registered && !tt.bootGone && !tt.netGone {
 				fake.SpendBudgets["012345-6789AB-CDEF01"] = []org.Budget{{Name: "billingAccounts/012345-6789AB-CDEF01/budgets/7", DisplayName: "imp organization", Units: 500, CurrencyCode: "USD", Ancestors: []string{"folders/300"}, Thresholds: org.BudgetThresholds}}
@@ -1900,8 +2006,39 @@ func TestOrgDestroy(t *testing.T) {
 			if tt.wantJournal != "" && quota != "imr-root-gbl-core-c3d4" {
 				t.Errorf("the Budgets API was billed to %q, want the root project, where the API is on", quota)
 			}
+			if held := google.Policies[billingAccount][create.BillingUserRole]; !slices.Equal(held, tt.wantBillingUsers) {
+				t.Errorf("Billing Account User on the billing account is %v after the destroy, want %v", held, tt.wantBillingUsers)
+			}
+			if destroying && !slices.Equal(billingAhead, tt.wantBillingUsers) {
+				t.Errorf("Billing Account User on the billing account was %v by the time 1-org's destroy deleted the projects, want %v", billingAhead, tt.wantBillingUsers)
+			}
+			var wantRevokes []string
+			if tt.wantRevoke != "" {
+				wantRevokes = []string{"RevokeBillingAccount(012345-6789AB-CDEF01, roles/billing.user, " + tt.wantRevoke + ")"}
+			}
+			revokes := slices.DeleteFunc(slices.Clone(google.Calls), func(call string) bool { return !strings.HasPrefix(call, "RevokeBillingAccount(") })
+			if !slices.Equal(revokes, wantRevokes) {
+				t.Errorf("the billing account's policy was changed by %v, want %v", revokes, wantRevokes)
+			}
+			if tt.wantJournal != "" && !slices.Equal(billingReads, []string{"imr-root-gbl-core-c3d4"}) {
+				t.Errorf("the billing account's members were read through seams billed to %q, want one read billed to the root project, where the Cloud Billing API is on", billingReads)
+			}
 		})
 	}
+}
+
+// billedGoogle is the creation seam as opened billed to a quota project: it records the
+// project each read of a billing account's members was billed to.
+type billedGoogle struct {
+	create.Google
+	quotaProject string
+	reads        *[]string
+}
+
+func (g billedGoogle) BillingAccountMembers(ctx context.Context, billingAccount, role string) ([]string, error) {
+	*g.reads = append(*g.reads, g.quotaProject)
+
+	return g.Google.BillingAccountMembers(ctx, billingAccount, role)
 }
 
 // TestOrgRegisterCapacity: register refuses the application the placement has no room

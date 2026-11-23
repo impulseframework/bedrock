@@ -138,7 +138,7 @@ func deleteBudget(ctx context.Context, clients *Clients, p *org.Placement, proje
 	deleted, err := budgets.DeleteNamed(ctx, client, p.BillingAccount, name)
 	switch {
 	case err != nil && !exists:
-		fmt.Fprintf(out, "The spend budgets of billing account %s could not be read with the root project gone (%v): if the budget %q still stands, it is deleted in the Billing console.\n", p.BillingAccount, err, name)
+		fmt.Fprintf(out, "The spend budgets of billing account %s could not be read with the root project gone (%v): if the budget %q still stands, it is deleted in the Billing console.\n", p.BillingAccount, errors.Cause(err), name)
 	case err != nil:
 		return err
 	case deleted:

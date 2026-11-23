@@ -42,9 +42,9 @@ type FakeGoogle struct {
 	// BucketProjects is each bucket's project, as CreateBucket was told; a bucket in none
 	// is checked against nothing.
 	BucketProjects map[string]string
-	// Policies are the roles held, by resource (organizations/N, folders/N, projects/ID),
-	// then by role: the members. Parents is each folder's and project's parent, by which a
-	// grant on a folder reaches what is under it.
+	// Policies are the roles held, by resource (organizations/N, folders/N, projects/ID,
+	// billingAccounts/ID), then by role: the members. Parents is each folder's and project's
+	// parent, by which a grant on a folder reaches what is under it.
 	Policies map[string]map[string][]string
 	Parents  map[string]string
 	// Denied are the calls refused for a grant the caller lacks, in order.
@@ -421,6 +421,37 @@ func (g *FakeGoogle) GrantBillingAccount(_ context.Context, billingAccount, role
 		return err
 	}
 	g.Grants = append(g.Grants, "billingAccounts/"+billingAccount+" "+role+" "+member)
+
+	return nil
+}
+
+// BillingAccountMembers answers the role's members on the billing account from memory.
+func (g *FakeGoogle) BillingAccountMembers(_ context.Context, billingAccount, role string) ([]string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := g.call("BillingAccountMembers", billingAccount, role); err != nil {
+		return nil, err
+	}
+
+	return slices.Clone(g.Policies["billingAccounts/"+billingAccount][role]), nil
+}
+
+// RevokeBillingAccount takes the members out of the role on the billing account, and
+// records each member it took out.
+func (g *FakeGoogle) RevokeBillingAccount(_ context.Context, billingAccount, role string, members []string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := g.call("RevokeBillingAccount", billingAccount, role, strings.Join(members, "+")); err != nil {
+		return err
+	}
+	resource := "billingAccounts/" + billingAccount
+	for _, member := range members {
+		held := g.Policies[resource][role]
+		if i := slices.Index(held, member); i >= 0 {
+			g.Policies[resource][role] = slices.Delete(held, i, i+1)
+			g.Revoked = append(g.Revoked, resource+" "+member+" "+role)
+		}
+	}
 
 	return nil
 }
