@@ -356,7 +356,9 @@ func (m *maintenance) quiesce(ctx context.Context, facts map[string]string, prev
 
 // MaintenanceOff takes the application out of maintenance once the release's revision
 // serves: the task queue is resumed, against the new release. A run that was not in
-// maintenance has nothing to end. The maintenance revisions stay, as any old revision does.
+// maintenance has nothing to end, and a run after whose migrate step nothing deploys
+// leaves a queue an earlier run's maintenance left paused as it is. The maintenance
+// revisions stay, as any old revision does.
 func MaintenanceOff(ctx context.Context, clients *Clients, w Workspace, out io.Writer) error {
 	env, err := w.Environment()
 	if err != nil {
@@ -376,6 +378,14 @@ func MaintenanceOff(ctx context.Context, clients *Clients, w Workspace, out io.W
 		// restore of the environment may be in maintenance while the pull request builds.
 		if build.Substitutions[prNumberSub] != "" {
 			fmt.Fprintln(out, "No maintenance to end: a pull-request build never goes into maintenance, and the environment's queue is left as it is.")
+
+			return nil
+		}
+		// A run after whose migrate step nothing deploys (a migration version read, a first
+		// administrator invited again) deployed no release, so it ends no earlier run's
+		// maintenance: the maintenance page may still serve, and its queue stays paused.
+		if env[skipDeploy] == trueValue {
+			fmt.Fprintln(out, skipped(env))
 
 			return nil
 		}

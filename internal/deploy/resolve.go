@@ -482,7 +482,8 @@ type Facts struct {
 	// pull-request build.
 	KeepsReleaseBackups bool
 	// Migration is the migration operation a release build carries (the operations
-	// workflow's version, rerun or force), which the migrate step does; nil for none.
+	// workflow's version, rerun, force or reinvite), which the migrate step does; nil for
+	// none.
 	Migration *MigrateAction
 	// Retirement is the retirement a release build carries (the operations workflow's
 	// retire), which the plan and migrate steps do; nil for none.
@@ -792,8 +793,8 @@ func generationRestore(instruction string) bool {
 	return strings.HasPrefix(instruction, restoreMomentPrefix) || (strings.HasPrefix(instruction, "projects/") && strings.Contains(instruction, databaseBackupsSegment))
 }
 
-// migration reads the migration operation (bedrock migration version|rerun|force, through
-// the operations workflow). It is a release build's: a pull request's database is its own
+// migration reads the migration operation (bedrock migration version|rerun|force and the
+// reinvite action, through the operations workflow). It is a release build's: a pull request's database is its own
 // and recreated instead; and never a restore run's, whose database is replaced, so there
 // is no migration state to operate on. What it asks is checked here, before the image
 // builds, and done by the migrate step.

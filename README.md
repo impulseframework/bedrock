@@ -499,19 +499,21 @@ whose issuer URL becomes a stack variable once for the organization,
 `<auth>_<registration>_issuer`, an `https` URL: the plan refuses an `http` issuer, since a
 rendered stack is a cloud environment) becomes the registration variables, the redirect
 output and the hand steps in the README;
-an auth's first-administrator variable (`APP_<AUTH>_ADMINISTRATOR`, the sign-in name the
-migrate command seeds the administrator role membership under while the auth has no users)
-becomes a stack variable per environment, carried by every data-level process, and a hand
-step; a first administrator's generated password (`secret:"generated"`) is a secret like
-any other; the application's public address (`APP_PUBLIC_URL`, which every link its auths
-mail opens the login page under) is derived from the site's canonical hostname, each
-site's own in the sites layout; the Google Workspace mailbox the auths' mail is sent as
-(`APP_MAIL_MAILBOX`) becomes a stack variable once for the organization (`mail_mailbox`,
-empty until named, when the application writes its mail to the log) and a hand step, the
-address the mail is from when it is not the mailbox (`APP_MAIL_FROM`, an alias of the
-mailbox's account) a second one beside it (`mail_from`, empty to send from the mailbox), and
-its app password (`APP_MAIL_APP_PASSWORD`) a secret the migrate command reads too, since
-the data level opens the sender;
+an auth's first-administrator variable (`APP_<AUTH>_ADMINISTRATOR`, the email address the
+migrate command has the first administrator's invitation mailed to while nobody of the auth
+holds the Super Administrator role) becomes a stack variable per environment, carried by
+every data-level process, and a hand step; an application that still declares a generated
+password for a first administrator (`APP_<AUTH>_ADMINISTRATOR_PASSWORD`) is refused, since
+none is generated ("The first administrator", below); the application's public address
+(`APP_PUBLIC_URL`, which every link its auths mail opens the login page under) is derived
+from the site's canonical hostname, each site's own in the sites layout; the Google
+Workspace mailbox the auths' mail is sent as (`APP_MAIL_MAILBOX`) becomes a stack variable
+once for the organization (`mail_mailbox`, empty until named; a deployed application does
+not start without its mailbox and the mailbox's app password) and a hand step that comes
+before the first release, the address the mail is from when it is not the mailbox
+(`APP_MAIL_FROM`, an alias of the mailbox's account) a second one beside it (`mail_from`,
+empty to send from the mailbox), and its app password (`APP_MAIL_APP_PASSWORD`) a secret
+the migrate command reads too, since the data level opens the sender;
 a main package under `cmd/deployment/migrate` becomes the migrate command, which the
 pipeline takes out of each build's image and runs on the build worker as the deploy
 identity, granted database admin on the application's own database by the stack; a main package
@@ -1277,14 +1279,19 @@ thing one step hands the next. In order:
   seconds to minutes after the policy holds it. The command's lines are the build log's,
   so a failed migration's message is where the run is read, and the deployment record
   lists the migrations applied. A release build may carry a migration operation
-  (`_MIGRATE_ACTION`, from the operations workflow: `version`, `rerun` or `force`, with
-  `_MIGRATE_TABLE`, `_MIGRATE_VERSION` and `_REQUESTER`; `bedrock migration`, below):
+  (`_MIGRATE_ACTION`, from the operations workflow: `version`, `rerun`, `force` or
+  `reinvite`, with `_MIGRATE_TABLE`, `_MIGRATE_VERSION`, `_MIGRATE_AUTH` and
+  `_REQUESTER`; `bedrock migration` and "The first administrator", below):
   `version` runs the command once with `-version` and leaves `SKIP_DEPLOY` with the
   reason, so nothing else deploys; `force` runs it with `-force <n>` (or `-force-data
   <n>`), leaves the force for the record, then runs it as it always does; `rerun` is the
-  command as it always does. An operation that cannot run (an unknown action or table, a
-  force whose version is missing or not an integer, a force without a requester) is
-  refused by `deploy resolve` and again here, before the command runs. A build that
+  command as it always does. `reinvite` runs it once with `-reinvite-administrator
+  <auth>` and leaves `SKIP_DEPLOY` with the reason, as `version` does. A `version` or a
+  `reinvite` run deploys nothing, so it waits for no maintenance window and takes no
+  release backup. An operation that cannot run (an unknown action or table, a force whose
+  version is missing or not an integer, a force without a requester, a reinvite that
+  names no auth) is refused by `deploy resolve` and again here, before the command
+  runs. A build that
   retires a version of a versioned secret (`bedrock secret retire`: `_RETIRE_SECRET`,
   `_RETIRE_VERSION` and `_REQUESTER`, with no restore, rollback or migration operation
   beside them) runs the migrations as always and then the command once more with
@@ -2260,6 +2267,55 @@ gh and prints where to read the summary; the job reads the deployment records as
 operations identity, and nothing on the developer's machine touches the cloud. From the
 listing, `bedrock restore` takes `--before <release>`, `--backup <name>` or `--at
 <moment>` (with `--of <database>` for a moment in an earlier generation).
+
+## The first administrator
+
+An application's first administrator comes in by an invitation, as everyone after them
+does. The placement names the person's email address per environment
+(`<auth>_administrator` in `terraform.tfvars`, which the stack hands every data-level
+process as `APP_<AUTH>_ADMINISTRATOR`), for every auth whose roles the application gives,
+with the password method or without. While nobody of the auth holds the Super
+Administrator role, each release's migrate command has an invitation mailed to that
+address, which gives the role. The person opens the link and signs in by a method of the
+auth: with the password method they choose a password there and enter the code mailed to
+the address; through a directory, they sign in and enter a code mailed to the invited
+address, except where the directory vouches for the address it gives (Google does, for a
+Gmail or Google Workspace address), which must then be the invited one, however many
+organizations the method admits. No account is made ahead of them and no
+password is generated: the stack holds no secret for a first administrator, and nobody is
+granted a read of one.
+
+The mailbox comes first. An invitation's link is never written to a log, and an
+application does not start without its mailbox and the mailbox's app password, so the
+mailbox's hand step (the mailbox named, the app password added as version 1 and pinned)
+comes before the first release in each environment, and the address with it. A release
+that reaches an environment without them stops, at its migrate step at the latest, with
+the sentence saying what is missing, and no revision deploys. The mailbox's name, the app
+password's pin and the address are in `terraform.tfvars`, so they reach an environment
+with a release: commit them and release. The stopped release run again (`bedrock rerun`)
+reads the files it was cut with and stops in the same place. A pull request's environment
+is handed the first environment's mailbox and address: both come before a pull request is
+built, and the build that makes its database mails the invitation too, unless its seed
+gives somebody the Super Administrator role.
+
+An invitation lasts seven days unless the application sets another time. A release leaves
+one that stands as it is, mails a new one
+once it has run out, and, when the address in `terraform.tfvars` changes, withdraws the old
+one and mails the new address. For mail that was lost, the operations workflow's
+`reinvite` action (Actions, operations, Run workflow, with the environment and the auth;
+or `gh workflow run operations.yml -f action=reinvite -f environment=<env> -f
+auth=<auth>`) reads the environment's live release from its deployment records and runs
+its build with `_MIGRATE_ACTION=reinvite` and `_MIGRATE_AUTH`: the migrate step runs the
+release's migrate command once with `-reinvite-administrator <auth>`, which withdraws the
+standing invitation, so its link no longer opens, and mails a fresh one to the address the
+live release was cut with, and nothing else deploys: no window is waited for, no backup is
+taken, no record is written, and a queue an earlier run's maintenance left paused stays
+paused. A mistyped address is not put right by the action, which would mail it again:
+correct it in `terraform.tfvars` and release, and the release withdraws the old invitation
+and mails the new address. The action runs in
+every environment, production included, where the build waits for its approval in Cloud
+Build as any production run does. The command refuses once somebody of the auth holds the
+Super Administrator role, since somebody is then there to invite the others.
 
 ## bedrock maintenance
 

@@ -361,9 +361,26 @@ variable "retired" {
 }
 
 variable "mail_mailbox" {
-  description = "The Google Workspace mailbox the auths' mail is sent as (APP_MAIL_MAILBOX, dataConfig.MailMailbox), through the Workspace SMTP relay with the mailbox's app password (the secret APP_MAIL_APP_PASSWORD): a no-reply address of the organization's domain, once for the organization. Empty until the organization names one: the application then writes its mail to the log and sends nothing (README, \"Hand steps\")."
+  description = "The Google Workspace mailbox the auths' mail is sent as (APP_MAIL_MAILBOX, dataConfig.MailMailbox), through the Workspace SMTP relay with the mailbox's app password (the secret APP_MAIL_APP_PASSWORD): a no-reply address of the organization's domain, once for the organization. Empty until the organization names one; the application does not start without the mailbox and its app password, so both are in place before the first release (README, \"Hand steps\")."
   type        = string
   default     = ""
+}
+
+variable "staff_administrator" {
+  description = <<-EOT
+    Per environment, the email address of the staff auth's first administrator
+    (APP_STAFF_ADMINISTRATOR, pkg/config/data.go dataConfig.StaffAdministrator). While nobody
+    of the auth holds the Super Administrator role, each release's migrate command
+    has an invitation mailed to it, and the person who accepts it holds the role;
+    empty until named, and a release refuses while nobody holds the role and no
+    address is named (README, "Hand steps").
+  EOT
+  type        = map(string)
+  default = {
+    tst = ""
+    stg = ""
+    prd = ""
+  }
 }
 
 variable "state_bucket" {

@@ -10,7 +10,7 @@ import (
 // always password: the segment of its login route (user/password/login). A password
 // sign-in is checked against the user's hash in the users table; the bootstrap creates
 // the development logins with their passwords, and a deployed environment starts from the
-// administrator the migrate command seeds (foothold.go), the rest coming from its
+// first administrator the migrate command invites (foothold.go), the rest coming from its
 // administration surface.
 const PasswordRegistration = "password"
 

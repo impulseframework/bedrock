@@ -44,8 +44,7 @@ state_bucket = "{{.P.StateBucket}}"
 {{end -}}
 {{range .Administrators -}}
 # The {{.Name}} auth's first administrator, per environment (README, "Hand steps"):
-# the sign-in name the directory presents, which the migrate command seeds the
-# administrator role membership under while the auth has no users.
+# the person's email address, which the first release mails the invitation to.
 {{.Var}} = {
 {{$.TfvarsEnvStrings}}
 }
@@ -53,8 +52,8 @@ state_bucket = "{{.P.StateBucket}}"
 {{end -}}
 {{if .Mailbox -}}
 # The Google Workspace mailbox the auths' mail is sent as, once for the
-# organization (README, "Hand steps"); empty, the application writes its mail
-# to the log and sends nothing.
+# organization (README, "Hand steps"); the application does not start without
+# it and its app password.
 mail_mailbox = ""
 
 {{end -}}

@@ -2,9 +2,9 @@
 // organization's directory (OpenID Connect against Microsoft Entra) or through a partner
 // organization's own identity provider (okta, the generic OpenID Connect method) and hold
 // their roles in the members permission store, which the application assigns: the
-// directory proves who someone is, and the deployment seeds the first administrator's
-// membership under the sign-in name the placement names (APP_MEMBERS_ADMINISTRATOR) while
-// the auth has no users.
+// directory proves who someone is, and the deployment invites the first administrator at
+// the address the placement names (APP_MEMBERS_ADMINISTRATOR) while nobody of the auth
+// holds the Super Administrator role.
 //
 // An auth is a package. It owns its session manager, one Auth session with the sign-in
 // methods registered on it (here directory and okta), with its own session, user,

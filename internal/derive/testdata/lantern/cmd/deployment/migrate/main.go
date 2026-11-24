@@ -1,7 +1,8 @@
 // Package main is the deployment's migration step: it applies the schema migrations,
 // checks the release's role policy against what the permission engine's store holds, and
-// seeds the staff auth's first administrator while its users table holds no rows. It
-// reads the core and data configuration levels and nothing above them.
+// invites the staff auth's first administrator while nobody of it holds the Super
+// Administrator role. It reads the core and data configuration levels and nothing above
+// them.
 //
 // Three flags make it the instrument for the states the migration runner refuses to
 // guess at. -version prints what each migrations table (schema, data) says about the
@@ -237,11 +238,11 @@ func migrate(ctx context.Context, settings config.DatabaseSettings, seed bool) e
 		return errors.Wrap(err, "deploy.CheckRoles()")
 	}
 
-	// The foothold: a users table holding no rows means nobody can sign in, so the staff
-	// auth's first administrator is seeded now, after the roles the release ships are in
-	// place, and never again while a user exists.
-	if err := deploy.SeedAdministrators(ctx, data); err != nil {
-		return errors.Wrap(err, "deploy.SeedAdministrators()")
+	// The foothold: while nobody of the staff auth holds the Super Administrator role,
+	// its first administrator is invited now, after the roles the release ships are in
+	// place.
+	if err := deploy.InviteAdministrators(ctx, data); err != nil {
+		return errors.Wrap(err, "deploy.InviteAdministrators()")
 	}
 
 	// The feature flags the release declares: a new flag is written off, a known one keeps

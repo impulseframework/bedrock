@@ -130,7 +130,7 @@ from `2-env`'s state.
   client's metrics (`service-accounts.tf`), and `roles/datastore.user` on the Firestore
   database under the condition naming it (`firestore.tf`). It holds
   accessor on the secrets the migration reads
-  (`APP_MAIL_APP_PASSWORD`: the generated password of each auth's first administrator, which it seeds the administrator user with, and the mailbox's app password, which the data level opens the mail sender with), and on
+  (`APP_MAIL_APP_PASSWORD`: the mailbox's app password, which the data level opens the mail sender with and the invitation of each auth's first administrator is mailed through), and on
   no other runtime secret, which a migration never reads. The Spanner
   client writes its client-side metrics (operation and attempt latency,
   counts) to the project that owns the instance and logs a denial at every
@@ -677,10 +677,12 @@ substitutions and this stack's outputs:
   the run that only takes the application out of maintenance, the
   requester alone on a rerun (`bedrock rerun`: the release's tag build again,
   production included);
-  `_MIGRATE_ACTION`, `_MIGRATE_TABLE` and `_MIGRATE_VERSION`, empty on a tag's
-  own build and set by the operations workflow's migration job (`version`,
-  `rerun` or `force` on the environment's migrations, with `_REQUESTER` naming
-  who asked); `_MIGRATIONS_DIR`, the
+  `_MIGRATE_ACTION`, `_MIGRATE_TABLE`, `_MIGRATE_VERSION` and
+  `_MIGRATE_AUTH`, empty on a tag's own build and set by the operations
+  workflow: by its migration job (`version`, `rerun` or `force` on the
+  environment's migrations) and by its `reinvite` job (the auth whose first
+  administrator is invited again), with `_REQUESTER` naming who asked;
+  `_MIGRATIONS_DIR`, the
   schema migrations directory, which decides whether `/gcbrun shared-db` is
   allowed; `_REPO_FULL_NAME`, the repository as GitHub names it, for the sweep;
   `_HOSTNAME`, the environment's canonical hostname (a pull-request stack's
@@ -1158,7 +1160,8 @@ pull request's.
 
 ## Hand steps
 
-Per environment, after the first apply:
+Per environment, after the first apply. The steps that say so come before the first
+release there:
 
 1. In the Microsoft Entra admin center, for the members auth's directory registration: one app
    registration per environment (Identity > Applications > App registrations >
@@ -1234,25 +1237,42 @@ Per environment, after the first apply:
    its members can view its member list (the infrastructure repository's
    README, "The role groups"). If the role groups
    are nested, set `staff_directory_group_lookup = "nested"` in `terraform.tfvars`.
-4. Name the members auth's first administrator in `terraform.tfvars` (`members_administrator`), per
-   environment: the sign-in name the directory presents (the user principal name
-   on Entra, the email on Google, the preferred username at an organization's own
-   identity provider, or its email when it sends none). The migrate command of the
-   first release in the environment seeds the administrator role membership under
-   it while the auth's users table holds no rows, and refuses to seed while the
-   name is empty; the person then signs in through the directory and holds the
-   role.
-5. In the Google Workspace Admin console, once for the organization: a mailbox the
+4. In the Google Workspace Admin console, once for the organization: a mailbox the
    application sends its mail as (a no-reply address of the organization's domain),
    with 2-step verification turned on and an app password generated for it, and the
    SMTP relay service (Apps > Google Workspace > Gmail > Routing) accepting mail from
    the organization's addresses with authentication and TLS required. Put the mailbox
-   in `terraform.tfvars` (`mail_mailbox`) and add the app password as version 1 of
-   `imp-<env>-gbl-harbor-mail-app-password` in every environment: the password is a
-   declared secret, so a release to an environment after tst waits on its
-   pin. Until the mailbox is named the application writes its mail (the
-   invitations and address verifications its auths send, link included) to the log
-   and sends nothing, which a deployed environment is not left at.
+   in `terraform.tfvars` (`mail_mailbox`), add the app password as version 1 of
+   `imp-<env>-gbl-harbor-mail-app-password` in every environment, and pin it there
+   (`secret_versions`; `bedrock secret pin <env> APP_MAIL_APP_PASSWORD 1`). This step comes before the first
+   release in each environment, and in tst before a pull request is built: the
+   application does not start without its mailbox and the mailbox's app password, since the
+   links and codes it mails are never written to a log. A release that reaches an environment
+   without them stops, at its migrate step at the latest, with the sentence saying what is
+   missing, and no revision deploys. The mailbox's name and the app password's pin are in
+   `terraform.tfvars`, so they reach an environment with a release: commit them and release.
+   The stopped release run again reads the files it was cut with and stops in the same place.
+5. Name the members auth's first administrator in `terraform.tfvars` (`members_administrator`), per
+   environment, before the first release there: the person's email address. While nobody of
+   the auth holds the Super Administrator role, each release's migrate command has an
+   invitation mailed to the address, which gives that role, and refuses while the address
+   is empty or the application has no mailbox to send as. The person opens the link and
+   signs in by a method of the auth: through a directory, they
+   sign in and enter a code mailed to the invited address, except where the directory
+   vouches for the address it gives (Google does, for a Gmail or Google Workspace address),
+   which must then be the invited one. From there they invite everyone else. No
+   account is made ahead of them and no password is generated, so there is no secret for
+   anybody to read. An invitation lasts seven days unless the application sets another
+   time: a release leaves one that stands as it is, mails a new one once it has run out,
+   and, when the address here changes, withdraws the old one and mails the new address. A
+   pull request's environment is handed tst's address: the build that makes
+   its database mails the invitation too, unless its seed gives somebody the role. Mail
+   that was lost is sent again with the operations workflow's `reinvite` action (Actions,
+   operations, Run workflow, with the environment and the auth), which withdraws the
+   standing invitation, so its link no longer opens, and mails a fresh one to the address
+   the live release was cut with; the action is refused once somebody holds the role. A
+   mistyped address is not put right by the action, which would mail it again: correct it
+   here and release, and the release withdraws the old invitation and mails the new address.
 6. Generate a cookie key (`openssl rand -base64 32`) and add it as version 1
    of `imp-<env>-gbl-harbor-cookie-key`.
 7. Pin the versions in `secret_versions` and apply.
@@ -1291,8 +1311,8 @@ Per environment, after the first apply:
 | `staff_directory_group_prefix` | Prefix of the role groups of the staff auth's directory registration. | `string` | `"staff-"` | no |
 | `staff_directory_hosted_domain` | Workspace domain the logins of the staff auth's directory registration are restricted to. | `string` | `"impulseframework.com"` | no |
 | `staff_directory_administered_workspaces` | The Workspaces the deployment administers among those the staff auth's directory registration admits, by domain; their sign-ins are asked for no sign-in code. | `string` | `""` | no |
-| `members_administrator` | Sign-in name of the members auth's first administrator, per environment. | `map(string)` | all empty | no |
-| `mail_mailbox` | Google Workspace mailbox the auths' mail is sent as; empty writes the mail to the log instead. | `string` | `""` | no |
+| `members_administrator` | Email address of the members auth's first administrator, per environment; each release mails the invitation there while nobody of the auth holds the Super Administrator role. | `map(string)` | all empty | no |
+| `mail_mailbox` | Google Workspace mailbox the auths' mail is sent as; the application does not start without it and its app password. | `string` | `""` | no |
 | `state_bucket` | State bucket, for the upstream layers' outputs. | `string` | n/a | yes |
 
 ## Outputs

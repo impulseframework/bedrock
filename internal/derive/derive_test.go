@@ -218,17 +218,16 @@ func TestDerive(t *testing.T) {
 			wantOutlets:        []string{"default /api"},
 			wantSignIn:         []string{"POST /api/user/password/login: the default outlet's password login", "POST /api/user/pending/confirm: the default outlet's pending sign-in confirmation", "POST /api/user/pending/cancel: the default outlet's pending sign-in cancel"},
 			wantMethods:        []string{"keepers/password password", "keepers/persona persona"},
-			wantAdministrators: []string{"keepers APP_KEEPERS_ADMINISTRATOR_PASSWORD administrator-password"},
+			wantAdministrators: []string{"keepers APP_KEEPERS_ADMINISTRATOR"},
 			wantSecrets: []string{
 				"APP_COOKIE_KEY cookie-key pkg/config/data.go dataConfig.CookieKey",
 				"APP_SECRET_KEY secret-key pkg/config/data.go dataConfig.SecretKey versioned",
 				"APP_MAIL_APP_PASSWORD mail-app-password pkg/config/data.go dataConfig.MailAppPassword",
-				"APP_KEEPERS_ADMINISTRATOR_PASSWORD keepers-administrator-password pkg/config/data.go dataConfig.KeepersAdministratorPassword",
 			},
 			wantCore: []string{varVersion, varServiceName, varLoggingProject},
 			wantData: []string{
 				varDatabaseProject, varDatabaseInstance, varDatabaseName,
-				"APP_DEFAULT_SESSION_TIMEOUT", "APP_COOKIE_KEY", "APP_SECRET_KEY", varPublicURL, varMailMailbox, varMailFrom, varMailAppPassword, "APP_KEEPERS_ADMINISTRATOR_PASSWORD",
+				"APP_DEFAULT_SESSION_TIMEOUT", "APP_COOKIE_KEY", "APP_SECRET_KEY", varPublicURL, varMailMailbox, varMailFrom, varMailAppPassword, "APP_KEEPERS_ADMINISTRATOR",
 				"APP_KEEPERS_PERSONA_ISSUER", "APP_KEEPERS_PERSONA_CLIENT_ID", "APP_KEEPERS_PERSONA_REDIRECT_URL",
 			},
 			wantSite:     []string{varPort, "APP_CONSOLE_DIST"},
@@ -249,6 +248,7 @@ func TestDerive(t *testing.T) {
 				varPublicURL:                  SupplyDerived,
 				varMailMailbox:                SupplyPlacement,
 				varMailAppPassword:            SupplySecret,
+				"APP_KEEPERS_ADMINISTRATOR":   SupplyPlacement,
 				varPort:                       SupplyPlatform,
 				"APP_CONSOLE_DIST":            SupplyImage,
 			},
@@ -262,10 +262,9 @@ func TestDerive(t *testing.T) {
 			wantSecrets: []string{
 				"APP_COOKIE_KEY cookie-key pkg/config/data.go dataConfig.CookieKey",
 				"APP_MAIL_APP_PASSWORD mail-app-password pkg/config/data.go dataConfig.MailAppPassword",
-				"APP_STAFF_ADMINISTRATOR_PASSWORD staff-administrator-password pkg/config/data.go dataConfig.StaffAdministratorPassword",
 			},
 			wantCore:     []string{varVersion, varServiceName, varLoggingProject, varTraceSampling},
-			wantData:     []string{varDatabaseProject, varDatabaseInstance, varDatabaseName, "SPANNER_EMULATOR_HOST", varFirestoreProject, varFirestoreDatabase, varFirebaseAPIKey, "FIRESTORE_EMULATOR_HOST", "APP_DEFAULT_SESSION_TIMEOUT", "APP_COOKIE_KEY", varPublicURL, varMailMailbox, varMailAppPassword, "APP_STAFF_ADMINISTRATOR_PASSWORD"},
+			wantData:     []string{varDatabaseProject, varDatabaseInstance, varDatabaseName, "SPANNER_EMULATOR_HOST", varFirestoreProject, varFirestoreDatabase, varFirebaseAPIKey, "FIRESTORE_EMULATOR_HOST", "APP_DEFAULT_SESSION_TIMEOUT", "APP_COOKIE_KEY", varPublicURL, varMailMailbox, varMailAppPassword, "APP_STAFF_ADMINISTRATOR"},
 			wantSite:     []string{varPort, SiteBundleVariable},
 			wantSiteLvls: []string{LevelCore, LevelData, LevelSite},
 			wantMigrate:  []string{LevelCore, LevelData},
@@ -277,11 +276,12 @@ func TestDerive(t *testing.T) {
 				"prd": "lantrn-console.impulseframework.dev, lanterns.impulseframework.dev",
 			},
 			wantSupplies: map[string]Supply{
-				SiteBundleVariable: SupplyDerived,
-				varPort:            SupplyPlatform,
+				SiteBundleVariable:        SupplyDerived,
+				varPort:                   SupplyPlatform,
+				"APP_STAFF_ADMINISTRATOR": SupplyPlacement,
 			},
 			wantFirestore:      "schema/firestore: 3 index(es) subscriptions_resource_key_expiry, subscriptions_resource_domains_expiry, subscriptions_resource_expiry; 2 field(s) subscriptions_expiry (ttl), changes_expires (ttl); rules_version = '2';",
-			wantAdministrators: []string{"staff APP_STAFF_ADMINISTRATOR_PASSWORD administrator-password"},
+			wantAdministrators: []string{"staff APP_STAFF_ADMINISTRATOR"},
 			wantScheduled:      []string{"close-stale-holds: POST /_scheduled/close-stale-holds at */15 * * * * in UTC", "send-weekly-letter: POST /_scheduled/send-weekly-letter at 0 9 * * 1 in Europe/London"},
 			wantFileRoutes:     []string{"GET /api/notices/{id}/file: the @file column Notice.Key"},
 			wantOutlets:        []string{"default /api"},
@@ -422,9 +422,6 @@ func TestDerive(t *testing.T) {
 			for i := range m.Auths {
 				if m.Auths[i].Administrator != nil {
 					administrators = append(administrators, m.Auths[i].Name+" "+m.Auths[i].Administrator.Name)
-				}
-				if p := m.Auths[i].AdministratorPassword; p != nil {
-					administrators = append(administrators, m.Auths[i].Name+" "+p.Name+" "+string(p.Role))
 				}
 			}
 			if !slices.Equal(administrators, tt.wantAdministrators) {
@@ -1707,6 +1704,40 @@ func dropEmbedding(t *testing.T, file string) {
 	}
 	if err := os.WriteFile(file, []byte(without), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestDeriveRefusesAdministratorPassword derives a copy of the harbor fixture whose data
+// level still declares a generated password for the members auth's first administrator:
+// the derivation, which bedrock check and bedrock render both run, refuses the application.
+func TestDeriveRefusesAdministratorPassword(t *testing.T) {
+	t.Parallel()
+
+	const dataFile = "pkg/config/data.go"
+	dir := filepath.Join(t.TempDir(), "app")
+	if err := os.CopyFS(dir, os.DirFS(filepath.Join("testdata", "harbor"))); err != nil {
+		t.Fatalf("os.CopyFS() error = %v", err)
+	}
+	file := filepath.Join(dir, dataFile)
+	src, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const field = "\tMembersAdministrator string `env:\"APP_MEMBERS_ADMINISTRATOR\"`\n"
+	declared := strings.Replace(string(src), field, field+"\tMembersAdministratorPassword string `env:\"APP_MEMBERS_ADMINISTRATOR_PASSWORD\" secret:\"generated\"`\n", 1)
+	if declared == string(src) {
+		t.Fatalf("%s declares no MembersAdministrator to declare the password beside", dataFile)
+	}
+	if err := os.WriteFile(file, []byte(declared), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := app.Discover(dir)
+	if err != nil {
+		t.Fatalf("app.Discover() error = %v", err)
+	}
+	const want = "dataConfig.MembersAdministratorPassword declares APP_MEMBERS_ADMINISTRATOR_PASSWORD, a password generated for the members auth's first administrator: no password is generated any more"
+	if _, err := Derive(a, testPlacement(t)); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Derive() error = %v, want %q", err, want)
 	}
 }
 

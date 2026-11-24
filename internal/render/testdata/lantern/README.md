@@ -129,7 +129,7 @@ from `2-env`'s state.
   client's metrics (`service-accounts.tf`), and `roles/datastore.user` on the Firestore
   database under the condition naming it (`firestore.tf`). It holds
   accessor on the secrets the migration reads
-  (`APP_MAIL_APP_PASSWORD`, `APP_STAFF_ADMINISTRATOR_PASSWORD`: the generated password of each auth's first administrator, which it seeds the administrator user with, and the mailbox's app password, which the data level opens the mail sender with), and on
+  (`APP_MAIL_APP_PASSWORD`: the mailbox's app password, which the data level opens the mail sender with and the invitation of each auth's first administrator is mailed through), and on
   no other runtime secret, which a migration never reads. The Spanner
   client writes its client-side metrics (operation and attempt latency,
   counts) to the project that owns the instance and logs a denial at every
@@ -189,7 +189,6 @@ from `2-env`'s state.
   |---|---|---|
   | `APP_COOKIE_KEY` | `dataConfig.CookieKey` | `...-cookie-key` |
   | `APP_MAIL_APP_PASSWORD` | `dataConfig.MailAppPassword` | `...-mail-app-password` |
-  | `APP_STAFF_ADMINISTRATOR_PASSWORD` | `dataConfig.StaffAdministratorPassword` | `...-staff-administrator-password` |
 
   The site's identity holds accessor. The migrate command
   constructs the same configuration level, but its work is known: the session
@@ -361,10 +360,11 @@ above them.
 | `GOOGLE_CLOUD_FIRESTORE_PROJECT` | data | the environment project (the Firestore database's) | yes | yes |
 | `APP_FIRESTORE_DATABASE` | data | the Firestore database | yes | yes |
 | `APP_FIREBASE_API_KEY` | data | the Firebase web API key | yes | yes |
+| `APP_STAFF_ADMINISTRATOR` | data | `var.staff_administrator[env]` | yes | yes |
 | `APP_PUBLIC_URL` | data | `https://<first hostname>`, each site's own on its service | yes | yes |
 | `APP_MAIL_MAILBOX` | data | `var.mail_mailbox` | yes | yes |
 | `APP_SCHEDULER_INVOKER` | none, the framework reads it | the scheduler's invoker identity, unset in a pull-request stack | yes | |
-| `APP_COOKIE_KEY`, `APP_MAIL_APP_PASSWORD`, `APP_STAFF_ADMINISTRATOR_PASSWORD` | data | secret, at the pinned version | yes | |
+| `APP_COOKIE_KEY`, `APP_MAIL_APP_PASSWORD` | data | secret, at the pinned version | yes | |
 
 The migrate command carries the Firestore
 database because the data level opens its live service when it is constructed, and
@@ -413,7 +413,7 @@ role for the time asked.
 
 ### Generated secrets
 
-A secret declared `secret:"generated"` in the code (`APP_COOKIE_KEY`, `APP_STAFF_ADMINISTRATOR_PASSWORD`) has a
+A secret declared `secret:"generated"` in the code (`APP_COOKIE_KEY`) has a
 value nobody types: 32 bytes of cryptographically secure random data, base64,
 made by the tooling. Its entry in `secret_versions` is the word `generated` in
 every environment (`bedrock render` seeds it; `bedrock check` refuses a
@@ -606,10 +606,12 @@ substitutions and this stack's outputs:
   the run that only takes the application out of maintenance, the
   requester alone on a rerun (`bedrock rerun`: the release's tag build again,
   production included);
-  `_MIGRATE_ACTION`, `_MIGRATE_TABLE` and `_MIGRATE_VERSION`, empty on a tag's
-  own build and set by the operations workflow's migration job (`version`,
-  `rerun` or `force` on the environment's migrations, with `_REQUESTER` naming
-  who asked); `_MIGRATIONS_DIR`, the
+  `_MIGRATE_ACTION`, `_MIGRATE_TABLE`, `_MIGRATE_VERSION` and
+  `_MIGRATE_AUTH`, empty on a tag's own build and set by the operations
+  workflow: by its migration job (`version`, `rerun` or `force` on the
+  environment's migrations) and by its `reinvite` job (the auth whose first
+  administrator is invited again), with `_REQUESTER` naming who asked;
+  `_MIGRATIONS_DIR`, the
   schema migrations directory, which decides whether `/gcbrun shared-db` is
   allowed; `_REPO_FULL_NAME`, the repository as GitHub names it, for the sweep;
   `_HOSTNAME`, the environment's canonical hostname, the first site's (a pull-request stack's
@@ -1083,20 +1085,44 @@ pull request's.
 
 ## Hand steps
 
-Per environment, after the first apply:
+Per environment, after the first apply. The steps that say so come before the first
+release there:
 
 1. In the Google Workspace Admin console, once for the organization: a mailbox the
    application sends its mail as (a no-reply address of the organization's domain),
    with 2-step verification turned on and an app password generated for it, and the
    SMTP relay service (Apps > Google Workspace > Gmail > Routing) accepting mail from
    the organization's addresses with authentication and TLS required. Put the mailbox
-   in `terraform.tfvars` (`mail_mailbox`) and add the app password as version 1 of
-   `imp-<env>-gbl-lantrn-mail-app-password` in every environment: the password is a
-   declared secret, so a release to an environment after tst waits on its
-   pin. Until the mailbox is named the application writes its mail (the
-   invitations and address verifications its auths send, link included) to the log
-   and sends nothing, which a deployed environment is not left at.
-2. Pin the versions in `secret_versions` and apply.
+   in `terraform.tfvars` (`mail_mailbox`), add the app password as version 1 of
+   `imp-<env>-gbl-lantrn-mail-app-password` in every environment, and pin it there
+   (`secret_versions`; `bedrock secret pin <env> APP_MAIL_APP_PASSWORD 1`). This step comes before the first
+   release in each environment, and in tst before a pull request is built: the
+   application does not start without its mailbox and the mailbox's app password, since the
+   links and codes it mails are never written to a log. A release that reaches an environment
+   without them stops, at its migrate step at the latest, with the sentence saying what is
+   missing, and no revision deploys. The mailbox's name and the app password's pin are in
+   `terraform.tfvars`, so they reach an environment with a release: commit them and release.
+   The stopped release run again reads the files it was cut with and stops in the same place.
+2. Name the staff auth's first administrator in `terraform.tfvars` (`staff_administrator`), per
+   environment, before the first release there: the person's email address. While nobody of
+   the auth holds the Super Administrator role, each release's migrate command has an
+   invitation mailed to the address, which gives that role, and refuses while the address
+   is empty or the application has no mailbox to send as. The person opens the link and
+   signs in by a method of the auth: with the password method they choose a password
+   there and enter the code mailed to the address. From there they invite everyone else. No
+   account is made ahead of them and no password is generated, so there is no secret for
+   anybody to read. An invitation lasts seven days unless the application sets another
+   time: a release leaves one that stands as it is, mails a new one once it has run out,
+   and, when the address here changes, withdraws the old one and mails the new address. A
+   pull request's environment is handed tst's address: the build that makes
+   its database mails the invitation too, unless its seed gives somebody the role. Mail
+   that was lost is sent again with the operations workflow's `reinvite` action (Actions,
+   operations, Run workflow, with the environment and the auth), which withdraws the
+   standing invitation, so its link no longer opens, and mails a fresh one to the address
+   the live release was cut with; the action is refused once somebody holds the role. A
+   mistyped address is not put right by the action, which would mail it again: correct it
+   here and release, and the release withdraws the old invitation and mails the new address.
+3. Pin the versions in `secret_versions` and apply.
 
 ## Inputs
 
@@ -1117,7 +1143,8 @@ Per environment, after the first apply:
 | `substitutions` | Extra trigger substitutions per environment, for the hooks and the image build. | `map(map(string))` | `{}` | no |
 | `teardown` | Set by `bedrock teardown` alone: the services' deletion protection lifted at the apply before its destroy. | `bool` | `false` | no |
 | `versioned_secret_versions` | The versioned secrets' enabled versions, listed and passed by the pipeline's plan step; never written here. | `map(list(string))` | `{}` | no |
-| `mail_mailbox` | Google Workspace mailbox the auths' mail is sent as; empty writes the mail to the log instead. | `string` | `""` | no |
+| `staff_administrator` | Email address of the staff auth's first administrator, per environment; each release mails the invitation there while nobody of the auth holds the Super Administrator role. | `map(string)` | all empty | no |
+| `mail_mailbox` | Google Workspace mailbox the auths' mail is sent as; the application does not start without it and its app password. | `string` | `""` | no |
 | `state_bucket` | State bucket, for the upstream layers' outputs. | `string` | n/a | yes |
 
 ## Outputs

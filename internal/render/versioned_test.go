@@ -217,8 +217,8 @@ func harborVersionedSecrets() cty.Value {
 func TestVersionedSecretMounts(t *testing.T) {
 	t.Parallel()
 
-	beaconDeclared := map[string]string{"APP_COOKIE_KEY": "generated", "APP_SECRET_KEY": "versioned", "APP_KEEPERS_ADMINISTRATOR_PASSWORD": "generated", "APP_MAIL_APP_PASSWORD": "4"}
-	beaconGenerated := map[string]string{"APP_COOKIE_KEY": "3", "APP_KEEPERS_ADMINISTRATOR_PASSWORD": "1"}
+	beaconDeclared := map[string]string{"APP_COOKIE_KEY": "generated", "APP_SECRET_KEY": "versioned", "APP_MAIL_APP_PASSWORD": "4"}
+	beaconGenerated := map[string]string{"APP_COOKIE_KEY": "3"}
 	harborSecrets := harborVersionedSecrets()
 	tests := []struct {
 		name      string
@@ -241,13 +241,11 @@ func TestVersionedSecretMounts(t *testing.T) {
 			versioned: map[string][]string{"APP_SECRET_KEY": {"1", "2"}},
 			wantService: []string{
 				"APP_COOKIE_KEY=imp-tst-gbl-beacon-cookie-key/3",
-				"APP_KEEPERS_ADMINISTRATOR_PASSWORD=imp-tst-gbl-beacon-keepers-administrator-password/1",
 				"APP_MAIL_APP_PASSWORD=imp-tst-gbl-beacon-mail-app-password/4",
 				"APP_SECRET_KEY_1=imp-tst-gbl-beacon-secret-key/1",
 				"APP_SECRET_KEY_2=imp-tst-gbl-beacon-secret-key/2",
 			},
 			wantMigrate: []string{
-				"APP_KEEPERS_ADMINISTRATOR_PASSWORD=projects/p-tst/secrets/imp-tst-gbl-beacon-keepers-administrator-password/versions/1",
 				"APP_MAIL_APP_PASSWORD=projects/p-tst/secrets/imp-tst-gbl-beacon-mail-app-password/versions/4",
 				"APP_SECRET_KEY_1=projects/p-tst/secrets/imp-tst-gbl-beacon-secret-key/versions/1",
 				"APP_SECRET_KEY_2=projects/p-tst/secrets/imp-tst-gbl-beacon-secret-key/versions/2",
@@ -261,14 +259,12 @@ func TestVersionedSecretMounts(t *testing.T) {
 			versioned: map[string][]string{"APP_SECRET_KEY": {"2", "5", "11"}},
 			wantService: []string{
 				"APP_COOKIE_KEY=imp-tst-gbl-beacon-cookie-key/3",
-				"APP_KEEPERS_ADMINISTRATOR_PASSWORD=imp-tst-gbl-beacon-keepers-administrator-password/1",
 				"APP_MAIL_APP_PASSWORD=imp-tst-gbl-beacon-mail-app-password/4",
 				"APP_SECRET_KEY_11=imp-tst-gbl-beacon-secret-key/11",
 				"APP_SECRET_KEY_2=imp-tst-gbl-beacon-secret-key/2",
 				"APP_SECRET_KEY_5=imp-tst-gbl-beacon-secret-key/5",
 			},
 			wantMigrate: []string{
-				"APP_KEEPERS_ADMINISTRATOR_PASSWORD=projects/p-tst/secrets/imp-tst-gbl-beacon-keepers-administrator-password/versions/1",
 				"APP_MAIL_APP_PASSWORD=projects/p-tst/secrets/imp-tst-gbl-beacon-mail-app-password/versions/4",
 				"APP_SECRET_KEY_11=projects/p-tst/secrets/imp-tst-gbl-beacon-secret-key/versions/11",
 				"APP_SECRET_KEY_2=projects/p-tst/secrets/imp-tst-gbl-beacon-secret-key/versions/2",
@@ -282,11 +278,9 @@ func TestVersionedSecretMounts(t *testing.T) {
 			generated: beaconGenerated,
 			wantService: []string{
 				"APP_COOKIE_KEY=imp-tst-gbl-beacon-cookie-key/3",
-				"APP_KEEPERS_ADMINISTRATOR_PASSWORD=imp-tst-gbl-beacon-keepers-administrator-password/1",
 				"APP_MAIL_APP_PASSWORD=imp-tst-gbl-beacon-mail-app-password/4",
 			},
 			wantMigrate: []string{
-				"APP_KEEPERS_ADMINISTRATOR_PASSWORD=projects/p-tst/secrets/imp-tst-gbl-beacon-keepers-administrator-password/versions/1",
 				"APP_MAIL_APP_PASSWORD=projects/p-tst/secrets/imp-tst-gbl-beacon-mail-app-password/versions/4",
 			},
 		},
@@ -393,7 +387,6 @@ func TestVersionedSecretGrants(t *testing.T) {
 			name: "an environment's stack",
 			wantAdders: []string{
 				"APP_COOKIE_KEY/apply", "APP_COOKIE_KEY/operations",
-				"APP_KEEPERS_ADMINISTRATOR_PASSWORD/apply", "APP_KEEPERS_ADMINISTRATOR_PASSWORD/operations",
 				"APP_SECRET_KEY/apply", "APP_SECRET_KEY/operations",
 			},
 			wantDisablers: []string{"APP_SECRET_KEY: imp-tst-gbl-beacon-secret-key " + disabler + " serviceAccount:ops"},
@@ -489,8 +482,8 @@ func TestMigrateAccessor(t *testing.T) {
 		wantLevel   string
 		want        []string
 	}{
-		{name: "a versioned secret at the data level, which the migrate command constructs", wantLevel: derive.LevelData, want: []string{"APP_KEEPERS_ADMINISTRATOR_PASSWORD", "APP_MAIL_APP_PASSWORD", "APP_SECRET_KEY"}},
-		{name: "a versioned secret at the site level, which the migrate command does not construct", level: derive.LevelSite, wantLevel: derive.LevelSite, want: []string{"APP_KEEPERS_ADMINISTRATOR_PASSWORD", "APP_MAIL_APP_PASSWORD"}},
+		{name: "a versioned secret at the data level, which the migrate command constructs", wantLevel: derive.LevelData, want: []string{"APP_MAIL_APP_PASSWORD", "APP_SECRET_KEY"}},
+		{name: "a versioned secret at the site level, which the migrate command does not construct", level: derive.LevelSite, wantLevel: derive.LevelSite, want: []string{"APP_MAIL_APP_PASSWORD"}},
 		{name: "a pull-request stack", pullRequest: true, wantLevel: derive.LevelData, want: []string{}},
 	}
 	for _, tt := range tests {
@@ -525,6 +518,48 @@ func TestMigrateAccessor(t *testing.T) {
 			}
 			if role := evalAttribute(t, ctx, grant, "role").AsString(); role != "roles/secretmanager.secretAccessor" {
 				t.Errorf("role = %s, want roles/secretmanager.secretAccessor", role)
+			}
+		})
+	}
+}
+
+// TestNoAdministratorPassword renders each fixture and finds no password for a first
+// administrator: the stack declares no secret whose variable ends in
+// _ADMINISTRATOR_PASSWORD, and the migrate command reads the mailbox's app password and
+// the versioned secrets at the levels it constructs, nothing else.
+func TestNoAdministratorPassword(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		fixture     string
+		placement   string
+		wantMigrate []string
+	}{
+		{fixture: "beacon", placement: "placement-beacon.json", wantMigrate: []string{"APP_SECRET_KEY", "APP_MAIL_APP_PASSWORD"}},
+		{fixture: "harbor", placement: "placement.json", wantMigrate: []string{"APP_MAIL_APP_PASSWORD"}},
+		{fixture: "lantern", placement: "placement-lantern.json", wantMigrate: []string{"APP_MAIL_APP_PASSWORD"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			t.Parallel()
+
+			m := deriveFixture(t, tt.fixture, tt.placement)
+			local := secretLocalsIn(t, renderedStack(t, m), m.App, nil, nil, nil, nil)
+			for name := range local["secrets"].AsValueMap() {
+				if strings.HasSuffix(name, "_ADMINISTRATOR_PASSWORD") {
+					t.Errorf("the stack declares the secret %s", name)
+				}
+			}
+			v, err := newView(deriveFixture(t, tt.fixture, tt.placement))
+			if err != nil {
+				t.Fatalf("newView() error = %v", err)
+			}
+			got := []string{}
+			for _, s := range v.MigrateSecrets {
+				got = append(got, s.Variable.Name)
+			}
+			if diff := cmp.Diff(tt.wantMigrate, got); diff != "" {
+				t.Errorf("the secrets the migrate command reads (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -639,7 +674,7 @@ func TestRetireWorkflow(t *testing.T) {
 		wantVersioned string
 		wantRotatable string
 	}{
-		{name: "beacon, with a versioned application secret", fixture: "beacon", placement: "placement-beacon.json", wantVersioned: "APP_SECRET_KEY=secret-key", wantRotatable: "APP_COOKIE_KEY=cookie-key APP_SECRET_KEY=secret-key APP_KEEPERS_ADMINISTRATOR_PASSWORD=keepers-administrator-password"},
+		{name: "beacon, with a versioned application secret", fixture: "beacon", placement: "placement-beacon.json", wantVersioned: "APP_SECRET_KEY=secret-key", wantRotatable: "APP_COOKIE_KEY=cookie-key APP_SECRET_KEY=secret-key"},
 		{name: "harbor, with none", fixture: "harbor", placement: "placement.json"},
 	}
 	for _, tt := range tests {

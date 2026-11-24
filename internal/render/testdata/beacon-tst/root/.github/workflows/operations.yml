@@ -1,7 +1,8 @@
 # beacon's operations, started from GitHub and run by the environment's pipeline: a restore of an
 # environment's database, a release run again, a rollback of the code, a listing of what a restore
-# can return to, the end of a maintenance an earlier run left on, and the operations on an
-# environment's migrations (the migration version, a rerun of the migrations, a forced version).
+# can return to, the end of a maintenance an earlier run left on, a first administrator invited
+# again, and the operations on an environment's migrations (the migration version, a rerun of the
+# migrations, a forced version).
 # Rendered by bedrock and
 # owned by it (bedrock render rewrites this file, bedrock check compares it). Each job runs in the
 # GitHub Environment named after the target environment, which deploys from master
@@ -74,7 +75,7 @@
 # deploys, traffic moves, and the record names the requester. The one door to production, where
 # the migrations' rerun does not reach; nobody runs a trigger by hand.
 #
-# rotate (tst): a generated secret (secret:"generated" in the code: `APP_COOKIE_KEY`, `APP_KEEPERS_ADMINISTRATOR_PASSWORD`)
+# rotate (tst): a generated secret (secret:"generated" in the code: `APP_COOKIE_KEY`)
 # or a versioned one (secret:"versioned": `APP_SECRET_KEY`)
 # gets a new version, 32 bytes of cryptographically secure random data, base64, made on the runner
 # and never printed, added by the job as the environment's operations identity (the stack grants it
@@ -106,6 +107,16 @@
 # before it serving. In tst, where pull requests deploy, a pull request's services built before the
 # retirement still name the version: each open pull request is built again (/gcbrun), and the
 # job says so.
+#
+# reinvite (tst): the first administrator of an auth is invited again, for mail
+# that was lost (the auths that invite one: keepers). The live release's
+# build runs with the instruction (_MIGRATE_ACTION=reinvite, _MIGRATE_AUTH and who asked): its
+# migrate step runs the release's migrate command once with -reinvite-administrator <auth> and
+# nothing else, which withdraws the standing invitation, so its link no longer opens, and mails
+# a fresh one to the address the placement names; the command refuses once somebody of the auth
+# holds the Super Administrator role. Nothing else deploys: the run waits for no maintenance
+# window, takes no backup and writes no record. An invitation that ran out needs no action,
+# since the next release mails a new one.
 #
 # teardown and destroy (tst): the pipeline's path to take the environment down, for
 # a person who is not an organization owner. The environment's name is typed into the confirm input,
@@ -145,8 +156,9 @@
 # line by line: the environment against this application's, a release against
 # v<major>.<minor>.<patch>, a version against an integer, a backup and a database against the
 # characters their names are written with, the action and the table against their words, a
-# secret's variable against the ones the code declares. The reason, free text, is refused when it
-# carries a | or a line break and is never rewritten: a rollback and a restore run an earlier
+# secret's variable against the ones the code declares, an auth against the auths that invite a
+# first administrator. The reason, free text, is refused when it carries a | or a line break and
+# is never rewritten: a rollback and a restore run an earlier
 # release's pipeline, which records the reason as it reads it. What a job reads from the
 # environment's deployment records and passes to a build is held the same way, in the step that
 # reads it: the live release, a rollback's two releases, a cut's backup, production's database
@@ -160,7 +172,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "What to do: restore the environment's database (an empty database or production's backup below production; a backup by name, @<moment> or a release's cut anywhere, production included); run the release again (its tag build, with no instruction; production included); release (the release trigger again on master's head in tst, where it lives, for the release a merged release pull request is owed when the platform ended the push's build before release-please ran; nothing pending, nothing cut; the environment input is not read); apply (the environment's stack when no release's build can, from the default branch: for the first time, before any release exists there, or again after a teardown); teardown or destroy (the environment's stack taken down to what it keeps, or destroyed whole, through the stack trigger as the apply identity; the environment's name typed into confirm); rollback (return the environment to an earlier release, with nothing of the database); list (the releases, their cuts and backups, and the database generations the environment can be restored to, in this run's summary); maintenance (take the application out of a maintenance an earlier run left on); rotate (a generated or versioned secret gets a new random version and the live release runs again); retire (a version of a versioned secret: the application rewrites what names it, the live release runs again without it, and the version is disabled); or a migration operation (version, rerun, force, below production)"
+        description: "What to do: restore the environment's database (an empty database or production's backup below production; a backup by name, @<moment> or a release's cut anywhere, production included); run the release again (its tag build, with no instruction; production included); release (the release trigger again on master's head in tst, where it lives, for the release a merged release pull request is owed when the platform ended the push's build before release-please ran; nothing pending, nothing cut; the environment input is not read); apply (the environment's stack when no release's build can, from the default branch: for the first time, before any release exists there, or again after a teardown); teardown or destroy (the environment's stack taken down to what it keeps, or destroyed whole, through the stack trigger as the apply identity; the environment's name typed into confirm); rollback (return the environment to an earlier release, with nothing of the database); list (the releases, their cuts and backups, and the database generations the environment can be restored to, in this run's summary); maintenance (take the application out of a maintenance an earlier run left on); rotate (a generated or versioned secret gets a new random version and the live release runs again); retire (a version of a versioned secret: the application rewrites what names it, the live release runs again without it, and the version is disabled); reinvite (the first administrator of the auth named in auth is invited again: the standing invitation is withdrawn and a fresh one mailed, while nobody of the auth holds the Super Administrator role); or a migration operation (version, rerun, force, below production)"
         type: choice
         required: true
         default: restore
@@ -179,6 +191,7 @@ on:
           - force
           - rotate
           - retire
+          - reinvite
       environment:
         description: The environment (tst)
         type: choice
@@ -219,6 +232,10 @@ on:
         default: ""
       variable:
         description: "For rotate: the generated or versioned secret's variable (APP_COOKIE_KEY). For retire: the versioned secret's variable (APP_SECRET_KEY)"
+        type: string
+        default: ""
+      auth:
+        description: "For reinvite: the auth whose first administrator is invited again, as the code names it (one of: keepers)"
         type: string
         default: ""
       confirm:
@@ -562,7 +579,7 @@ jobs:
                 pending=$((pending + 30))
                 if [ "$pending" -ge 1800 ]; then
                   gcloud builds cancel "$build" --region "$REGION" --project "$PROJECT" --quiet > /dev/null
-                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was cancelled; nothing changed. Ask again when an approver is ready."
+                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was canceled; nothing changed. Ask again when an approver is ready."
                   exit 1
                 fi
                 echo "Build $build is pending its approval in Cloud Build ($pending s)." ;;
@@ -848,7 +865,7 @@ jobs:
                 pending=$((pending + 30))
                 if [ "$pending" -ge 1800 ]; then
                   gcloud builds cancel "$build" --region "$REGION" --project "$PROJECT" --quiet > /dev/null
-                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was cancelled; nothing changed. Ask again when an approver is ready."
+                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was canceled; nothing changed. Ask again when an approver is ready."
                   exit 1
                 fi
                 echo "Build $build is pending its approval in Cloud Build ($pending s)." ;;
@@ -872,7 +889,7 @@ jobs:
       APP: beacon
       PREFIX: imp
       # The secrets the code declares generated or versioned, VARIABLE=<container name segment>.
-      GENERATED: "APP_COOKIE_KEY=cookie-key APP_SECRET_KEY=secret-key APP_KEEPERS_ADMINISTRATOR_PASSWORD=keepers-administrator-password"
+      GENERATED: "APP_COOKIE_KEY=cookie-key APP_SECRET_KEY=secret-key"
     steps:
       # The variable is one the code declares generated or versioned, else nothing runs; then
       # the environment's values, from the placement's projects, and the secret's container.
@@ -1188,7 +1205,7 @@ jobs:
 
   migration:
     name: the migrations' operation
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.action != 'restore' && inputs.action != 'run' && inputs.action != 'release' && inputs.action != 'rollback' && inputs.action != 'list' && inputs.action != 'maintenance' && inputs.action != 'apply' && inputs.action != 'teardown' && inputs.action != 'destroy' && inputs.action != 'rotate' && inputs.action != 'retire' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.action != 'restore' && inputs.action != 'run' && inputs.action != 'release' && inputs.action != 'rollback' && inputs.action != 'list' && inputs.action != 'maintenance' && inputs.action != 'apply' && inputs.action != 'teardown' && inputs.action != 'destroy' && inputs.action != 'reinvite' && inputs.action != 'rotate' && inputs.action != 'retire' }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     permissions:
@@ -1476,7 +1493,7 @@ jobs:
           printf '%s=%s\n' from "$from" to "$to" >> "$GITHUB_OUTPUT"
       # The rollback trigger's build for the release returned to, waited for to its end. It
       # waits for its approval in Cloud Build as a release does; thirty minutes without one
-      # and the build is cancelled, so a rollback nobody approved is not left waiting.
+      # and the build is canceled, so a rollback nobody approved is not left waiting.
       - name: Run the rollback trigger
         env:
           PROJECT: ${{ steps.target.outputs.project }}
@@ -1501,7 +1518,7 @@ jobs:
                 pending=$((pending + 30))
                 if [ "$pending" -ge 1800 ]; then
                   gcloud builds cancel "$build" --region "$REGION" --project "$PROJECT" --quiet > /dev/null
-                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was cancelled; nothing changed. Ask again when an approver is ready."
+                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was canceled; nothing changed. Ask again when an approver is ready."
                   exit 1
                 fi
                 echo "Build $build is pending its approval in Cloud Build ($pending s)." ;;
@@ -1738,7 +1755,143 @@ jobs:
                 pending=$((pending + 30))
                 if [ "$pending" -ge 1800 ]; then
                   gcloud builds cancel "$build" --region "$REGION" --project "$PROJECT" --quiet > /dev/null
-                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was cancelled; nothing changed. Ask again when an approver is ready."
+                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was canceled; nothing changed. Ask again when an approver is ready."
+                  exit 1
+                fi
+                echo "Build $build is pending its approval in Cloud Build ($pending s)." ;;
+              *) pending=0 ;;
+            esac
+            sleep 30
+          done
+
+  reinvite:
+    name: invite an auth's first administrator again
+    if: ${{ inputs.action == 'reinvite' }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      AUTH: ${{ inputs.auth }}
+      REQUESTER: ${{ github.actor }}
+      REGION: us-central1
+      APP: beacon
+      # The auths whose first administrator a release invites, by name.
+      ADMINISTRATORS: "keepers"
+    steps:
+      - name: The environment's project, identity and trigger, and the auth
+        id: target
+        run: |
+          # The environment, held whole to the ones this application has, before any line reads
+          # its values by name.
+          case "$ENVIRONMENT" in
+            tst) ;;
+            *) echo "::error::the environment is none of this application's (tst), spelled exactly as there: nothing ran"; exit 1 ;;
+          esac
+          held=
+          for name in $ADMINISTRATORS; do
+            if [ "$name" = "$AUTH" ]; then
+              held=yes
+            fi
+          done
+          if [ -z "$held" ]; then
+            echo "::error::reinvite names the auth whose first administrator is invited again, whole, as the code names it, and what was given is none of the auths that invite one (${ADMINISTRATORS:-none}): nothing ran"
+            exit 1
+          fi
+          project=$(eval "printf '%s' \"\${PROJECT_$ENVIRONMENT:-}\"")
+          if [ -z "$project" ]; then
+            echo "::error::$ENVIRONMENT is not wired for operations: record its project (projects.$ENVIRONMENT, the id and the number bedrock org render prints) in infrastructure/placement.json and render again"
+            exit 1
+          fi
+          for name in project provider identity trigger; do
+            upper=$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')
+            printf '%s=%s\n' "$name" "$(eval "printf '%s' \"\${${upper}_$ENVIRONMENT}\"")" >> "$GITHUB_OUTPUT"
+          done
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ steps.target.outputs.provider }}
+          service_account: ${{ steps.target.outputs.identity }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      # The live release, from the environment's deployment records: its build runs with the
+      # invitation's instruction, and its migrate step runs the release's migrate command with
+      # -reinvite-administrator and the auth, and nothing else deploys. Waited for to its end, an
+      # approval in Cloud Build included.
+      - name: Run the version trigger with the invitation
+        env:
+          PROJECT: ${{ steps.target.outputs.project }}
+          TRIGGER: ${{ steps.target.outputs.trigger }}
+        run: |
+          # records <bucket> <env> [<n>]: the environment's newest <n> (forty) deployment records
+          # as the objects variable, newest first: the release records under the stack the
+          # bucket's pointer names (<app>/stacks/<env>/stack.json, which the stack's apply
+          # writes). 1 when the stack says no id, 2 when it has no record yet.
+          records() {
+            id=$(gcloud storage cat "gs://$1/$APP/stacks/$2/stack.json" 2>/dev/null | jq -r '.id // empty')
+            [ -n "$id" ] || return 1
+            objects=$(gcloud storage ls -l "gs://$1/$APP/$2/$id/releases/*/*.json" 2>/dev/null | grep '^ *[0-9]' | sort -k2,2r | head -"${3:-40}" | awk '{print $3}')
+            [ -n "$objects" ] || return 2
+          }
+          # refuse_record <what the value is> <where a record says it, a jq filter> <the value>:
+          # stops the job on a value read from a deployment record that is not of its kind. A
+          # record is written by a release's build, and by anything else that may write to the
+          # records bucket, so what one holds is held whole like a typed input before a build is
+          # started with it. The value is never printed or passed on: the line names the object
+          # that holds it, found by reading the records just listed one at a time (the value as
+          # the shell read it, without the line breaks at its end).
+          refuse_record() {
+            where="one of the deployment records just read"
+            for object in $objects; do
+              if gcloud storage cat "$object" 2>/dev/null | jq -e --arg value "$3" "[$2 | select(. != null) | tostring | sub(\"\\n+\$\"; \"\")] | any(. == \$value)" > /dev/null 2>&1; then
+                where=$object
+                break
+              fi
+            done
+            echo "::error::$where holds something that is not $1 where a record says it. A release's build writes its own there, so the record was written or changed by something else; what it holds is not printed here, and nothing was started with it. Read that object, and remove it or put it right, before asking again."
+            exit 1
+          }
+          # release_tag <value>: a release tag whole, v<major>.<minor>.<patch> and no other
+          # character, so neither a separator of the build's substitutions nor a line break.
+          release_tag() {
+            case "$1" in
+              *[!v0-9.]*|v*v*|*..*|*.*.*.*) return 1 ;;
+              v[0-9]*.[0-9]*.[0-9]*) return 0 ;;
+            esac
+            return 1
+          }
+          bucket=$(gcloud builds triggers describe "$TRIGGER" --region "$REGION" --project "$PROJECT" --format='value(substitutions._RECORDS_BUCKET)')
+          if [ -z "$bucket" ]; then
+            echo "::error::the version trigger $TRIGGER names no records bucket (_RECORDS_BUCKET): the stack has not been applied with this bedrock yet"
+            exit 1
+          fi
+          records "$bucket" "$ENVIRONMENT" || case $? in
+            1) echo "::error::$ENVIRONMENT's stack says no id (nothing at gs://$bucket/$APP/stacks/$ENVIRONMENT/stack.json): its apply writes it, so the stack has not been applied by a bedrock with stack ids; apply it once"; exit 1 ;;
+            2) echo "::error::no release is live in $ENVIRONMENT by its deployment records (gs://$bucket/$APP/$ENVIRONMENT/$id/releases/): the first release there mails the invitation, so there is none to send again"; exit 1 ;;
+          esac
+          live=$(gcloud storage cat $objects | jq -r -s '[.[] | select(.status == "live")] | sort_by(.timestamp) | last | .version // empty')
+          if [ -z "$live" ]; then
+            echo "::error::no release is live in $ENVIRONMENT by its deployment records (gs://$bucket/$APP/$ENVIRONMENT/$id/releases/): the first release there mails the invitation, so there is none to send again"
+            exit 1
+          fi
+          release_tag "$live" || refuse_record "a release tag (v<major>.<minor>.<patch>)" 'select(.status == "live") | .version' "$live"
+          # _REQUESTER is github.actor, the login GitHub gives whoever started the run: nobody
+          # types it, and a GitHub login holds no separator of this list and no line break, so it
+          # is passed as it is.
+          build=$(gcloud builds triggers run "$TRIGGER" --tag "$live" --region "$REGION" --project "$PROJECT" \
+            --substitutions "^|^_MIGRATE_ACTION=reinvite|_MIGRATE_AUTH=$AUTH|_REQUESTER=$REQUESTER" --format='value(metadata.build.id)')
+          echo "Build $build in $ENVIRONMENT invites the $AUTH auth's first administrator again on $live, asked for by $REQUESTER."
+          echo "https://console.cloud.google.com/cloud-build/builds;region=$REGION/$build?project=$PROJECT"
+          pending=0
+          while :; do
+            status=$(gcloud builds describe "$build" --region "$REGION" --project "$PROJECT" --format='value(status)')
+            case "$status" in
+              SUCCESS) echo "Build $build succeeded: the standing invitation of the $AUTH auth's first administrator in $ENVIRONMENT is withdrawn, and a fresh one is mailed to the address the placement names."; exit 0 ;;
+              FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR|EXPIRED) echo "::error::Build $build ended $status; its log says why. The migrate command refuses once somebody of the $AUTH auth holds the Super Administrator role, while the placement names no address, and while the application has no mailbox."; exit 1 ;;
+              PENDING)
+                pending=$((pending + 30))
+                if [ "$pending" -ge 1800 ]; then
+                  gcloud builds cancel "$build" --region "$REGION" --project "$PROJECT" --quiet > /dev/null
+                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was canceled; nothing changed. Ask again when an approver is ready."
                   exit 1
                 fi
                 echo "Build $build is pending its approval in Cloud Build ($pending s)." ;;

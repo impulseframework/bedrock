@@ -186,17 +186,18 @@ type dataConfig struct {
 	PublicURL string `env:"APP_PUBLIC_URL,required"`
 
 	// MailMailbox and MailAppPassword send the auths' mail through the Google Workspace
-	// SMTP relay as the mailbox; unset, the mail is written to the log. MailFrom is the
-	// address the mail is from when it is not the mailbox, an alias of its account.
+	// SMTP relay as the mailbox; unset outside development, the application does not
+	// start. MailFrom is the address the mail is from when it is not the mailbox, an alias
+	// of its account.
 	MailMailbox     string `env:"APP_MAIL_MAILBOX"`
 	MailFrom        string `env:"APP_MAIL_FROM"`
 	MailAppPassword string `env:"APP_MAIL_APP_PASSWORD" secret:"true"`
 
-	// KeepersAdministratorPassword is the password of the keepers auth's first
-	// administrator, administrator, which the migrate command seeds while the auth's users
-	// table holds no rows. The stack generates it and nobody types it; the first sign-in
-	// changes it.
-	KeepersAdministratorPassword string `env:"APP_KEEPERS_ADMINISTRATOR_PASSWORD" secret:"generated"`
+	// KeepersAdministrator is the email address of the keepers auth's first
+	// administrator, which the placement names per environment: while nobody of the auth
+	// holds the Super Administrator role, the migrate command has an invitation mailed to
+	// it. Unset in development, where the bootstrap creates the development logins instead.
+	KeepersAdministrator string `env:"APP_KEEPERS_ADMINISTRATOR"`
 
 	// The keepers auth's persona registration: the persona provider's issuer, set in the
 	// first environment and its pull requests alone, where the method is registered; the

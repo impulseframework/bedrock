@@ -357,6 +357,20 @@ func TestMaintenanceOff(t *testing.T) {
 			wantVerbs: []string{"state harbor-tasks", "resume harbor-tasks"},
 		},
 		{
+			name:    "a run that invited a first administrator again leaves a queue an earlier run's maintenance left paused as it is",
+			env:     "export MAINTENANCE=\"\"\nexport SKIP_DEPLOY=\"true\"\nexport SKIP_REASON=\"" + reinviteSkipped + "\"\nexport VERSION=\"v0.2.4\"\n",
+			queue:   queue,
+			state:   "PAUSED",
+			wantOut: []string{reinviteSkipped},
+		},
+		{
+			name:    "a run that read the migration version leaves it as it is too",
+			env:     "export MAINTENANCE=\"\"\nexport SKIP_DEPLOY=\"true\"\nexport SKIP_REASON=\"" + versionSkipped + "\"\nexport VERSION=\"v0.2.4\"\n",
+			queue:   queue,
+			state:   "PAUSED",
+			wantOut: []string{versionSkipped},
+		},
+		{
 			name:      "the queue is resumed and maintenance is over",
 			env:       "export MAINTENANCE=\"true\"\nexport MAINTENANCE_QUEUE=\"" + queue + "\"\nexport MAINTENANCE_REVISIONS=\"us-central1=harbor-app-00008-maint\"\nexport VERSION=\"v0.2.2\"\n",
 			wantOut:   []string{"Queue harbor-tasks resumed (RUNNING): tasks are delivered again, to v0.2.2.", "=== Maintenance off: tst serves v0.2.2; the maintenance revision(s) us-central1=harbor-app-00008-maint take no traffic ==="},

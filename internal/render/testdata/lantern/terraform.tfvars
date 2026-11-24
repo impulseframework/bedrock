@@ -9,9 +9,17 @@ state_bucket = "imp-boot-gbl-state-REPLACEME"
 # Placement per environment, filled as each environment is set up. Every map
 # is keyed by environment so one file serves every environment's apply.
 
+# The staff auth's first administrator, per environment (README, "Hand steps"):
+# the person's email address, which the first release mails the invitation to.
+staff_administrator = {
+  tst = ""
+  stg = ""
+  prd = ""
+}
+
 # The Google Workspace mailbox the auths' mail is sent as, once for the
-# organization (README, "Hand steps"); empty, the application writes its mail
-# to the log and sends nothing.
+# organization (README, "Hand steps"); the application does not start without
+# it and its app password.
 mail_mailbox = ""
 
 # The version of each secret an environment runs. No entry means "not yet": the
@@ -25,9 +33,9 @@ mail_mailbox = ""
 # one it declares secret:"versioned": made the same way, and a process
 # receives every enabled version (bedrock secret retire takes one away).
 secret_versions = {
-  tst = { APP_COOKIE_KEY = "generated", APP_STAFF_ADMINISTRATOR_PASSWORD = "generated" }
-  stg = { APP_COOKIE_KEY = "generated", APP_STAFF_ADMINISTRATOR_PASSWORD = "generated" }
-  prd = { APP_COOKIE_KEY = "generated", APP_STAFF_ADMINISTRATOR_PASSWORD = "generated" }
+  tst = { APP_COOKIE_KEY = "generated" }
+  stg = { APP_COOKIE_KEY = "generated" }
+  prd = { APP_COOKIE_KEY = "generated" }
 }
 
 # The secrets and file stores a release retires, by variable: anything the

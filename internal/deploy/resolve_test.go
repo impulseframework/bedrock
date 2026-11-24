@@ -638,6 +638,14 @@ func TestResolve(t *testing.T) {
 			wantOut: []string{"Migration operation force: the data migrations table is set to version 40, then the migrations run and the release continues, asked for by octocat."},
 		},
 		{
+			name: "a reinvite names its auth and who asked",
+			subs: tagBuild(map[string]string{migrateActionSub: actionReinvite, migrateAuthSub: "staff", requesterSub: "octocat"}),
+			want: withComment(tag, "", func(o *outcome) {
+				o.Migration = "reinvite: the migrate command withdraws the standing invitation of the staff auth's first administrator and mails a fresh one, and nothing else deploys, asked for by octocat"
+			}),
+			wantOut: []string{"Migration operation reinvite: the migrate command withdraws the standing invitation of the staff auth's first administrator and mails a fresh one, and nothing else deploys, asked for by octocat."},
+		},
+		{
 			name:    "a force without a version is refused",
 			subs:    tagBuild(map[string]string{migrateActionSub: actionForce, requesterSub: "octocat"}),
 			wantErr: "_MIGRATE_ACTION=force names no version (_MIGRATE_VERSION): a force says which version the database is at, or -1 for no version",
@@ -655,7 +663,7 @@ func TestResolve(t *testing.T) {
 		{
 			name:    "an unknown operation is refused",
 			subs:    tagBuild(map[string]string{migrateActionSub: "undo", requesterSub: "octocat"}),
-			wantErr: `unknown _MIGRATE_ACTION "undo" (the actions are version, rerun and force)`,
+			wantErr: `unknown _MIGRATE_ACTION "undo" (the actions are version, rerun, force and reinvite)`,
 		},
 		{
 			name:    "a version value goes with a force alone",

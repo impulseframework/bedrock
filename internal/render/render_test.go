@@ -294,6 +294,196 @@ func TestIdentityProviderHandStep(t *testing.T) {
 	}
 }
 
+// TestFirstAdministratorStep numbers the README's hand steps from the view of a fixture
+// (the directory registrations first, then the mailbox's, then the first
+// administrator's, then the cookie key's or the pin's) and says of the inviting auth
+// whether a person signs in to it with a password or through a directory.
+func TestFirstAdministratorStep(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		fixture       string
+		placement     string
+		auth          string
+		wantMailbox   int
+		wantPassword  bool
+		wantDirectory bool
+	}{
+		{name: "harbor: directory registrations, a mailbox, one inviting auth", fixture: "harbor", placement: "placement.json", auth: "members", wantMailbox: 4, wantDirectory: true},
+		{name: "beacon: a password and a persona method, a mailbox, one inviting auth", fixture: "beacon", placement: "placement-beacon.json", auth: "keepers", wantMailbox: 1, wantPassword: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			v, err := newView(deriveFixture(t, tt.fixture, tt.placement))
+			if err != nil {
+				t.Fatalf("newView() error = %v", err)
+			}
+			if len(v.Administrators) != 1 || v.Administrators[0].Name != tt.auth {
+				t.Fatalf("Administrators = %v, want the %s auth alone", v.Administrators, tt.auth)
+			}
+			a := v.Administrators[0]
+			if want := len(v.Methods) + 1; v.MailboxStep != want || v.MailboxStep != tt.wantMailbox {
+				t.Errorf("MailboxStep = %d, want %d: the %d directory registrations' steps and one", v.MailboxStep, tt.wantMailbox, len(v.Methods))
+			}
+			if a.Step != v.MailboxStep+1 {
+				t.Errorf("the %s auth's step = %d, want %d, the one after the mailbox's", tt.auth, a.Step, v.MailboxStep+1)
+			}
+			if v.CookieKeyStep != a.Step+1 {
+				t.Errorf("CookieKeyStep = %d, want %d, the one after the first administrator's", v.CookieKeyStep, a.Step+1)
+			}
+			if a.Password != tt.wantPassword || a.Directory != tt.wantDirectory {
+				t.Errorf("the %s auth: Password = %t, Directory = %t, want %t, %t", tt.auth, a.Password, a.Directory, tt.wantPassword, tt.wantDirectory)
+			}
+		})
+	}
+}
+
+// TestFirstAdministratorReadme reads each fixture's rendered README: the mailbox's hand
+// step stands above the first administrator's, both come before the first release, and
+// the first administrator's says how the person signs in the first time, by the methods
+// the auth has.
+func TestFirstAdministratorReadme(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		fixture   string
+		placement string
+		label     string
+		want      []string
+		wantNot   []string
+	}{
+		{name: "beacon, a password auth", fixture: "beacon", placement: "placement-beacon.json", label: "the keepers auth", want: []string{"they choose a password there"}, wantNot: []string{"through a directory"}},
+		{name: "harbor, a directory auth", fixture: "harbor", placement: "placement.json", label: "the members auth", want: []string{"through a directory"}, wantNot: []string{"they choose a password"}},
+		{name: "lantern, a password auth", fixture: "lantern", placement: "placement-lantern.json", label: "the staff auth", want: []string{"they choose a password there"}, wantNot: []string{"through a directory"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			files, err := Render(deriveFixture(t, tt.fixture, tt.placement))
+			if err != nil {
+				t.Fatalf("Render() error = %v", err)
+			}
+			readme := stackReadme(files)
+			const mailboxOpening = "In the Google Workspace Admin console"
+			administratorOpening := "Name " + tt.label + "'s first administrator"
+			mailbox, ok := handStep(readme, mailboxOpening)
+			if !ok {
+				t.Fatalf("the README renders no mailbox step:\n%s", readme)
+			}
+			administrator, ok := handStep(readme, administratorOpening)
+			if !ok {
+				t.Fatalf("the README renders no first administrator's step:\n%s", readme)
+			}
+			if strings.Index(readme, mailboxOpening) > strings.Index(readme, administratorOpening) {
+				t.Errorf("the mailbox's step stands below the first administrator's")
+			}
+			for _, step := range []string{mailbox, administrator} {
+				if !strings.Contains(strings.Join(strings.Fields(step), " "), "before the first release") {
+					t.Errorf("the step does not say it comes before the first release:\n%s", step)
+				}
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(strings.Join(strings.Fields(administrator), " "), want) {
+					t.Errorf("the first administrator's step lacks %q:\n%s", want, administrator)
+				}
+			}
+			for _, wantNot := range tt.wantNot {
+				if strings.Contains(strings.Join(strings.Fields(administrator), " "), wantNot) {
+					t.Errorf("the first administrator's step carries %q:\n%s", wantNot, administrator)
+				}
+			}
+		})
+	}
+}
+
+// TestNoSeededAdministrator renders each fixture and finds none of the old way in
+// anywhere it writes: no first administrator seeded under a sign-in name or with a
+// generated password, and no mail written to the log.
+func TestNoSeededAdministrator(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		fixture   string
+		placement string
+	}{
+		{fixture: "harbor", placement: "placement.json"},
+		{fixture: "beacon", placement: "placement-beacon.json"},
+		{fixture: "lantern", placement: "placement-lantern.json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			t.Parallel()
+
+			m := deriveFixture(t, tt.fixture, tt.placement)
+			old := []string{"seeds the administrator", "refuses to seed", "generated password of each auth's first administrator", "writes its mail to the log"}
+			v, err := newView(m)
+			if err != nil {
+				t.Fatalf("newView() error = %v", err)
+			}
+			for _, a := range v.Administrators {
+				old = append(old, "ign-in name of "+a.Label+"'s first administrator")
+			}
+			files, err := Render(m)
+			if err != nil {
+				t.Fatalf("Render() error = %v", err)
+			}
+			for _, f := range files {
+				for _, words := range old {
+					if strings.Contains(string(f.Content), words) {
+						t.Errorf("%s holds %q", f.Path, words)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestReinviteWorkflow reads the rendered operations workflow's reinvite action: the
+// action is offered after retire, with an auth input; the job runs on its action alone, in
+// the GitHub Environment the environment input names, holds the auths that invite a first
+// administrator, and starts the live release's build with the reinvite instruction; the
+// migration job, which runs on every action no other job names, stands down on it.
+func TestReinviteWorkflow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		fixture            string
+		placement          string
+		wantAdministrators string
+	}{
+		{name: "beacon", fixture: "beacon", placement: "placement-beacon.json", wantAdministrators: "keepers"},
+		{name: "harbor", fixture: "harbor", placement: "placement.json", wantAdministrators: "members"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workflow := operationsWorkflow(t, tt.fixture, tt.placement)
+			containsAll(t, workflow,
+				"          - retire\n          - reinvite\n",
+				"      auth:\n        description: \"For reinvite: the auth whose first administrator is invited again, as the code names it (one of: "+tt.wantAdministrators+")\"\n        type: string\n",
+			)
+			reinvite := jobOf(t, workflow, "reinvite")
+			containsAll(t, reinvite,
+				"    if: ${{ inputs.action == 'reinvite' }}\n",
+				"    environment: ${{ inputs.environment }}\n",
+				"      AUTH: ${{ inputs.auth }}\n",
+				"      ADMINISTRATORS: \""+tt.wantAdministrators+"\"\n",
+				`--substitutions "^|^_MIGRATE_ACTION=reinvite|_MIGRATE_AUTH=$AUTH|_REQUESTER=$REQUESTER"`,
+			)
+			if !strings.Contains(jobOf(t, workflow, "migration"), "inputs.action != 'reinvite'") {
+				t.Errorf("the migration job, which runs on every action no other job names, does not stand down on reinvite")
+			}
+		})
+	}
+}
+
 // stackReadme is the stack's README among the rendered files, empty when there is none.
 func stackReadme(files []File) string {
 	for _, f := range files {

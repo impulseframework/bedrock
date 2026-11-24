@@ -164,9 +164,13 @@ func readOldest(w Workspace, routerDirs []string, out io.Writer) (*derive.Oldest
 // for a run that would stop at the gate: production without a setting when the release
 // is breaking, a window whose next opening is further away than the build can wait, and
 // a window with no opening ahead. A restore run and an environment in maintenance from an
-// earlier run pass: the gate counts the window as open.
+// earlier run pass: the gate counts the window as open. A run carrying a migration
+// operation after which nothing deploys (version, reinvite) waits for no window.
 func windowCheck(ctx context.Context, clients *Clients, w Workspace, build *Build, env map[string]string, routerDirs []string, out io.Writer) error {
 	subs := build.Substitutions
+	if none, err := noWindowForOperation(w, subs[migrateActionSub], out); none || err != nil {
+		return err
+	}
 	tag, environment := subs[tagSub], subs[envSub]
 	placement, err := checkoutPlacement(w, "the maintenance windows are written")
 	if err != nil {
@@ -235,6 +239,22 @@ func windowCheck(ctx context.Context, clients *Clients, w Workspace, build *Buil
 	fmt.Fprintf(out, "%s's window next opens %s (in %s, %s): the image is built and the jobs are made now, and the run waits for the window before maintenance begins.\n", environment, when(o.From), until(o.From, now), o.Slot)
 
 	return nil
+}
+
+// noWindowForOperation leaves the facts of a run carrying a migration operation after
+// which nothing deploys (version, reinvite), a decision that needs no window, says so and
+// reports that the run is one; for any other run it does nothing and reports false.
+func noWindowForOperation(w Workspace, action string, out io.Writer) (bool, error) {
+	if !deploysNothing(action) {
+		return false, nil
+	}
+	d := windowDecision{Reason: "the run carries the migration operation " + action + " and deploys nothing"}
+	if err := w.Append(d.facts()); err != nil {
+		return true, err
+	}
+	fmt.Fprintf(out, "No maintenance window: this run carries the migration operation %s and deploys nothing, so it waits for none.\n", action)
+
+	return true, nil
 }
 
 // withinBudget refuses an opening the build cannot wait for: none ahead, or one further
