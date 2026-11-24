@@ -131,7 +131,7 @@ from `2-env`'s state.
   client's metrics (`service-accounts.tf`){{if .MigrateReadsFirestore}}, and `roles/datastore.user` on the Firestore
   database under the condition naming it (`firestore.tf`){{end}}. It holds
   accessor on {{if .MigrateSecrets}}the secrets the migration reads
-  ({{range $i, $s := .MigrateSecrets}}{{if $i}}, {{end}}`{{$s.Variable.Name}}`{{end}}: the generated password of each auth's first administrator, which it seeds the administrator user with{{if .MailAppPassword}}, and the mailbox's app password, which the data level opens the mail sender with{{end}}{{if .MigrateVersionedCell}}, and every enabled version of {{.MigrateVersionedCell}}, which its database client is opened with and whose stored values it rewrites at a retirement{{end}}), and on{{end}}
+  ({{range $i, $s := .MigrateSecrets}}{{if $i}}, {{end}}`{{$s.Variable.Name}}`{{end}}: {{if .MailAppPassword}}the mailbox's app password, which the data level opens the mail sender with and the invitation of each auth's first administrator is mailed through{{end}}{{if and .MailAppPassword .MigrateVersionedCell}}, and {{end}}{{if .MigrateVersionedCell}}every enabled version of {{.MigrateVersionedCell}}, which its database client is opened with and whose stored values it rewrites at a retirement{{end}}), and on{{end}}
   no other runtime secret, which a migration never reads. The Spanner
   client writes its client-side metrics (operation and attempt latency,
   counts) to the project that owns the instance and logs a denial at every
@@ -1279,7 +1279,8 @@ pull request's.
 
 ## Hand steps
 
-Per environment, after the first apply:
+Per environment, after the first apply. The steps that say so come before the first
+release there:
 
 {{range .Methods -}}
 {{$m := . -}}
@@ -1382,16 +1383,6 @@ Per environment, after the first apply:
 {{- end}}
 {{end -}}
 {{end -}}
-{{range .Administrators -}}
-{{.Step}}. Name {{.Label}}'s first administrator in `terraform.tfvars` (`{{.Var}}`), per
-   environment: the sign-in name the directory presents (the user principal name
-   on Entra, the email on Google, the preferred username at an organization's own
-   identity provider, or its email when it sends none). The migrate command of the
-   first release in the environment seeds the administrator role membership under
-   it while the auth's users table holds no rows, and refuses to seed while the
-   name is empty; the person then signs in through the directory and holds the
-   role.
-{{end -}}
 {{if .Mailbox -}}
 {{.MailboxStep}}. In the Google Workspace Admin console, once for the organization: a mailbox the
    application sends its mail as (a no-reply address of the organization's domain{{if .MailFrom}},
@@ -1401,12 +1392,32 @@ Per environment, after the first apply:
    SMTP relay service (Apps > Google Workspace > Gmail > Routing) accepting mail from
    the organization's addresses with authentication and TLS required. Put the mailbox
    in `terraform.tfvars` (`mail_mailbox`{{if .MailFrom}}, and the alias in `mail_from` when the
-   account is not the no-reply address itself{{end}}){{if .MailAppPassword}} and add the app password as version 1 of
-   `{{$.Prefix}}-<env>-gbl-{{$.App}}-{{.MailAppPassword.Name}}` in every environment: the password is a
-   declared secret, so a release to an environment after {{$.Integration}} waits on its
-   pin{{end}}. Until the mailbox is named the application writes its mail (the
-   invitations and address verifications its auths send, link included) to the log
-   and sends nothing, which a deployed environment is not left at.
+   account is not the no-reply address itself{{end}}){{if .MailAppPassword}}, add the app password as version 1 of
+   `{{$.Prefix}}-<env>-gbl-{{$.App}}-{{.MailAppPassword.Name}}` in every environment, and pin it there
+   (`secret_versions`; `bedrock secret pin <env> {{.MailAppPassword.Variable.Name}} 1`){{end}}. This step comes before the first
+   release in each environment: the application does not start without its mailbox and the
+   mailbox's app password, since the links and codes it mails are never written to a log.
+   A release that reaches an environment without them stops at its migrate step with the
+   application's sentence saying so, and is run again (the operations workflow's `run` action)
+   once they are in place.
+{{end -}}
+{{range .Administrators -}}
+{{.Step}}. Name {{.Label}}'s first administrator in `terraform.tfvars` (`{{.Var}}`), per
+   environment, before the first release there: the person's email address. While nobody of
+   the auth holds the Super Administrator role, each release's migrate command has an
+   invitation mailed to the address, which gives that role, and refuses while the address
+   is empty or the application has no mailbox to send as. The person opens the link and
+   signs in by a method of the auth{{if .Password}}: with the password method they choose a password
+   there and enter the code mailed to the address{{end}}{{if .Directory}}{{if .Password}};{{else}}:{{end}} through a directory, the
+   address the directory gives must be the invited one, and a person whose directory gives
+   none enters a code mailed to the invited address{{end}}. From there they invite everyone else. No
+   account is made ahead of them and no password is generated, so there is no secret for
+   anybody to read. An invitation lasts seven days: a release leaves one that stands as it
+   is, mails a new one once it has run out, and, when the address here changes, withdraws
+   the old one and mails the new address. Mail that was lost is sent again with the
+   operations workflow's `reinvite` action (Actions, operations, Run workflow, with the
+   environment and the auth), which withdraws the standing invitation, so its link no longer
+   opens, and mails a fresh one; the action is refused once somebody holds the role.
 {{end -}}
 {{if not .CookieKeySecret.Generated -}}
 {{.CookieKeyStep}}. Generate a cookie key (`openssl rand -base64 32`) and add it as version 1
@@ -1482,10 +1493,10 @@ none yet), and the sign-in needs no registration.
 {{- end}}
 {{- end}}
 {{- range .Administrators}}
-| `{{.Var}}` | Sign-in name of {{.Label}}'s first administrator, per environment. | `map(string)` | all empty | no |
+| `{{.Var}}` | Email address of {{.Label}}'s first administrator, per environment; each release mails the invitation there while nobody of the auth holds the Super Administrator role. | `map(string)` | all empty | no |
 {{- end}}
 {{- if .Mailbox}}
-| `mail_mailbox` | Google Workspace mailbox the auths' mail is sent as; empty writes the mail to the log instead. | `string` | `""` | no |
+| `mail_mailbox` | Google Workspace mailbox the auths' mail is sent as; the application does not start without it and its app password. | `string` | `""` | no |
 {{- end}}
 {{- if .MailFrom}}
 | `mail_from` | Address the mail is from when it is not the mailbox, an alias of the mailbox's account; empty sends from the mailbox. | `string` | `""` | no |

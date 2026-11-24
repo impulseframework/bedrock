@@ -190,15 +190,14 @@ locals {
   # (var.versioned_secret_versions; secret-manager.tf, "Versioned secrets").
   #
   # readers: which runtime identity mounts it. The service; and the migrate
-  # command, which also constructs the data level, reads the generated password
-  # of each auth's first administrator (migrate_secrets, below), which it seeds
-  # the administrator user with while the auth's users table holds no rows, and
-  # the mailbox's app password, which the data level opens the mail sender with.
-  # So the deploy identity, which runs the migrate command, holds accessor on
-  # those containers alone and on no other runtime secret: the session library
-  # reads the cookie key (falling back to an ephemeral one), the client secrets
-  # and the people's credentials only when a browser signs in, which a
-  # migration never does.
+  # command, which also constructs the data level, reads the mailbox's app
+  # password (migrate_secrets, below), which the data level opens the mail
+  # sender with and the command mails each auth's first administrator's
+  # invitation through. So the deploy identity, which runs the migrate command,
+  # holds accessor on the migrate command's containers alone and on no other
+  # runtime secret: the session library reads the cookie key (falling back to
+  # an ephemeral one), the client secrets and the people's credentials only
+  # when a browser signs in, which a migration never does.
   secrets = {
     APP_COOKIE_KEY = {
       name    = "cookie-key"
@@ -236,14 +235,13 @@ locals {
   versioned_secrets = { for key, s in local.secrets : key => s if s.versioned }
   secret_words      = { for key, s in local.generated_secrets : key => s.versioned ? "versioned" : "generated" }
 
-  # The secrets the migrate command reads (readers, above): the generated
-  # password of each auth's first administrator, the mailbox's app password and
-  # the versioned secrets at the levels the command constructs (it opens its
-  # database client with their versions, and rewrites the stored values of one
-  # at a retirement, bedrock secret retire), by variable, and the pinned version
-  # of each the command runs with, read back by the pipeline from the applied
-  # stack (cloud-build.tf, _MIGRATE_SECRETS). A secret with no version yet (a
-  # plan by hand) is left out, and the command runs without it.
+  # The secrets the migrate command reads (readers, above): the mailbox's app
+  # password and the versioned secrets at the levels the command constructs (it
+  # opens its database client with their versions, and rewrites the stored
+  # values of one at a retirement, bedrock secret retire), by variable, and the
+  # pinned version of each the command runs with, read back by the pipeline
+  # from the applied stack (cloud-build.tf, _MIGRATE_SECRETS). A secret with no
+  # version yet (a plan by hand) is left out, and the command runs without it.
   migrate_secrets = toset(["APP_MAIL_APP_PASSWORD"])
 
   # The versions this environment runs: the placement's pins (a number, or
@@ -308,16 +306,16 @@ locals {
     GOOGLE_CLOUD_SPANNER_INSTANCE_ID   = local.instance.name
     GOOGLE_CLOUD_SPANNER_DATABASE_NAME = local.database_name
     # The first administrator of each auth whose roles the application assigns: the
-    # sign-in name the migrate command seeds the administrator role membership under
-    # while the auth's users table holds no rows.
+    # email address the migrate command has the invitation mailed to while nobody of
+    # the auth holds the Super Administrator role.
     APP_STAFF_ADMINISTRATOR = var.staff_administrator[var.environment]
     # dataConfig.PublicURL: the application's address as a browser reaches it, the
     # canonical hostname of the first site (each site's service carries its own,
     # site_env); every link the auths mail opens the login page under it.
     APP_PUBLIC_URL = "https://${local.hostnames[0]}"
     # dataConfig.MailMailbox: the Google Workspace mailbox the auths' mail is sent as
-    # (var.mail_mailbox), empty until the organization names one, when the
-    # application writes its mail to the log and sends nothing.
+    # (var.mail_mailbox), empty until the organization names one; the application
+    # does not start without it and its app password.
     APP_MAIL_MAILBOX = var.mail_mailbox
     # dataConfig.SessionTimeout is left to its code default (10m).
   }

@@ -82,16 +82,15 @@ resource "google_secret_manager_secret_iam_member" "app_accessor" {
 
 # Accessor for the migrate command's secrets (locals.tf, migrate_secrets): the
 # deploy identity, which runs the migrate command on the build worker, reads
-# the generated password of each auth's first administrator to seed the
-# administrator user with, the mailbox's app password the data level opens
-# the mail sender with, and the versions of the versioned secrets at the
-# levels the command constructs, and no other runtime secret. Those are the
-# versioned secrets a retirement can act on (bedrock secret retire): the
-# command rewrites the stored values that name a version at the levels it
-# constructs, with every enabled version of the secret, and a versioned secret
-# declared at another level holds nothing it could rewrite, is refused a
-# retirement at the plan, and is never read here. A pull-request stack grants
-# nothing: it shares tst's containers, whose grants tst's stack holds.
+# the mailbox's app password the data level opens the mail sender with, and
+# the versions of the versioned secrets at the levels the command constructs, and
+# no other runtime secret. Those are the versioned secrets a retirement can
+# act on (bedrock secret retire): the command rewrites the stored values that
+# name a version at the levels it constructs, with every enabled version of
+# the secret, and a versioned secret declared at another level holds nothing
+# it could rewrite, is refused a retirement at the plan, and is never read
+# here. A pull-request stack grants nothing: it shares tst's
+# containers, whose grants tst's stack holds.
 resource "google_secret_manager_secret_iam_member" "migrate_accessor" {
   for_each = local.is_pr ? toset([]) : local.migrate_secrets
 

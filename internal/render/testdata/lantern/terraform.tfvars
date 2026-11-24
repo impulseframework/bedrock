@@ -10,8 +10,7 @@ state_bucket = "imp-boot-gbl-state-REPLACEME"
 # is keyed by environment so one file serves every environment's apply.
 
 # The staff auth's first administrator, per environment (README, "Hand steps"):
-# the sign-in name the directory presents, which the migrate command seeds the
-# administrator role membership under while the auth has no users.
+# the person's email address, which the first release mails the invitation to.
 staff_administrator = {
   tst = ""
   stg = ""
@@ -19,8 +18,8 @@ staff_administrator = {
 }
 
 # The Google Workspace mailbox the auths' mail is sent as, once for the
-# organization (README, "Hand steps"); empty, the application writes its mail
-# to the log and sends nothing.
+# organization (README, "Hand steps"); the application does not start without
+# it and its app password.
 mail_mailbox = ""
 
 # The version of each secret an environment runs. No entry means "not yet": the
