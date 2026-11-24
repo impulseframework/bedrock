@@ -49,6 +49,11 @@ func StartReleaseBackup(ctx context.Context, clients *Clients, w Workspace, now 
 	if err != nil || !ok {
 		return err
 	}
+	if action := subs[migrateActionSub]; deploysNothing(action) {
+		fmt.Fprintf(out, "No release backup: this run carries the migration operation %s and applies no migration, so the database stays as the live release left it.\n", action)
+
+		return nil
+	}
 	env, err := w.Environment()
 	if err != nil {
 		return err

@@ -1,12 +1,21 @@
 package deploy
 
 import (
+	"maps"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 )
+
+// withSubs is the substitutions with the extra ones added.
+func withSubs(subs, extra map[string]string) map[string]string {
+	all := maps.Clone(subs)
+	maps.Copy(all, extra)
+
+	return all
+}
 
 func TestStartReleaseBackup(t *testing.T) {
 	t.Parallel()
@@ -82,6 +91,25 @@ func TestStartReleaseBackup(t *testing.T) {
 			env:     strings.Replace(keeping, "SKIP_DEPLOY=\"\"", "SKIP_DEPLOY=\"true\"\nexport SKIP_REASON=\"version: nothing deploys\"", 1),
 			subs:    subs,
 			wantOut: []string{"No release backup: nothing deploys in this run (version: nothing deploys)."},
+		},
+		{
+			name:    "a run carrying reinvite takes none",
+			env:     keeping,
+			subs:    withSubs(subs, map[string]string{migrateActionSub: actionReinvite, migrateAuthSub: "staff", requesterSub: "octocat"}),
+			wantOut: []string{"No release backup: this run carries the migration operation reinvite and applies no migration, so the database stays as the live release left it."},
+		},
+		{
+			name:    "a run carrying version takes none",
+			env:     keeping,
+			subs:    withSubs(subs, map[string]string{migrateActionSub: actionVersion, requesterSub: "octocat"}),
+			wantOut: []string{"No release backup: this run carries the migration operation version and applies no migration, so the database stays as the live release left it."},
+		},
+		{
+			name:        "a run carrying rerun takes the backup, as one carrying no operation does",
+			env:         keeping,
+			subs:        withSubs(subs, map[string]string{migrateActionSub: actionRerun, requesterSub: "octocat"}),
+			wantCreated: []string{"imp-prd-gbl-harbor-db-pre-v1-2-3-b-1 of imp-prd-gbl-harbor-db as of 2026-10-05T04:30:15Z until 2026-10-19T04:30:15Z"},
+			wantFacts:   map[string]string{"RELEASE_BACKUP": "projects/spn/instances/imp-spn-gbl-spanner/backups/imp-prd-gbl-harbor-db-pre-v1-2-3-b-1"},
 		},
 		{
 			name:    "a pull-request build takes none",

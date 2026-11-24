@@ -205,15 +205,15 @@ const (
 	versionVariable     = "APP_VERSION"
 	// migratePinnedVersion is the pinned version of the secret the migrate command
 	// reads in secretsEnvironment, and its payload what the fake answers for it.
-	migratePinnedVersion = "projects/tst-project/secrets/imp-tst-gbl-harbor-staff-administrator-password/versions/1"
-	migratePinnedValue   = "a-generated-password"
+	migratePinnedVersion = "projects/tst-project/secrets/imp-tst-gbl-harbor-mail-app-password/versions/1"
+	migratePinnedValue   = "an-app-password"
 )
 
 var (
 	migrateEnvironment = "export SKIP_DEPLOY=\"\"\nexport RUN_MIGRATIONS=\"true\"\nexport VERSION=\"v1.2.3\"\nexport MIGRATE_ENV=" + doubleQuote(migrateSettingsJSON) + "\nexport MIGRATE_DATABASES=" + doubleQuote(migrateDatabasesJSON) + "\nexport MIGRATE_SECRETS=\"{}\"\n"
 	// secretsEnvironment is that environment where the stack names a secret the migrate
-	// command reads: the staff auth's first-administrator password, pinned at version 1.
-	secretsEnvironment = "export SKIP_DEPLOY=\"\"\nexport RUN_MIGRATIONS=\"true\"\nexport VERSION=\"v1.2.3\"\nexport MIGRATE_ENV=" + doubleQuote(migrateSettingsJSON) + "\nexport MIGRATE_DATABASES=" + doubleQuote(migrateDatabasesJSON) + "\nexport MIGRATE_SECRETS=" + doubleQuote(`{"APP_STAFF_ADMINISTRATOR_PASSWORD":"`+migratePinnedVersion+`"}`) + "\n"
+	// command reads: the mailbox's app password, pinned at version 1.
+	secretsEnvironment = "export SKIP_DEPLOY=\"\"\nexport RUN_MIGRATIONS=\"true\"\nexport VERSION=\"v1.2.3\"\nexport MIGRATE_ENV=" + doubleQuote(migrateSettingsJSON) + "\nexport MIGRATE_DATABASES=" + doubleQuote(migrateDatabasesJSON) + "\nexport MIGRATE_SECRETS=" + doubleQuote(`{"APP_MAIL_APP_PASSWORD":"`+migratePinnedVersion+`"}`) + "\n"
 	// seededEnvironment is that environment file where resolve decided the build seeds
 	// (SEED): every pull request, and a release where the checkout's placement says so.
 	seededEnvironment = migrateEnvironment + "export SEED=\"true\"\n"
@@ -247,6 +247,25 @@ func commandRuns(run *fakeRunner, program string) [][]string {
 	}
 
 	return runs
+}
+
+// What a reinvite of the staff auth's first administrator, asked for by octocat, says
+// before its run and leaves for the steps after it.
+const (
+	reinviteSaid    = "Reinvite, asked for by octocat: the migrate command withdraws the standing invitation of the staff auth's first administrator and mails a fresh one to the address the placement names; nothing else deploys."
+	reinviteSkipped = "The run asked for a fresh invitation of the staff auth's first administrator, which the migrate command mailed: nothing else deploys."
+)
+
+// TestDeploysNothing: a run carrying version or reinvite deploys nothing after its
+// migrate step; a rerun, a force and a run carrying no operation deploy.
+func TestDeploysNothing(t *testing.T) {
+	t.Parallel()
+
+	for action, want := range map[string]bool{actionVersion: true, actionReinvite: true, actionRerun: false, actionForce: false, "": false} {
+		if got := deploysNothing(action); got != want {
+			t.Errorf("deploysNothing(%q) = %t, want %t", action, got, want)
+		}
+	}
 }
 
 func TestMigrate(t *testing.T) {
@@ -316,9 +335,9 @@ func TestMigrate(t *testing.T) {
 			build:    build("false", "", nil),
 			grants:   &fakeGrants{},
 			secrets:  &fakeSecrets{payloads: map[string]string{migratePinnedVersion: migratePinnedValue}},
-			wantOut:  []string{"The migrate command reads 1 secret(s) as the deploy identity, which the stack grants accessor on their containers alone: APP_STAFF_ADMINISTRATOR_PASSWORD (the values are not printed).", "runs on this worker as the deploy identity with 4 variables from the stack."},
+			wantOut:  []string{"The migrate command reads 1 secret(s) as the deploy identity, which the stack grants accessor on their containers alone: APP_MAIL_APP_PASSWORD (the values are not printed).", "runs on this worker as the deploy identity with 4 variables from the stack."},
 			wantRuns: [][]string{{}},
-			wantVars: []string{"APP_SERVICE_NAME=harbor-migrate", "APP_STAFF_ADMINISTRATOR_PASSWORD=" + migratePinnedValue, "GOOGLE_CLOUD_SPANNER_DATABASE_NAME=imp-tst-gbl-harbor-db", "GOOGLE_CLOUD_SPANNER_PROJECT=tst-project"},
+			wantVars: []string{"APP_MAIL_APP_PASSWORD=" + migratePinnedValue, "APP_SERVICE_NAME=harbor-migrate", "GOOGLE_CLOUD_SPANNER_DATABASE_NAME=imp-tst-gbl-harbor-db", "GOOGLE_CLOUD_SPANNER_PROJECT=tst-project"},
 		},
 		{
 			name:     "a secret's accessor grant the apply just made is waited for",
@@ -327,7 +346,7 @@ func TestMigrate(t *testing.T) {
 			grants:   &fakeGrants{},
 			secrets:  &fakeSecrets{payloads: map[string]string{migratePinnedVersion: migratePinnedValue}, accessDenied: 2},
 			wantRuns: [][]string{{}},
-			wantVars: []string{"APP_SERVICE_NAME=harbor-migrate", "APP_STAFF_ADMINISTRATOR_PASSWORD=" + migratePinnedValue, "GOOGLE_CLOUD_SPANNER_DATABASE_NAME=imp-tst-gbl-harbor-db", "GOOGLE_CLOUD_SPANNER_PROJECT=tst-project"},
+			wantVars: []string{"APP_MAIL_APP_PASSWORD=" + migratePinnedValue, "APP_SERVICE_NAME=harbor-migrate", "GOOGLE_CLOUD_SPANNER_DATABASE_NAME=imp-tst-gbl-harbor-db", "GOOGLE_CLOUD_SPANNER_PROJECT=tst-project"},
 		},
 		{
 			name:    "a secret the deploy identity cannot read fails the step",
@@ -335,7 +354,7 @@ func TestMigrate(t *testing.T) {
 			build:   build("false", "", nil),
 			grants:  &fakeGrants{},
 			secrets: &fakeSecrets{},
-			wantErr: "projects/tst-project/secrets/imp-tst-gbl-harbor-staff-administrator-password/versions/1: the migrate command's APP_STAFF_ADMINISTRATOR_PASSWORD",
+			wantErr: "projects/tst-project/secrets/imp-tst-gbl-harbor-mail-app-password/versions/1: the migrate command's APP_MAIL_APP_PASSWORD",
 		},
 		{
 			name:   "a grant the apply just made is waited for, and said",
@@ -490,6 +509,62 @@ func TestMigrate(t *testing.T) {
 			wantErr:   "the migration failed after 0s: the migrate command's lines are above (exit status 1)",
 		},
 		{
+			name:      "a reinvite runs the command once with -reinvite-administrator and the auth alone, and leaves the steps after nothing to do",
+			env:       migrateEnvironment,
+			build:     build("false", "", map[string]string{migrateActionSub: actionReinvite, migrateAuthSub: "staff", requesterSub: "octocat"}),
+			wantOut:   []string{reinviteSaid, "=== Running the migrate command with -reinvite-administrator staff ===", "Migrate command done in", reinviteSkipped},
+			wantRuns:  [][]string{{reinviteArg, "staff"}},
+			wantFacts: map[string]string{skipDeploy: trueValue, skipReasonFact: reinviteSkipped, forcedTableFact: ""},
+		},
+		{
+			name:      "a reinvite in a seeded environment runs no seed",
+			env:       seededEnvironment,
+			build:     build("true", "", map[string]string{migrateActionSub: actionReinvite, migrateAuthSub: "staff", requesterSub: "octocat"}),
+			wantRuns:  [][]string{{reinviteArg, "staff"}},
+			wantFacts: map[string]string{skipDeploy: trueValue, skipReasonFact: reinviteSkipped},
+		},
+		{
+			name:      "a reinvite whose command fails fails the step, the command's lines above, and leaves nothing skipped",
+			env:       migrateEnvironment,
+			build:     build("false", "", map[string]string{migrateActionSub: actionReinvite, migrateAuthSub: "staff", requesterSub: "octocat"}),
+			fail:      map[string]error{reinviteArg: errors.New("exit status 1")},
+			lines:     "the staff auth's first administrator: somebody holds the Super Administrator role\n",
+			wantOut:   []string{"=== Running the migrate command with -reinvite-administrator staff ===", "somebody holds the Super Administrator role"},
+			wantRuns:  [][]string{{reinviteArg, "staff"}},
+			wantFacts: map[string]string{skipDeploy: "", skipReasonFact: ""},
+			wantErr:   "no fresh invitation was mailed to the staff auth's first administrator: the migrate command's lines above say why",
+		},
+		{
+			name:    "a reinvite without an auth is refused before anything runs",
+			env:     migrateEnvironment,
+			build:   build("false", "", map[string]string{migrateActionSub: actionReinvite, requesterSub: "octocat"}),
+			wantErr: "_MIGRATE_ACTION=reinvite names no auth (_MIGRATE_AUTH): a fresh invitation says which auth's first administrator it is for",
+		},
+		{
+			name:    "a reinvite without a requester is refused before anything runs",
+			env:     migrateEnvironment,
+			build:   build("false", "", map[string]string{migrateActionSub: actionReinvite, migrateAuthSub: "staff"}),
+			wantErr: "_MIGRATE_ACTION=reinvite names no requester (_REQUESTER): a fresh invitation says who asked for it",
+		},
+		{
+			name:    "a reinvite with a version value is refused before anything runs",
+			env:     migrateEnvironment,
+			build:   build("false", "", map[string]string{migrateActionSub: actionReinvite, migrateAuthSub: "staff", migrateVersionSub: "40", requesterSub: "octocat"}),
+			wantErr: "_MIGRATE_VERSION=40 with _MIGRATE_ACTION=reinvite: a version goes with force",
+		},
+		{
+			name:    "a version with an auth is refused before anything runs",
+			env:     migrateEnvironment,
+			build:   build("false", "", map[string]string{migrateActionSub: actionVersion, migrateAuthSub: "staff", requesterSub: "octocat"}),
+			wantErr: "_MIGRATE_AUTH=staff with _MIGRATE_ACTION=version: an auth goes with reinvite",
+		},
+		{
+			name:    "an auth without an action is refused before anything runs",
+			env:     migrateEnvironment,
+			build:   build("false", "", map[string]string{migrateAuthSub: "staff"}),
+			wantErr: "_MIGRATE_TABLE, _MIGRATE_VERSION and _MIGRATE_AUTH go with a _MIGRATE_ACTION (version, rerun, force or reinvite), and the build names none",
+		},
+		{
 			name:    "a force without a version is refused before anything runs",
 			env:     migrateEnvironment,
 			build:   build("false", "", map[string]string{migrateActionSub: actionForce, requesterSub: "octocat"}),
@@ -511,7 +586,7 @@ func TestMigrate(t *testing.T) {
 			name:    "an unknown action is refused before anything runs",
 			env:     migrateEnvironment,
 			build:   build("false", "", map[string]string{migrateActionSub: "undo", requesterSub: "octocat"}),
-			wantErr: `unknown _MIGRATE_ACTION "undo" (the actions are version, rerun and force)`,
+			wantErr: `unknown _MIGRATE_ACTION "undo" (the actions are version, rerun, force and reinvite)`,
 		},
 		{
 			name:    "an unknown table is refused before anything runs",
@@ -529,7 +604,7 @@ func TestMigrate(t *testing.T) {
 			name:    "a table without an action is refused before anything runs",
 			env:     migrateEnvironment,
 			build:   build("false", "", map[string]string{migrateTableSub: tableData}),
-			wantErr: "_MIGRATE_TABLE and _MIGRATE_VERSION go with a _MIGRATE_ACTION (version, rerun or force), and the build names none",
+			wantErr: "_MIGRATE_TABLE, _MIGRATE_VERSION and _MIGRATE_AUTH go with a _MIGRATE_ACTION (version, rerun, force or reinvite), and the build names none",
 		},
 		{
 			name:     "a command that exits with an error stops the build, its lines above",

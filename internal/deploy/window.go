@@ -164,9 +164,19 @@ func readOldest(w Workspace, routerDirs []string, out io.Writer) (*derive.Oldest
 // for a run that would stop at the gate: production without a setting when the release
 // is breaking, a window whose next opening is further away than the build can wait, and
 // a window with no opening ahead. A restore run and an environment in maintenance from an
-// earlier run pass: the gate counts the window as open.
+// earlier run pass: the gate counts the window as open. A run carrying a migration
+// operation after which nothing deploys (version, reinvite) waits for no window.
 func windowCheck(ctx context.Context, clients *Clients, w Workspace, build *Build, env map[string]string, routerDirs []string, out io.Writer) error {
 	subs := build.Substitutions
+	if action := subs[migrateActionSub]; deploysNothing(action) {
+		d := windowDecision{Reason: "the run carries the migration operation " + action + " and deploys nothing"}
+		if err := w.Append(d.facts()); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "No maintenance window: this run carries the migration operation %s and deploys nothing, so it waits for none.\n", action)
+
+		return nil
+	}
 	tag, environment := subs[tagSub], subs[envSub]
 	placement, err := checkoutPlacement(w, "the maintenance windows are written")
 	if err != nil {

@@ -40,16 +40,17 @@ const (
 // stack steps read it back from the applied stack's substitutions output into MIGRATE_ENV,
 // so a release that changes the variables migrates with its own, where the trigger's copy
 // is the last apply's. The operation comes from the operations workflow (bedrock migration
-// version|rerun|force): _MIGRATE_ACTION names it, _MIGRATE_TABLE the table a force sets
-// (schema, or data) and _MIGRATE_VERSION the version it sets (-1 for no version);
+// version|rerun|force, and its reinvite action): _MIGRATE_ACTION names it, _MIGRATE_TABLE
+// the table a force sets (schema, or data), _MIGRATE_VERSION the version it sets (-1 for no
+// version) and _MIGRATE_AUTH the auth whose first administrator a reinvite invites again;
 // _REQUESTER says who asked. The migrate command's flags are what it runs with.
 const (
 	migrateEnvSub  = "_MIGRATE_ENV"
 	migrateEnvFact = "MIGRATE_ENV"
 	// migrateSecretsSub is the stack's substitution naming the pinned version of each
-	// secret the migrate command reads (the generated password of each auth's first
-	// administrator), by variable, as a JSON object; migrateSecretsFact is the fact the
-	// stack steps write it to.
+	// secret the migrate command reads (the mailbox's app password and the versioned
+	// secrets at the levels it constructs), by variable, as a JSON object;
+	// migrateSecretsFact is the fact the stack steps write it to.
 	migrateSecretsSub  = "_MIGRATE_SECRETS"
 	migrateSecretsFact = "MIGRATE_SECRETS"
 	// _MIGRATE_DATABASES is the stack's too: the databases the migrate command reaches,
@@ -60,15 +61,18 @@ const (
 	migrateActionSub     = "_MIGRATE_ACTION"
 	migrateTableSub      = "_MIGRATE_TABLE"
 	migrateVersionSub    = "_MIGRATE_VERSION"
+	migrateAuthSub       = "_MIGRATE_AUTH"
 	actionVersion        = "version"
 	actionRerun          = "rerun"
 	actionForce          = "force"
+	actionReinvite       = "reinvite"
 	tableSchema          = "schema"
 	tableData            = "data"
 	seedArg              = "-seed"
 	versionArg           = "-version"
 	forceArg             = "-force"
 	forceDataArg         = "-force-data"
+	reinviteArg          = "-reinvite-administrator"
 	// The facts the step leaves: the force it applied, for the record, and why the steps
 	// after a version run do nothing, beside SKIP_DEPLOY.
 	forcedTableFact   = "MIGRATE_FORCED_TABLE"
@@ -122,33 +126,36 @@ func target(fact, pair string) (region, name string, err error) {
 // MigrateAction is the migration operation a build carries: what the operations workflow
 // asked the migrate command for, beyond the migrations themselves.
 type MigrateAction struct {
-	// Action is version, rerun or force.
+	// Action is version, rerun, force or reinvite.
 	Action string
 	// Table is the migrations table a force sets: schema, or data.
 	Table string
 	// Version is the version a force sets; -1 for no version.
 	Version int
+	// Auth is the auth whose first administrator a reinvite invites again.
+	Auth string
 	// Requester is who asked (_REQUESTER); a force names one.
 	Requester string
 }
 
 // migrateAction reads the operation off the build's substitutions, nil for a build that
-// carries none, and refuses one that cannot run: an action that is none of the three, a
-// table or a version with no action, a version with an action that takes none, a force
-// whose version is missing, not an integer or below -1, a force without a requester, a
+// carries none, and refuses one that cannot run: an action that is none of the four, a
+// table, a version or an auth with no action, a version with an action that takes none, a
+// force whose version is missing, not an integer or below -1, a force without a requester,
+// a reinvite without an auth or a requester, an auth with an action other than reinvite, a
 // table that is neither schema nor data.
 func migrateAction(subs map[string]string) (*MigrateAction, error) {
-	a := &MigrateAction{Action: subs[migrateActionSub], Table: subs[migrateTableSub], Version: -1, Requester: subs[requesterSub]}
+	a := &MigrateAction{Action: subs[migrateActionSub], Table: subs[migrateTableSub], Version: -1, Auth: subs[migrateAuthSub], Requester: subs[requesterSub]}
 	version := subs[migrateVersionSub]
 	if a.Action == "" {
-		if a.Table != "" || version != "" {
-			return nil, errors.Newf("%s and %s go with a %s (version, rerun or force), and the build names none", migrateTableSub, migrateVersionSub, migrateActionSub)
+		if a.Table != "" || version != "" || a.Auth != "" {
+			return nil, errors.Newf("%s, %s and %s go with a %s (version, rerun, force or reinvite), and the build names none", migrateTableSub, migrateVersionSub, migrateAuthSub, migrateActionSub)
 		}
 
 		return nil, nil
 	}
 	switch a.Action {
-	case actionVersion, actionRerun:
+	case actionVersion, actionRerun, actionReinvite:
 		if version != "" {
 			return nil, errors.Newf("%s=%s with %s=%s: a version goes with %s", migrateVersionSub, version, migrateActionSub, a.Action, actionForce)
 		}
@@ -165,7 +172,15 @@ func migrateAction(subs map[string]string) (*MigrateAction, error) {
 			return nil, errors.Newf("%s=%s names no requester (%s): a force says who asked for it", migrateActionSub, actionForce, requesterSub)
 		}
 	default:
-		return nil, errors.Newf("unknown %s %q (the actions are %s, %s and %s)", migrateActionSub, a.Action, actionVersion, actionRerun, actionForce)
+		return nil, errors.Newf("unknown %s %q (the actions are %s, %s, %s and %s)", migrateActionSub, a.Action, actionVersion, actionRerun, actionForce, actionReinvite)
+	}
+	switch {
+	case a.Action == actionReinvite && a.Auth == "":
+		return nil, errors.Newf("%s=%s names no auth (%s): a fresh invitation says which auth's first administrator it is for", migrateActionSub, actionReinvite, migrateAuthSub)
+	case a.Action == actionReinvite && a.Requester == "":
+		return nil, errors.Newf("%s=%s names no requester (%s): a fresh invitation says who asked for it", migrateActionSub, actionReinvite, requesterSub)
+	case a.Action != actionReinvite && a.Auth != "":
+		return nil, errors.Newf("%s=%s with %s=%s: an auth goes with %s", migrateAuthSub, a.Auth, migrateActionSub, a.Action, actionReinvite)
 	}
 	switch a.Table {
 	case "":
@@ -176,6 +191,12 @@ func migrateAction(subs map[string]string) (*MigrateAction, error) {
 	}
 
 	return a, nil
+}
+
+// deploysNothing reports whether a run carrying the migration operation deploys nothing
+// after its migrate step.
+func deploysNothing(action string) bool {
+	return action == actionVersion || action == actionReinvite
 }
 
 // String says what the operation does, for the build's log.
@@ -189,6 +210,8 @@ func (a *MigrateAction) String() string {
 		return actionVersion + ": the migrate command prints the database's migration version and nothing else deploys" + by
 	case actionRerun:
 		return actionRerun + ": the migrate command runs as it always does and the release continues" + by
+	case actionReinvite:
+		return actionReinvite + ": the migrate command withdraws the standing invitation of the " + a.Auth + " auth's first administrator and mails a fresh one, and nothing else deploys" + by
 	default:
 		return fmt.Sprintf("%s: the %s migrations table is set to %s, then the migrations run and the release continues%s", actionForce, a.Table, a.versionWord(), by)
 	}
@@ -216,7 +239,10 @@ func (a *MigrateAction) versionWord() string {
 // Spanner and Firestore through their APIs as the deploy identity, which the application
 // stack grants database admin on the application's own database and nothing wider; its
 // lines go straight into the build log. A build carrying a migration operation does what it asks first: version runs
-// the command with -version alone and the steps after do nothing; force runs it with
+// the command with -version alone and the steps after do nothing; reinvite runs it with
+// -reinvite-administrator <auth> alone, which withdraws the standing invitation of that
+// auth's first administrator and mails a fresh one, and the steps after do nothing either;
+// force runs it with
 // -force <n> (or -force-data <n>), leaves the force for the record, and then runs the
 // migrations as always; rerun is the migrations as always, by name. A build that runs no
 // migrations (shared-db) runs nothing; a failed run stops the build with the command's
@@ -332,9 +358,9 @@ func migrateCommandVars(settings, secrets map[string]string) []string {
 
 // migrateSecrets reads the secrets the migrate command runs with (MIGRATE_SECRETS, from
 // _MIGRATE_SECRETS: the pinned version of each, by variable), each as the deploy
-// identity, which the stack grants accessor on those containers alone: the generated
-// password of each auth's first administrator, which the command seeds the administrator
-// user with. A grant the apply just made is waited for, as the databases' are. The values
+// identity, which the stack grants accessor on those containers alone: the mailbox's app
+// password, which the data level opens the mail sender with, and the versioned secrets'
+// versions. A grant the apply just made is waited for, as the databases' are. The values
 // are never printed; the variables are. No secrets (an empty object, or a secret with no
 // version yet) is said and run with.
 func migrateSecrets(ctx context.Context, clients *Clients, env map[string]string, out io.Writer) (map[string]string, error) {
@@ -443,15 +469,17 @@ func (m *migrateRun) preflight(ctx context.Context) error {
 	return nil
 }
 
-// perform does what the operation asks: the version report alone, a force and then the
-// migrations, or the migrations, which a rerun is by name; seeded says the migrations
-// take the seed.
+// perform does what the operation asks: the version report alone, a fresh invitation
+// alone, a force and then the migrations, or the migrations, which a rerun is by name;
+// seeded says the migrations take the seed.
 func (m *migrateRun) perform(ctx context.Context, w Workspace, action *MigrateAction, seeded bool) error {
 	switch {
 	case action == nil:
 		return m.migrations(ctx, seeded)
 	case action.Action == actionVersion:
 		return m.version(ctx, w)
+	case action.Action == actionReinvite:
+		return m.reinvite(ctx, w, action)
 	case action.Action == actionForce:
 		if err := m.force(ctx, w, action); err != nil {
 			return err
@@ -495,6 +523,20 @@ func (m *migrateRun) version(ctx context.Context, w Workspace) error {
 	fmt.Fprintln(m.out, versionSkipped)
 
 	return w.Append(map[string]string{skipDeploy: trueValue, skipReasonFact: versionSkipped})
+}
+
+// reinvite runs the command once with -reinvite-administrator and the auth alone, which
+// withdraws the standing invitation of the auth's first administrator and mails a fresh
+// one, and leaves SKIP_DEPLOY for the steps after, with the reason: nothing else deploys.
+func (m *migrateRun) reinvite(ctx context.Context, w Workspace, action *MigrateAction) error {
+	fmt.Fprintf(m.out, "Reinvite%s: the migrate command withdraws the standing invitation of the %s auth's first administrator and mails a fresh one to the address the placement names; nothing else deploys.\n", by(action.Requester), action.Auth)
+	if err := m.once(ctx, []string{reinviteArg, action.Auth}); err != nil {
+		return errors.Newf("no fresh invitation was mailed to the %s auth's first administrator: the migrate command's lines above say why", action.Auth)
+	}
+	skipped := fmt.Sprintf("The run asked for a fresh invitation of the %s auth's first administrator, which the migrate command mailed: nothing else deploys.", action.Auth)
+	fmt.Fprintln(m.out, skipped)
+
+	return w.Append(map[string]string{skipDeploy: trueValue, skipReasonFact: skipped})
 }
 
 // force runs the command with the force, whose rows it prints, and leaves the force for
