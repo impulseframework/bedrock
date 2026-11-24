@@ -236,7 +236,7 @@ the apply, run on it:
   creates each hosting organization recorded without a folder yet, as the
   creating identity, and leaves a marker (`applied/root`) with the commit. A
   run that ends in an error gives the lock back, and the next push applies
-  again. A run that is cancelled or killed leaves the lock: a person deletes
+  again. A run that is canceled or killed leaves the lock: a person deletes
   the object, and the next push applies again.
 
 The steps a run takes are the trigger's own and never this repository's: a

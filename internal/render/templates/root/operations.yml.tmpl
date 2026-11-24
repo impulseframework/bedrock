@@ -1396,7 +1396,7 @@ jobs:
           printf '%s=%s\n' from "$from" to "$to" >> "$GITHUB_OUTPUT"
       # The rollback trigger's build for the release returned to, waited for to its end. It
       # waits for its approval in Cloud Build as a release does; thirty minutes without one
-      # and the build is cancelled, so a rollback nobody approved is not left waiting.
+      # and the build is canceled, so a rollback nobody approved is not left waiting.
       - name: Run the rollback trigger
         env:
           PROJECT: ${{"{{"}} steps.target.outputs.project {{"}}"}}
