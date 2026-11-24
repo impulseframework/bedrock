@@ -8,7 +8,7 @@ require (
 	cloud.google.com/go/orgpolicy v1.22.1
 	cloud.google.com/go/resourcemanager v1.18.1
 	cloud.google.com/go/secretmanager v1.24.0
-	cloud.google.com/go/storage v1.70.0
+	cloud.google.com/go/storage v1.71.0
 	github.com/go-playground/errors/v5 v5.4.0
 	github.com/google/go-cmp v0.7.0
 	github.com/hashicorp/hcl/v2 v2.25.0
@@ -20,7 +20,7 @@ require (
 	golang.org/x/net v0.62.0
 	golang.org/x/oauth2 v0.38.0
 	golang.org/x/term v0.48.0
-	google.golang.org/api v0.313.0
+	google.golang.org/api v0.315.0
 	google.golang.org/genproto v0.0.0-20261012220534-4341edf3f941
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
@@ -74,6 +74,6 @@ require (
 	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	golang.org/x/tools v0.52.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20261104224025-d1e00e9f33ab // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20261110000943-09e21b237f2c // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261110000943-09e21b237f2c // indirect
 )
