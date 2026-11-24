@@ -1245,26 +1245,34 @@ release there:
    in `terraform.tfvars` (`mail_mailbox`), add the app password as version 1 of
    `imp-<env>-gbl-harbor-mail-app-password` in every environment, and pin it there
    (`secret_versions`; `bedrock secret pin <env> APP_MAIL_APP_PASSWORD 1`). This step comes before the first
-   release in each environment: the application does not start without its mailbox and the
-   mailbox's app password, since the links and codes it mails are never written to a log.
-   A release that reaches an environment without them stops at its migrate step with the
-   application's sentence saying so, and is run again (the operations workflow's `run` action)
-   once they are in place.
+   release in each environment, and in tst before a pull request is built: the
+   application does not start without its mailbox and the mailbox's app password, since the
+   links and codes it mails are never written to a log. A release that reaches an environment
+   without them stops, at its migrate step at the latest, with the sentence saying what is
+   missing, and no revision deploys. The mailbox's name and the app password's pin are in
+   `terraform.tfvars`, so they reach an environment with a release: commit them and release.
+   The stopped release run again reads the files it was cut with and stops in the same place.
 5. Name the members auth's first administrator in `terraform.tfvars` (`members_administrator`), per
    environment, before the first release there: the person's email address. While nobody of
    the auth holds the Super Administrator role, each release's migrate command has an
    invitation mailed to the address, which gives that role, and refuses while the address
    is empty or the application has no mailbox to send as. The person opens the link and
-   signs in by a method of the auth: through a directory, the
-   address the directory gives must be the invited one, and a person whose directory gives
-   none enters a code mailed to the invited address. From there they invite everyone else. No
+   signs in by a method of the auth: through a directory, they
+   sign in and enter a code mailed to the invited address, except where the directory
+   vouches for the address it gives (Google does, for a Gmail or Google Workspace address),
+   which must then be the invited one. From there they invite everyone else. No
    account is made ahead of them and no password is generated, so there is no secret for
-   anybody to read. An invitation lasts seven days: a release leaves one that stands as it
-   is, mails a new one once it has run out, and, when the address here changes, withdraws
-   the old one and mails the new address. Mail that was lost is sent again with the
-   operations workflow's `reinvite` action (Actions, operations, Run workflow, with the
-   environment and the auth), which withdraws the standing invitation, so its link no longer
-   opens, and mails a fresh one; the action is refused once somebody holds the role.
+   anybody to read. An invitation lasts seven days unless the application sets another
+   time: a release leaves one that stands as it is, mails a new one once it has run out,
+   and, when the address here changes, withdraws the old one and mails the new address. A
+   pull request's environment is handed tst's address: the build that makes
+   its database mails the invitation too, unless its seed gives somebody the role. Mail
+   that was lost is sent again with the operations workflow's `reinvite` action (Actions,
+   operations, Run workflow, with the environment and the auth), which withdraws the
+   standing invitation, so its link no longer opens, and mails a fresh one to the address
+   the live release was cut with; the action is refused once somebody holds the role. A
+   mistyped address is not put right by the action, which would mail it again: correct it
+   here and release, and the release withdraws the old invitation and mails the new address.
 6. Generate a cookie key (`openssl rand -base64 32`) and add it as version 1
    of `imp-<env>-gbl-harbor-cookie-key`.
 7. Pin the versions in `secret_versions` and apply.

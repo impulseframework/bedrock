@@ -600,7 +600,7 @@ jobs:
                 pending=$((pending + 30))
                 if [ "$pending" -ge 1800 ]; then
                   gcloud builds cancel "$build" --region "$REGION" --project "$PROJECT" --quiet > /dev/null
-                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was cancelled; nothing changed. Ask again when an approver is ready."
+                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was canceled; nothing changed. Ask again when an approver is ready."
                   exit 1
                 fi
                 echo "Build $build is pending its approval in Cloud Build ($pending s)." ;;
@@ -889,7 +889,7 @@ jobs:
                 pending=$((pending + 30))
                 if [ "$pending" -ge 1800 ]; then
                   gcloud builds cancel "$build" --region "$REGION" --project "$PROJECT" --quiet > /dev/null
-                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was cancelled; nothing changed. Ask again when an approver is ready."
+                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was canceled; nothing changed. Ask again when an approver is ready."
                   exit 1
                 fi
                 echo "Build $build is pending its approval in Cloud Build ($pending s)." ;;
@@ -1419,7 +1419,7 @@ jobs:
                 pending=$((pending + 30))
                 if [ "$pending" -ge 1800 ]; then
                   gcloud builds cancel "$build" --region "$REGION" --project "$PROJECT" --quiet > /dev/null
-                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was cancelled; nothing changed. Ask again when an approver is ready."
+                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was canceled; nothing changed. Ask again when an approver is ready."
                   exit 1
                 fi
                 echo "Build $build is pending its approval in Cloud Build ($pending s)." ;;
@@ -1598,7 +1598,7 @@ jobs:
                 pending=$((pending + 30))
                 if [ "$pending" -ge 1800 ]; then
                   gcloud builds cancel "$build" --region "$REGION" --project "$PROJECT" --quiet > /dev/null
-                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was cancelled; nothing changed. Ask again when an approver is ready."
+                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was canceled; nothing changed. Ask again when an approver is ready."
                   exit 1
                 fi
                 echo "Build $build is pending its approval in Cloud Build ($pending s)." ;;
@@ -1700,7 +1700,7 @@ jobs:
                 pending=$((pending + 30))
                 if [ "$pending" -ge 1800 ]; then
                   gcloud builds cancel "$build" --region "$REGION" --project "$PROJECT" --quiet > /dev/null
-                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was cancelled; nothing changed. Ask again when an approver is ready."
+                  echo "::error::Build $build waited thirty minutes for its approval in Cloud Build and was canceled; nothing changed. Ask again when an approver is ready."
                   exit 1
                 fi
                 echo "Build $build is pending its approval in Cloud Build ($pending s)." ;;

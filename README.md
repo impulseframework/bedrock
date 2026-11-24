@@ -2278,8 +2278,10 @@ with the password method or without. While nobody of the auth holds the Super
 Administrator role, each release's migrate command has an invitation mailed to that
 address, which gives the role. The person opens the link and signs in by a method of the
 auth: with the password method they choose a password there and enter the code mailed to
-the address; through a directory, the address the directory gives must be the invited one,
-however many organizations the method admits. No account is made ahead of them and no
+the address; through a directory, they sign in and enter a code mailed to the invited
+address, except where the directory vouches for the address it gives (Google does, for a
+Gmail or Google Workspace address), which must then be the invited one, however many
+organizations the method admits. No account is made ahead of them and no
 password is generated: the stack holds no secret for a first administrator, and nobody is
 granted a read of one.
 
@@ -2287,10 +2289,17 @@ The mailbox comes first. An invitation's link is never written to a log, and an
 application does not start without its mailbox and the mailbox's app password, so the
 mailbox's hand step (the mailbox named, the app password added as version 1 and pinned)
 comes before the first release in each environment, and the address with it. A release
-that reaches an environment without them stops at its migrate step with the application's
-sentence, and is run again (`bedrock rerun`) once they are in place.
+that reaches an environment without them stops, at its migrate step at the latest, with
+the sentence saying what is missing, and no revision deploys. The mailbox's name, the app
+password's pin and the address are in `terraform.tfvars`, so they reach an environment
+with a release: commit them and release. The stopped release run again (`bedrock rerun`)
+reads the files it was cut with and stops in the same place. A pull request's environment
+is handed the first environment's mailbox and address: both come before a pull request is
+built, and the build that makes its database mails the invitation too, unless its seed
+gives somebody the Super Administrator role.
 
-An invitation lasts seven days. A release leaves one that stands as it is, mails a new one
+An invitation lasts seven days unless the application sets another time. A release leaves
+one that stands as it is, mails a new one
 once it has run out, and, when the address in `terraform.tfvars` changes, withdraws the old
 one and mails the new address. For mail that was lost, the operations workflow's
 `reinvite` action (Actions, operations, Run workflow, with the environment and the auth;
@@ -2298,8 +2307,12 @@ or `gh workflow run operations.yml -f action=reinvite -f environment=<env> -f
 auth=<auth>`) reads the environment's live release from its deployment records and runs
 its build with `_MIGRATE_ACTION=reinvite` and `_MIGRATE_AUTH`: the migrate step runs the
 release's migrate command once with `-reinvite-administrator <auth>`, which withdraws the
-standing invitation, so its link no longer opens, and mails a fresh one, and nothing else
-deploys: no window is waited for, no backup is taken, no record is written. It runs in
+standing invitation, so its link no longer opens, and mails a fresh one to the address the
+live release was cut with, and nothing else deploys: no window is waited for, no backup is
+taken, no record is written, and a queue an earlier run's maintenance left paused stays
+paused. A mistyped address is not put right by the action, which would mail it again:
+correct it in `terraform.tfvars` and release, and the release withdraws the old invitation
+and mails the new address. The action runs in
 every environment, production included, where the build waits for its approval in Cloud
 Build as any production run does. The command refuses once somebody of the auth holds the
 Super Administrator role, since somebody is then there to invite the others.

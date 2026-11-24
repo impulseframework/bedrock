@@ -1707,6 +1707,40 @@ func dropEmbedding(t *testing.T, file string) {
 	}
 }
 
+// TestDeriveRefusesAdministratorPassword derives a copy of the harbor fixture whose data
+// level still declares a generated password for the members auth's first administrator:
+// the derivation, which bedrock check and bedrock render both run, refuses the application.
+func TestDeriveRefusesAdministratorPassword(t *testing.T) {
+	t.Parallel()
+
+	const dataFile = "pkg/config/data.go"
+	dir := filepath.Join(t.TempDir(), "app")
+	if err := os.CopyFS(dir, os.DirFS(filepath.Join("testdata", "harbor"))); err != nil {
+		t.Fatalf("os.CopyFS() error = %v", err)
+	}
+	file := filepath.Join(dir, dataFile)
+	src, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const field = "\tMembersAdministrator string `env:\"APP_MEMBERS_ADMINISTRATOR\"`\n"
+	declared := strings.Replace(string(src), field, field+"\tMembersAdministratorPassword string `env:\"APP_MEMBERS_ADMINISTRATOR_PASSWORD\" secret:\"generated\"`\n", 1)
+	if declared == string(src) {
+		t.Fatalf("%s declares no MembersAdministrator to declare the password beside", dataFile)
+	}
+	if err := os.WriteFile(file, []byte(declared), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := app.Discover(dir)
+	if err != nil {
+		t.Fatalf("app.Discover() error = %v", err)
+	}
+	const want = "dataConfig.MembersAdministratorPassword declares APP_MEMBERS_ADMINISTRATOR_PASSWORD, a password generated for the members auth's first administrator: no password is generated any more"
+	if _, err := Derive(a, testPlacement(t)); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Derive() error = %v, want %q", err, want)
+	}
+}
+
 func TestPlacementRestore(t *testing.T) {
 	t.Parallel()
 

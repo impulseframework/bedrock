@@ -165,7 +165,9 @@ The step leaves the decision (WINDOW_NEEDED, WINDOW_BREAKING, WINDOW_REASON) and
 can never proceed: prd without a setting when the release is breaking, a window whose next opening
 is further away than the build can wait (its timeout less three hours for the steps after the
 window), a window with no opening ahead. A restore run and an environment in maintenance from an
-earlier run pass the gate. Without a release file no outlet declares an oldest answered release,
+earlier run pass the gate. A run carrying a migration operation after which nothing deploys
+(version, reinvite) waits for no window. Without a release file no outlet declares an oldest
+answered release,
 which it says, and no release is breaking. A pull-request build previews the window instead: what
 its release turns away in each environment, read as that environment's plan identity, and which
 environments hold it. A refusal starts with "Build REJECTED" and says why. A tag build's log first
@@ -955,7 +957,9 @@ maintenance revision and deploys the rolling way; a pull-request build never goe
 task queue paused by maintenance on is resumed, against the new release. The maintenance revisions
 stay, with no traffic, as any old revision does. A run that was not in maintenance has nothing to
 end, except a queue an earlier run's maintenance left paused (a restore run that failed after
-maintenance on), which it resumes: the release this run deployed serves now. In a run started by
+maintenance on), which it resumes: the release this run deployed serves now. A run after whose
+migrate step nothing deploys (a migration version read, a first administrator invited again)
+deployed no release and leaves that queue paused. In a run started by
 bedrock maintenance off (_MAINTENANCE=off, the MAINTENANCE_OFF fact), nothing deployed: it moves
 each service's traffic back to the revision the maintenance revision displaced (the revision the
 bedrock-displaced label names, or the latest ready revision when that is another one) and resumes
