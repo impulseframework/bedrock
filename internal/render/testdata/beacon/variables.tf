@@ -355,6 +355,25 @@ variable "mail_from" {
   default     = ""
 }
 
+variable "keepers_administrator" {
+  description = <<-EOT
+    Per environment, the sign-in name of the keepers auth's first administrator
+    (APP_KEEPERS_ADMINISTRATOR, pkg/config/data.go dataConfig.KeepersAdministrator): the name the
+    directory presents, the user principal name on Entra, the email on Google, or
+    the preferred username at an organization's own identity provider (the email
+    when it sends none). The migrate command seeds the administrator role
+    membership under it while the auth's users table holds no rows, so the first
+    person to sign in holds the role; empty until named, and the first release in
+    an environment refuses to seed without it (README, "Hand steps").
+  EOT
+  type        = map(string)
+  default = {
+    tst = ""
+    stg = ""
+    prd = ""
+  }
+}
+
 variable "state_bucket" {
   description = "(Required) The organization's state bucket, read for the upstream layers' outputs. Every render writes the same name into the backend block, from placement.json (stateBucket)."
   type        = string

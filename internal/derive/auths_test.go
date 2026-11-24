@@ -83,10 +83,10 @@ func TestAuthAdministrator(t *testing.T) {
 			variables: []Variable{{Name: "APP_MEMBERS_ADMINISTRATOR", Struct: "dataConfig", Field: "MembersAdministrator"}},
 		},
 		{
-			name:      "a sign-in name tagged as a secret is refused",
+			name:      "an address tagged as a secret is refused",
 			auth:      "members",
 			variables: []Variable{{Name: "APP_MEMBERS_ADMINISTRATOR", Struct: "dataConfig", Field: "MembersAdministrator", File: "pkg/config/data.go", Line: 12, Secret: true}},
-			wantErr:   "pkg/config/data.go:12: dataConfig.MembersAdministrator carries a secret tag: the members auth's first administrator is a sign-in name the placement names per environment, a setting, not a secret; drop the tag",
+			wantErr:   "pkg/config/data.go:12: dataConfig.MembersAdministrator carries a secret tag: the members auth's first administrator is an email address the placement names per environment, a setting, not a secret; drop the tag",
 		},
 	}
 	for _, tt := range tests {
@@ -112,6 +112,58 @@ func TestAuthAdministrator(t *testing.T) {
 				t.Errorf("Administrator = %v, want %s", auth.Administrator, tt.want)
 			case tt.want != "" && auth.Administrator.Role != RoleAdministrator:
 				t.Errorf("Role = %q, want %q", auth.Administrator.Role, RoleAdministrator)
+			}
+		})
+	}
+}
+
+// TestAuthAdministratorPasswordRefused refuses an auth whose code still declares a
+// password for its first administrator (APP_<AUTH>_ADMINISTRATOR_PASSWORD), whatever its
+// tags: no password is generated, and the first administrator comes in by an invitation.
+// Another auth's password variable refuses nothing for this one.
+func TestAuthAdministratorPasswordRefused(t *testing.T) {
+	t.Parallel()
+
+	const refused = "pkg/config/data.go:14: dataConfig.MembersAdministratorPassword declares APP_MEMBERS_ADMINISTRATOR_PASSWORD, a password generated for the members auth's first administrator: no password is generated any more, since no person could read one. The first administrator comes in by an invitation the release mails to the address the placement names (APP_MEMBERS_ADMINISTRATOR). Take the declaration out and have the application invite its first administrator; impulse check says how (first-administrator)"
+	tests := []struct {
+		name      string
+		auth      string
+		variables []Variable
+		wantErr   string
+	}{
+		{
+			name:      "a generated secret is refused",
+			auth:      "members",
+			variables: []Variable{{Name: "APP_MEMBERS_ADMINISTRATOR", Struct: "dataConfig", Field: "MembersAdministrator"}, {Name: "APP_MEMBERS_ADMINISTRATOR_PASSWORD", Struct: "dataConfig", Field: "MembersAdministratorPassword", File: "pkg/config/data.go", Line: 14, Secret: true, Generated: true, SecretTag: "generated"}},
+			wantErr:   refused,
+		},
+		{
+			name:      "a variable with no secret tag is refused the same way",
+			auth:      "members",
+			variables: []Variable{{Name: "APP_MEMBERS_ADMINISTRATOR_PASSWORD", Struct: "dataConfig", Field: "MembersAdministratorPassword", File: "pkg/config/data.go", Line: 14}},
+			wantErr:   refused,
+		},
+		{
+			name:      "another auth's password variable refuses nothing for this one",
+			auth:      "members",
+			variables: []Variable{{Name: "APP_STAFF_ADMINISTRATOR_PASSWORD", Struct: "dataConfig", Field: "StaffAdministratorPassword", File: "pkg/config/data.go", Line: 14, Secret: true, Generated: true, SecretTag: "generated"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := &Model{Variables: tt.variables}
+			auth := Auth{Name: tt.auth}
+			err := m.administratorPassword(&auth)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("administratorPassword() error = %v, want none", err)
+				}
+
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("administratorPassword() error = %v, want %q", err, tt.wantErr)
 			}
 		})
 	}

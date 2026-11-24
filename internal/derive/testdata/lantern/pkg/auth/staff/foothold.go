@@ -3,19 +3,14 @@ package staff
 import (
 	"context"
 
-	cloudspanner "cloud.google.com/go/spanner"
 	"github.com/go-playground/errors/v5"
 	"github.com/impulseframework/impulse/accesstypes"
 	"github.com/impulseframework/impulse/session"
 )
 
-// Administrator is the username of the auth's first administrator: the foothold a deployed
-// environment starts from. The migrate command seeds it while the auth's users table holds
-// no rows, with the password the stack generates for it (a generated secret the data level
-// declares), and never again while a user exists; the first sign-in changes the password,
-// and every user after the first comes from the administration surface. The development
-// bootstrap creates its own logins instead (cmd/bootstrap/users.json).
-const Administrator = "administrator"
+// AdministratorVariable is the setting the placement names the auth's first
+// administrator in, for each environment: the person's email address.
+const AdministratorVariable = "APP_STAFF_ADMINISTRATOR"
 
 // AdministratorRoles are the roles the first administrator holds, by where they are held:
 // what the development identities hold (cmd/bootstrap/users.json), a domain role in every
@@ -24,63 +19,45 @@ func AdministratorRoles() (global, everyDomain []accesstypes.Role) {
 	return []accesstypes.Role{"Administrator", "FeatureAdministrator"}, []accesstypes.Role{"TenantAdministrator"}
 }
 
-// SeedAdministrator creates the first administrator when the auth's users table holds no
-// rows and reports whether it did. The memberships are written first, since writing one
-// that exists is a no-op, then the user: a run that fails between the two leaves the table
-// empty, so the next deploy finishes the job. An empty password is refused while the table
-// is empty: a deployment carries the generated one, and nothing seeds a user without a
-// password.
-func (a *Auth) SeedAdministrator(ctx context.Context, password string) (bool, error) {
-	empty, err := a.usersTableEmpty(ctx)
+// InviteAdministrator invites the auth's first administrator, the way into a deployed
+// environment: while nobody of the auth holds the Super Administrator role, the migrate
+// command has an invitation mailed to email, the address the placement names
+// (AdministratorVariable), which gives the Super Administrator role and the
+// application's own roles for the first administrator (AdministratorRoles).
+func (a *Auth) InviteAdministrator(ctx context.Context, email string) (*session.FirstAdministrator, error) {
+	invited, err := a.handlers.API().InviteFirstAdministrator(ctx, a.access.UserManager(), &session.FirstAdministratorRequest{Email: email, RoleNames: administratorRoleNames()})
 	if err != nil {
-		return false, err
-	}
-	if !empty {
-		return false, nil
-	}
-	if password == "" {
-		return false, errors.Newf("the %s auth's users table holds no rows and no administrator password was given: a deployment generates one as a secret, and the migrate command seeds nothing without it", Name)
-	}
-	if err := a.assignAdministrator(ctx, Administrator); err != nil {
-		return false, err
-	}
-	if _, err := a.handlers.API().CreateSessionUser(ctx, &session.CreateUserRequest{Username: Administrator, Password: &password}); err != nil {
-		return false, errors.Wrapf(err, "session.AuthAPI.CreateSessionUser(): %s", Administrator)
+		return nil, errors.Wrapf(err, "the %s auth's first administrator (%s)", Name, AdministratorVariable)
 	}
 
-	return true, nil
+	return invited, nil
 }
 
-// assignAdministrator writes the first administrator's memberships under username, each
-// where its roles are held; a membership that exists is left as it is.
-func (a *Auth) assignAdministrator(ctx context.Context, username string) error {
+// ReinviteAdministrator withdraws the first administrator's standing invitation and
+// mails a fresh one to email, for a message that was lost: the earlier link no longer
+// opens.
+func (a *Auth) ReinviteAdministrator(ctx context.Context, email string) (*session.FirstAdministrator, error) {
+	invited, err := a.handlers.API().ReinviteFirstAdministrator(ctx, a.access.UserManager(), &session.FirstAdministratorRequest{Email: email, RoleNames: administratorRoleNames()})
+	if err != nil {
+		return nil, errors.Wrapf(err, "the %s auth's first administrator (%s)", Name, AdministratorVariable)
+	}
+
+	return invited, nil
+}
+
+// administratorRoleNames are the roles the first administrator's invitation carries: the
+// role the framework defines in every auth (accesstypes.SuperAdministrator), held for the
+// whole application, whose holder alone makes another, and the application's own
+// (AdministratorRoles).
+func administratorRoleNames() []string {
 	global, everyDomain := AdministratorRoles()
-	manager := a.access.UserManager()
-	if len(global) > 0 {
-		if err := manager.AddUserRoles(ctx, accesstypes.GlobalPolicyScope(), accesstypes.User(username), global...); err != nil {
-			return errors.Wrapf(err, "access.UserManager.AddUserRoles(): %s in the global partition", username)
-		}
+	names := []string{string(accesstypes.SuperAdministrator)}
+	for _, role := range global {
+		names = append(names, string(role))
 	}
-	if len(everyDomain) > 0 {
-		if err := manager.AddUserRoles(ctx, accesstypes.EveryDomainPolicyScope(), accesstypes.User(username), everyDomain...); err != nil {
-			return errors.Wrapf(err, "access.UserManager.AddUserRoles(): %s in every domain", username)
-		}
+	for _, role := range everyDomain {
+		names = append(names, string(role))
 	}
 
-	return nil
-}
-
-// usersTableEmpty reads one row of the users table, any row, and reports there is none.
-func (a *Auth) usersTableEmpty(ctx context.Context) (bool, error) {
-	rows := 0
-	iter := a.db.Single().ReadWithOptions(ctx, usersTable, cloudspanner.AllKeys(), []string{"Id"}, &cloudspanner.ReadOptions{Limit: 1})
-	if err := iter.Do(func(*cloudspanner.Row) error {
-		rows++
-
-		return nil
-	}); err != nil {
-		return false, errors.Wrapf(err, "spanner.RowIterator.Do(): %s", usersTable)
-	}
-
-	return rows == 0, nil
+	return names
 }

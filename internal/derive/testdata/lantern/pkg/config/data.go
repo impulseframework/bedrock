@@ -194,10 +194,10 @@ func (c *DataConfiguration) StaffUserStores() (resource.UserAccounts, resource.U
 	return sessionusers.Accounts(c.staff.Session().API()), c.staff.Access().UserManager()
 }
 
-// StaffAdministratorPassword returns the password the staff auth's first administrator is
-// seeded with, the stack's generated secret; empty where the deployment carries none.
-func (c *DataConfiguration) StaffAdministratorPassword() string {
-	return c.env.StaffAdministratorPassword
+// StaffAdministrator returns the email address of the staff auth's first
+// administrator, which the placement names per environment; empty where it names none.
+func (c *DataConfiguration) StaffAdministrator() string {
+	return c.env.StaffAdministrator
 }
 
 // Live returns the live service the generated handlers of every site subscribe through
@@ -273,14 +273,13 @@ type dataConfig struct {
 	PublicURL string `env:"APP_PUBLIC_URL,required"`
 
 	// MailMailbox and MailAppPassword send the auths' mail through the Google Workspace
-	// SMTP relay as the mailbox; unset, the mail is written to the log.
+	// SMTP relay as the mailbox; unset outside development, the application does not start.
 	MailMailbox     string `env:"APP_MAIL_MAILBOX"`
 	MailAppPassword string `env:"APP_MAIL_APP_PASSWORD" secret:"true"`
 
-	// StaffAdministratorPassword is the password of the staff auth's first administrator
-	// (staff.Administrator), which the migrate command seeds while the auth's users table
-	// holds no rows: a secret the stack generates, read like any other setting, that
-	// nobody types and the first sign-in changes. Unset in development, where the
-	// bootstrap creates the development logins instead.
-	StaffAdministratorPassword string `env:"APP_STAFF_ADMINISTRATOR_PASSWORD" secret:"generated"`
+	// StaffAdministrator is the email address of the staff auth's first
+	// administrator, which the placement names per environment: while nobody of the auth
+	// holds the Super Administrator role, the migrate command has an invitation mailed to
+	// it. Unset in development, where the bootstrap creates the development logins instead.
+	StaffAdministrator string `env:"APP_STAFF_ADMINISTRATOR"`
 }

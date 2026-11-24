@@ -297,8 +297,9 @@ const (
 	RolePublicURL Role = "public-url"
 	// RoleMailbox is the Google Workspace mailbox the auths' mail is sent as
 	// (APP_MAIL_MAILBOX), placed once for the organization: the stack variable
-	// mail_mailbox, empty until the organization names one, when the application
-	// writes its mail to the log and sends nothing.
+	// mail_mailbox, empty until the organization names one. A deployed application does
+	// not start without its mailbox and the mailbox's app password: the links and codes it
+	// mails are never written to a log.
 	RoleMailbox Role = "mail-mailbox"
 	// RoleMailFrom is the address the auths' mail is from when it is not the mailbox
 	// (APP_MAIL_FROM): an alias of the mailbox's account, since Google issues no login
@@ -352,17 +353,11 @@ const (
 	// malformed issuer when it is made, at construction, so every process that constructs
 	// the level carries it.
 	RoleProviderIssuer Role = "provider-issuer"
-	// RoleAdministrator is the sign-in name of an auth's first administrator
-	// (APP_<AUTH>_ADMINISTRATOR), placed per environment: the deployment's migrate command
-	// seeds the administrator role membership under it while the auth's users table holds
-	// no rows, so the first person to sign in through the directory holds the role.
+	// RoleAdministrator is the email address of an auth's first administrator
+	// (APP_<AUTH>_ADMINISTRATOR), placed per environment: while nobody of the auth holds the
+	// Super Administrator role, the deployment's migrate command has an invitation mailed to
+	// it, and the person who accepts it holds the role.
 	RoleAdministrator Role = "administrator"
-	// RoleAdministratorPassword is the generated password of an auth's first administrator
-	// (APP_<AUTH>_ADMINISTRATOR_PASSWORD, secret:"generated"): the deployment's migrate
-	// command seeds the administrator user with it while the auth's users table holds no
-	// rows, so the migrate command reads it, alone among the runtime secrets, and the stack
-	// grants the deploy identity accessor on its container and on no other.
-	RoleAdministratorPassword Role = "administrator-password"
 )
 
 // defaultGroupLookup is how far a sign-in's groups read reaches when the development
@@ -725,17 +720,11 @@ type Auth struct {
 	// Administrator is the variable naming the auth's first administrator
 	// (APP_<AUTH>_ADMINISTRATOR, RoleAdministrator), nil when the code declares none: an
 	// auth whose people hold roles the application assigns has nobody who may do anything
-	// until a membership exists, so its deployment seeds the administrator role membership
-	// under this sign-in name while the auth's users table holds no rows. An auth with a
-	// password method seeds a user with a generated password instead, a secret like any
-	// other, and declares no sign-in name.
+	// until somebody holds a role, so while nobody of it holds the Super Administrator role
+	// each release's migrate command has an invitation mailed to this email address, with
+	// the password method or without. No account is made ahead of the person and no
+	// password is generated.
 	Administrator *Variable
-	// AdministratorPassword is the generated password of the auth's first administrator
-	// (APP_<AUTH>_ADMINISTRATOR_PASSWORD), which an auth with a password method declares as
-	// a generated secret: the migrate command seeds the administrator user with it while the
-	// users table holds no rows, so it is the one runtime secret the command reads. Nil for
-	// an auth that declares none.
-	AdministratorPassword *Variable
 }
 
 // Directory reports whether any method of the auth sends the browser to a directory:

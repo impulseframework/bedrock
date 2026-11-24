@@ -107,7 +107,7 @@ type Session = session.Auth[session.NoCustomData, session.NoCustomData, *cloudsp
 
 // Auth is the staff auth: its permission store and its session manager with the
 // sign-in methods registered on it, and the database client it reads its own tables
-// through (the users table, when the deployment seeds the first administrator).
+// through (the users table).
 type Auth struct {
 	db       *cloudspanner.Client
 	access   *access.Client

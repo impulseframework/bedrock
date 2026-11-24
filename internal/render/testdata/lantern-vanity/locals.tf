@@ -220,16 +220,6 @@ locals {
       # versioned: a process receives every enabled version (secret:"versioned").
       versioned = false
     }
-    APP_STAFF_ADMINISTRATOR_PASSWORD = {
-      name    = "staff-administrator-password"
-      level   = "data"
-      source  = "pkg/config/data.go dataConfig.StaffAdministratorPassword"
-      purpose = "StaffAdministratorPassword is the password of the staff auth's first administrator (staff.Administrator), which the migrate command seeds while the auth's users table holds no rows: a secret the stack generates, read like any other setting, that nobody types and the first sign-in changes."
-      # generated: the tooling makes the value (secret:"generated", secret:"versioned"); nobody types it.
-      generated = true
-      # versioned: a process receives every enabled version (secret:"versioned").
-      versioned = false
-    }
   }
 
   # The container each secret lives in, by the naming convention: this
@@ -254,7 +244,7 @@ locals {
   # of each the command runs with, read back by the pipeline from the applied
   # stack (cloud-build.tf, _MIGRATE_SECRETS). A secret with no version yet (a
   # plan by hand) is left out, and the command runs without it.
-  migrate_secrets = toset(["APP_MAIL_APP_PASSWORD", "APP_STAFF_ADMINISTRATOR_PASSWORD"])
+  migrate_secrets = toset(["APP_MAIL_APP_PASSWORD"])
 
   # The versions this environment runs: the placement's pins (a number, or
   # latest) for the secrets someone puts in place, and the derived numbers for
@@ -317,6 +307,10 @@ locals {
     GOOGLE_CLOUD_SPANNER_PROJECT       = local.instance.project
     GOOGLE_CLOUD_SPANNER_INSTANCE_ID   = local.instance.name
     GOOGLE_CLOUD_SPANNER_DATABASE_NAME = local.database_name
+    # The first administrator of each auth whose roles the application assigns: the
+    # sign-in name the migrate command seeds the administrator role membership under
+    # while the auth's users table holds no rows.
+    APP_STAFF_ADMINISTRATOR = var.staff_administrator[var.environment]
     # dataConfig.PublicURL: the application's address as a browser reaches it, the
     # canonical hostname of the first site (each site's service carries its own,
     # site_env); every link the auths mail opens the login page under it.

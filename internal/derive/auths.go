@@ -191,7 +191,7 @@ func (m *Model) auth(a *app.App, cfg *config, profile *app.Profile, pkg *app.Aut
 }
 
 // administrator finds the auth's first-administrator variable by the convention and
-// gives it its role. One tagged as a secret is refused: a sign-in name is a setting the
+// gives it its role. One tagged as a secret is refused: an email address is a setting the
 // placement names per environment, not a value Secret Manager holds.
 func (m *Model) administrator(auth *Auth) error {
 	v := m.variableNamed(AdministratorVariable(auth.Name))
@@ -199,7 +199,7 @@ func (m *Model) administrator(auth *Auth) error {
 		return nil
 	}
 	if v.Secret {
-		return errors.Newf("%s:%d: %s carries a secret tag: the %s auth's first administrator is a sign-in name the placement names per environment, a setting, not a secret; drop the tag", v.File, v.Line, v.Declaration(), auth.Name)
+		return errors.Newf("%s:%d: %s carries a secret tag: the %s auth's first administrator is an email address the placement names per environment, a setting, not a secret; drop the tag", v.File, v.Line, v.Declaration(), auth.Name)
 	}
 	v.Role = RoleAdministrator
 	auth.Administrator = v
@@ -207,27 +207,18 @@ func (m *Model) administrator(auth *Auth) error {
 	return nil
 }
 
-// AdministratorPasswordVariable is the variable an auth's first-administrator password
-// goes under: APP_<AUTH>_ADMINISTRATOR_PASSWORD.
-func AdministratorPasswordVariable(auth string) string {
-	return AdministratorVariable(auth) + "_PASSWORD"
-}
-
-// administratorPassword finds the auth's first-administrator password by the convention
-// and gives it its role. One that is not a generated secret is refused: the password is a
-// value the stack makes and the migrate command seeds with, never one a person types.
+// administratorPassword refuses the auth when its code declares a password for its first
+// administrator (APP_<AUTH>_ADMINISTRATOR_PASSWORD), whatever its tags: no password is
+// generated, since no person could read one, and the first administrator comes in by an
+// invitation mailed to the address the placement names.
 func (m *Model) administratorPassword(auth *Auth) error {
-	v := m.variableNamed(AdministratorPasswordVariable(auth.Name))
+	name := AdministratorVariable(auth.Name) + "_PASSWORD"
+	v := m.variableNamed(name)
 	if v == nil {
 		return nil
 	}
-	if !v.Secret || !v.Generated || v.Versioned {
-		return errors.Newf("%s:%d: %s is not tagged secret:\"generated\": the %s auth's first administrator's password is a value the stack generates and the migrate command seeds with, never one a person types; tag it", v.File, v.Line, v.Declaration(), auth.Name)
-	}
-	v.Role = RoleAdministratorPassword
-	auth.AdministratorPassword = v
 
-	return nil
+	return errors.Newf("%s:%d: %s declares %s, a password generated for the %s auth's first administrator: no password is generated any more, since no person could read one. The first administrator comes in by an invitation the release mails to the address the placement names (%s). Take the declaration out and have the application invite its first administrator; impulse check says how (first-administrator)", v.File, v.Line, v.Declaration(), name, auth.Name, AdministratorVariable(auth.Name))
 }
 
 // boundOutlet is an outlet bound to an auth package, with the site serving it.

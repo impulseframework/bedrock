@@ -1733,14 +1733,13 @@ func (v *view) secrets() {
 }
 
 // migrateSecrets collects the secrets the migrate command reads, in declaration order:
-// each auth's first administrator's password and the mailbox's app password, by their
-// roles, and the versioned secrets at the levels the command constructs, which the
-// README lists apart.
+// the mailbox's app password, by its role, and the versioned secrets at the levels the
+// command constructs, which the README lists apart.
 func (v *view) migrateSecrets() {
 	var versioned []string
 	for _, s := range v.Secrets {
 		switch {
-		case s.Variable.Role == derive.RoleAdministratorPassword || s.Variable.Role == derive.RoleMailAppPassword:
+		case s.Variable.Role == derive.RoleMailAppPassword:
 			v.MigrateSecrets = append(v.MigrateSecrets, s)
 		case s.Versioned && v.Migrate != nil && v.Migrate.Reads(s.Variable.Level):
 			v.MigrateSecrets = append(v.MigrateSecrets, s)

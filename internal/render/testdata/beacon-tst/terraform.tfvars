@@ -9,6 +9,13 @@ state_bucket = "imp-boot-gbl-state-REPLACEME"
 # Placement per environment, filled as each environment is set up. Every map
 # is keyed by environment so one file serves every environment's apply.
 
+# The keepers auth's first administrator, per environment (README, "Hand steps"):
+# the sign-in name the directory presents, which the migrate command seeds the
+# administrator role membership under while the auth has no users.
+keepers_administrator = {
+  tst = ""
+}
+
 # The Google Workspace mailbox the auths' mail is sent as, once for the
 # organization (README, "Hand steps"); empty, the application writes its mail
 # to the log and sends nothing.
@@ -29,7 +36,7 @@ mail_from = ""
 # one it declares secret:"versioned": made the same way, and a process
 # receives every enabled version (bedrock secret retire takes one away).
 secret_versions = {
-  tst = { APP_COOKIE_KEY = "generated", APP_SECRET_KEY = "versioned", APP_KEEPERS_ADMINISTRATOR_PASSWORD = "generated" }
+  tst = { APP_COOKIE_KEY = "generated", APP_SECRET_KEY = "versioned" }
 }
 
 # The secrets and file stores a release retires, by variable: anything the

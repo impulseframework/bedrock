@@ -274,7 +274,7 @@ type dataConfig struct {
 	PublicURL string `env:"APP_PUBLIC_URL,required"`
 
 	// MailMailbox and MailAppPassword send the auths' mail through the Google Workspace
-	// SMTP relay as the mailbox; unset, the mail is written to the log.
+	// SMTP relay as the mailbox; unset outside development, the application does not start.
 	MailMailbox     string `env:"APP_MAIL_MAILBOX"`
 	MailAppPassword string `env:"APP_MAIL_APP_PASSWORD" secret:"true"`
 	// The staff auth's directory registration (pkg/auth/staff/directory.go): how the
@@ -315,10 +315,10 @@ type dataConfig struct {
 	// as the Cloud Tasks API names it (projects/<project>/locations/<region>/queues/<name>).
 	TasksQueue string `env:"APP_TASKS_QUEUE"`
 
-	// MembersAdministrator is the sign-in name of the members auth's first administrator,
-	// as the directory presents it (the user principal name): the migrate command seeds
-	// the administrator role membership under it while the auth's users table holds no
-	// rows, so the first person to sign in holds the role. Named per environment by the
-	// placement; the bootstrap seeds the development members instead.
+	// MembersAdministrator is the email address of the members auth's first administrator:
+	// while nobody of the auth holds the Super Administrator role, the migrate command has
+	// an invitation mailed to it, and the person who accepts it through the directory holds
+	// the role. Named per environment by the placement; the bootstrap seeds the development
+	// members instead.
 	MembersAdministrator string `env:"APP_MEMBERS_ADMINISTRATOR"`
 }

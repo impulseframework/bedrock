@@ -129,7 +129,7 @@ from `2-env`'s state.
   client's metrics (`service-accounts.tf`), and `roles/datastore.user` on the Firestore
   database under the condition naming it (`firestore.tf`). It holds
   accessor on the secrets the migration reads
-  (`APP_MAIL_APP_PASSWORD`, `APP_STAFF_ADMINISTRATOR_PASSWORD`: the generated password of each auth's first administrator, which it seeds the administrator user with, and the mailbox's app password, which the data level opens the mail sender with), and on
+  (`APP_MAIL_APP_PASSWORD`: the generated password of each auth's first administrator, which it seeds the administrator user with, and the mailbox's app password, which the data level opens the mail sender with), and on
   no other runtime secret, which a migration never reads. The Spanner
   client writes its client-side metrics (operation and attempt latency,
   counts) to the project that owns the instance and logs a denial at every
@@ -189,7 +189,6 @@ from `2-env`'s state.
   |---|---|---|
   | `APP_COOKIE_KEY` | `dataConfig.CookieKey` | `...-cookie-key` |
   | `APP_MAIL_APP_PASSWORD` | `dataConfig.MailAppPassword` | `...-mail-app-password` |
-  | `APP_STAFF_ADMINISTRATOR_PASSWORD` | `dataConfig.StaffAdministratorPassword` | `...-staff-administrator-password` |
 
   The site's identity holds accessor. The migrate command
   constructs the same configuration level, but its work is known: the session
@@ -361,10 +360,11 @@ above them.
 | `GOOGLE_CLOUD_FIRESTORE_PROJECT` | data | the environment project (the Firestore database's) | yes | yes |
 | `APP_FIRESTORE_DATABASE` | data | the Firestore database | yes | yes |
 | `APP_FIREBASE_API_KEY` | data | the Firebase web API key | yes | yes |
+| `APP_STAFF_ADMINISTRATOR` | data | `var.staff_administrator[env]` | yes | yes |
 | `APP_PUBLIC_URL` | data | `https://<first hostname>`, each site's own on its service | yes | yes |
 | `APP_MAIL_MAILBOX` | data | `var.mail_mailbox` | yes | yes |
 | `APP_SCHEDULER_INVOKER` | none, the framework reads it | the scheduler's invoker identity, unset in a pull-request stack | yes | |
-| `APP_COOKIE_KEY`, `APP_MAIL_APP_PASSWORD`, `APP_STAFF_ADMINISTRATOR_PASSWORD` | data | secret, at the pinned version | yes | |
+| `APP_COOKIE_KEY`, `APP_MAIL_APP_PASSWORD` | data | secret, at the pinned version | yes | |
 
 The migrate command carries the Firestore
 database because the data level opens its live service when it is constructed, and
@@ -413,7 +413,7 @@ role for the time asked.
 
 ### Generated secrets
 
-A secret declared `secret:"generated"` in the code (`APP_COOKIE_KEY`, `APP_STAFF_ADMINISTRATOR_PASSWORD`) has a
+A secret declared `secret:"generated"` in the code (`APP_COOKIE_KEY`) has a
 value nobody types: 32 bytes of cryptographically secure random data, base64,
 made by the tooling. Its entry in `secret_versions` is the word `generated` in
 every environment (`bedrock render` seeds it; `bedrock check` refuses a
@@ -1085,7 +1085,15 @@ pull request's.
 
 Per environment, after the first apply:
 
-1. In the Google Workspace Admin console, once for the organization: a mailbox the
+1. Name the staff auth's first administrator in `terraform.tfvars` (`staff_administrator`), per
+   environment: the sign-in name the directory presents (the user principal name
+   on Entra, the email on Google, the preferred username at an organization's own
+   identity provider, or its email when it sends none). The migrate command of the
+   first release in the environment seeds the administrator role membership under
+   it while the auth's users table holds no rows, and refuses to seed while the
+   name is empty; the person then signs in through the directory and holds the
+   role.
+2. In the Google Workspace Admin console, once for the organization: a mailbox the
    application sends its mail as (a no-reply address of the organization's domain),
    with 2-step verification turned on and an app password generated for it, and the
    SMTP relay service (Apps > Google Workspace > Gmail > Routing) accepting mail from
@@ -1096,7 +1104,7 @@ Per environment, after the first apply:
    pin. Until the mailbox is named the application writes its mail (the
    invitations and address verifications its auths send, link included) to the log
    and sends nothing, which a deployed environment is not left at.
-2. Pin the versions in `secret_versions` and apply.
+3. Pin the versions in `secret_versions` and apply.
 
 ## Inputs
 
@@ -1117,6 +1125,7 @@ Per environment, after the first apply:
 | `substitutions` | Extra trigger substitutions per environment, for the hooks and the image build. | `map(map(string))` | `{}` | no |
 | `teardown` | Set by `bedrock teardown` alone: the services' deletion protection lifted at the apply before its destroy. | `bool` | `false` | no |
 | `versioned_secret_versions` | The versioned secrets' enabled versions, listed and passed by the pipeline's plan step; never written here. | `map(list(string))` | `{}` | no |
+| `staff_administrator` | Sign-in name of the staff auth's first administrator, per environment. | `map(string)` | all empty | no |
 | `mail_mailbox` | Google Workspace mailbox the auths' mail is sent as; empty writes the mail to the log instead. | `string` | `""` | no |
 | `state_bucket` | State bucket, for the upstream layers' outputs. | `string` | n/a | yes |
 

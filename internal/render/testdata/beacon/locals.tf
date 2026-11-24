@@ -176,16 +176,6 @@ locals {
       # versioned: a process receives every enabled version (secret:"versioned").
       versioned = false
     }
-    APP_KEEPERS_ADMINISTRATOR_PASSWORD = {
-      name    = "keepers-administrator-password"
-      level   = "data"
-      source  = "pkg/config/data.go dataConfig.KeepersAdministratorPassword"
-      purpose = "KeepersAdministratorPassword is the password of the keepers auth's first administrator, administrator, which the migrate command seeds while the auth's users table holds no rows."
-      # generated: the tooling makes the value (secret:"generated", secret:"versioned"); nobody types it.
-      generated = true
-      # versioned: a process receives every enabled version (secret:"versioned").
-      versioned = false
-    }
   }
 
   # The container each secret lives in, by the naming convention: this
@@ -210,7 +200,7 @@ locals {
   # of each the command runs with, read back by the pipeline from the applied
   # stack (cloud-build.tf, _MIGRATE_SECRETS). A secret with no version yet (a
   # plan by hand) is left out, and the command runs without it.
-  migrate_secrets = toset(["APP_SECRET_KEY", "APP_MAIL_APP_PASSWORD", "APP_KEEPERS_ADMINISTRATOR_PASSWORD"])
+  migrate_secrets = toset(["APP_SECRET_KEY", "APP_MAIL_APP_PASSWORD"])
 
   # The versions this environment runs: the placement's pins (a number, or
   # latest) for the secrets someone puts in place, and the derived numbers for
@@ -271,6 +261,10 @@ locals {
     GOOGLE_CLOUD_SPANNER_PROJECT       = local.instance.project
     GOOGLE_CLOUD_SPANNER_INSTANCE_ID   = local.instance.name
     GOOGLE_CLOUD_SPANNER_DATABASE_NAME = local.database_name
+    # The first administrator of each auth whose roles the application assigns: the
+    # sign-in name the migrate command seeds the administrator role membership under
+    # while the auth's users table holds no rows.
+    APP_KEEPERS_ADMINISTRATOR = var.keepers_administrator[var.environment]
     # dataConfig.PublicURL: the application's address as a browser reaches it, the
     # canonical hostname; every link the auths mail opens the login page under it.
     APP_PUBLIC_URL = "https://${local.hostnames[0]}"
