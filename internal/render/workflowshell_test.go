@@ -206,6 +206,7 @@ const (
 	migrateTargetStep  = "The environment's project, identity, trigger and log bucket"
 	rollbackTargetStep = "The environment's project, identity, triggers and inputs"
 	releaseTargetStep  = "The first environment's project, identity and release trigger"
+	reinviteTargetStep = "The environment's project, identity and trigger, and the auth"
 )
 
 // The sentences a job refuses an input with.
@@ -214,6 +215,7 @@ const (
 	refusedReason      = "the reason is one line with no | character"
 	refusedBackup      = "backup is a backup's resource name (projects/<p>/instances/<i>/backups/<b>) or @<RFC 3339 moment>"
 	refusedDatabase    = "database is a database's name as the list action prints it"
+	refusedAuth        = "reinvite names the auth whose first administrator is invited again, whole, as the code names it, and what was given is none of the auths that invite one (members): nothing ran"
 )
 
 // TestOperationsInputsHeldWhole runs the step of each job of the rendered operations
@@ -315,6 +317,17 @@ func TestOperationsInputsHeldWhole(t *testing.T) {
 		{name: "an action that carries a substitution", workflow: harbor, job: "migration", step: migrateTargetStep, inputs: inputs{"environment": "tst", "action": "version,_PR_NUMBER=5", "release": "v1.4.2"}, wantRefusal: "this job runs the migration operations (version, rerun and force)"},
 		{name: "an action of two lines", workflow: harbor, job: "migration", step: migrateTargetStep, inputs: inputs{"environment": "tst", "action": "version\nforce", "release": "v1.4.2"}, wantRefusal: "this job runs the migration operations (version, rerun and force)"},
 		{name: "rerun: a release that carries a substitution", workflow: harbor, job: "migration", step: migrateTargetStep, inputs: inputs{"environment": "tst", "action": "rerun", "release": "v1.4.2,_PR_NUMBER=5"}, wantRefusal: "rerun names the release the migrations are at, a release tag, whole"},
+
+		// reinvite: the auth reaches a list separated by |, held to the auths that invite a
+		// first administrator.
+		{name: "reinvite: an auth", workflow: harbor, job: "reinvite", step: reinviteTargetStep, inputs: inputs{"environment": "tst", "auth": "members"}, wantOutputs: harborTarget + version},
+		{name: "reinvite: an environment that closes the name it is read into", workflow: harbor, job: "reinvite", step: reinviteTargetStep, inputs: inputs{"environment": injected, "auth": "members"}, wantRefusal: refusedEnvironment},
+		{name: "reinvite: no auth", workflow: harbor, job: "reinvite", step: reinviteTargetStep, inputs: inputs{"environment": "tst"}, wantRefusal: refusedAuth},
+		{name: "reinvite: an auth that invites nobody", workflow: harbor, job: "reinvite", step: reinviteTargetStep, inputs: inputs{"environment": "tst", "auth": "staff"}, wantRefusal: refusedAuth},
+		{name: "reinvite: an auth of two lines", workflow: harbor, job: "reinvite", step: reinviteTargetStep, inputs: inputs{"environment": "tst", "auth": "members\nproject=other"}, wantRefusal: refusedAuth},
+		{name: "reinvite: an auth that carries a substitution", workflow: harbor, job: "reinvite", step: reinviteTargetStep, inputs: inputs{"environment": "tst", "auth": "members|_PR_NUMBER=5"}, wantRefusal: refusedAuth},
+		{name: "reinvite: an auth that carries a comma's substitution", workflow: harbor, job: "reinvite", step: reinviteTargetStep, inputs: inputs{"environment": "tst", "auth": "members,_ENV=prd"}, wantRefusal: refusedAuth},
+		{name: "reinvite: a shell pattern", workflow: harbor, job: "reinvite", step: reinviteTargetStep, inputs: inputs{"environment": "tst", "auth": "*"}, wantRefusal: refusedAuth},
 
 		// rotate and retire: the variable and the version reach a list separated by commas.
 		{name: "rotate: a generated secret", workflow: beacon, job: "rotate", step: secretTargetStep, inputs: inputs{"environment": "tst", "variable": "APP_COOKIE_KEY"}, wantOutputs: "container=imp-tst-gbl-beacon-cookie-key\nproject=imp-tst-gbl-core-b241\n"},
@@ -719,6 +732,7 @@ func TestOperationsRecordsHeldWhole(t *testing.T) {
 		rotateStep      = "Run the live release again on it"
 		retireStep      = "Rewrite what names the version and run the live release again without it"
 		maintenanceStep = "Run the version trigger with the maintenance instruction"
+		reinviteStep    = "Run the version trigger with the invitation"
 		twoLines        = "v1.2.3\nforged=v9.9.9"
 		separated       = "v1.2.3|_FORGED=5"
 		cut             = "projects/p/instances/i/backups/harbor-db-cut-1"
@@ -776,6 +790,21 @@ func TestOperationsRecordsHeldWhole(t *testing.T) {
 		},
 		{
 			name: "maintenance: a live release that carries a substitution", workflow: harbor, job: "maintenance", step: maintenanceStep, inputs: values{"environment": "tst"}, outputs: harborTarget,
+			records:     values{"b-4": record(t, "b-4", "v1.2.2", "03"), "b-5": record(t, "b-5", separated, "04")},
+			wantRefusal: harborTst + "b-5.json" + notTag,
+		},
+		{
+			name: "reinvite: the live release", workflow: harbor, job: "reinvite", step: reinviteStep, inputs: values{"environment": "tst", "auth": "members"}, outputs: harborTarget,
+			records:     values{"b-5": record(t, "b-5", "v1.2.3", "04")},
+			wantStarted: "builds triggers run imp-tst-uc1-harbor-version --tag v1.2.3 --region us-central1 --project imp-tst-gbl-core-b241 --substitutions ^|^_MIGRATE_ACTION=reinvite|_MIGRATE_AUTH=members|_REQUESTER=octocat --format=value(metadata.build.id)\n",
+		},
+		{
+			name: "reinvite: a live release of two lines", workflow: harbor, job: "reinvite", step: reinviteStep, inputs: values{"environment": "tst", "auth": "members"}, outputs: harborTarget,
+			records:     values{"b-4": record(t, "b-4", "v1.2.2", "03"), "b-5": record(t, "b-5", twoLines, "04")},
+			wantRefusal: harborTst + "b-5.json" + notTag,
+		},
+		{
+			name: "reinvite: a live release that carries a substitution", workflow: harbor, job: "reinvite", step: reinviteStep, inputs: values{"environment": "tst", "auth": "members"}, outputs: harborTarget,
 			records:     values{"b-4": record(t, "b-4", "v1.2.2", "03"), "b-5": record(t, "b-5", separated, "04")},
 			wantRefusal: harborTst + "b-5.json" + notTag,
 		},

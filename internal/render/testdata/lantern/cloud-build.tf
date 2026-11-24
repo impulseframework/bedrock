@@ -108,9 +108,10 @@ locals {
     _RESTORE_DATABASE        = ""                                    # production's live database for a restore from its backup (read by the operations workflow from production's deployment records), or, for a restore as of a moment, the earlier generation the backup is taken of
     _RESTORE_DATABASE_BACKUP = ""                                    # the backup production's live generation was restored from (its record's rollback.backup), restored while the generation has no backup of its own; empty otherwise
     _MAINTENANCE             = ""                                    # off: the run takes the application out of a maintenance an earlier run left on (traffic back to the revision the maintenance revision displaced, the queue resumed) and does nothing else (bedrock maintenance off)
-    _MIGRATE_ACTION          = ""                                    # a migration operation (version, rerun or force) the operations workflow asks the migrate command for (bedrock migration); empty on a tag's own build
+    _MIGRATE_ACTION          = ""                                    # a migration operation (version, rerun, force or reinvite) the operations workflow asks the migrate command for (bedrock migration, and the reinvite action); empty on a tag's own build
     _MIGRATE_TABLE           = ""                                    # the migrations table a force sets: schema, or data; empty means schema
     _MIGRATE_VERSION         = ""                                    # the version a force sets: an integer, or -1 for no version
+    _MIGRATE_AUTH            = ""                                    # the auth whose first administrator a reinvite invites again; empty otherwise
     # The schema migrations, root-relative: /gcbrun shared-db is refused when a
     # pull request changes anything under it. The repository as GitHub names it
     # (owner/name, from the module path): the sweep asks GitHub about each pull

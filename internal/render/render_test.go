@@ -443,6 +443,47 @@ func TestNoSeededAdministrator(t *testing.T) {
 	}
 }
 
+// TestReinviteWorkflow reads the rendered operations workflow's reinvite action: the
+// action is offered after retire, with an auth input; the job runs on its action alone, in
+// the GitHub Environment the environment input names, holds the auths that invite a first
+// administrator, and starts the live release's build with the reinvite instruction; the
+// migration job, which runs on every action no other job names, stands down on it.
+func TestReinviteWorkflow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		fixture            string
+		placement          string
+		wantAdministrators string
+	}{
+		{name: "beacon", fixture: "beacon", placement: "placement-beacon.json", wantAdministrators: "keepers"},
+		{name: "harbor", fixture: "harbor", placement: "placement.json", wantAdministrators: "members"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workflow := operationsWorkflow(t, tt.fixture, tt.placement)
+			containsAll(t, workflow,
+				"          - retire\n          - reinvite\n",
+				"      auth:\n        description: \"For reinvite: the auth whose first administrator is invited again, as the code names it (one of: "+tt.wantAdministrators+")\"\n        type: string\n",
+			)
+			reinvite := jobOf(t, workflow, "reinvite")
+			containsAll(t, reinvite,
+				"    if: ${{ inputs.action == 'reinvite' }}\n",
+				"    environment: ${{ inputs.environment }}\n",
+				"      AUTH: ${{ inputs.auth }}\n",
+				"      ADMINISTRATORS: \""+tt.wantAdministrators+"\"\n",
+				`--substitutions "^|^_MIGRATE_ACTION=reinvite|_MIGRATE_AUTH=$AUTH|_REQUESTER=$REQUESTER"`,
+			)
+			if !strings.Contains(jobOf(t, workflow, "migration"), "inputs.action != 'reinvite'") {
+				t.Errorf("the migration job, which runs on every action no other job names, does not stand down on reinvite")
+			}
+		})
+	}
+}
+
 // stackReadme is the stack's README among the rendered files, empty when there is none.
 func stackReadme(files []File) string {
 	for _, f := range files {

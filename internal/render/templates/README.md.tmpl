@@ -755,10 +755,12 @@ substitutions and this stack's outputs:
   the run that only takes the application out of maintenance, the
   requester alone on a rerun (`bedrock rerun`: the release's tag build again,
   production included);
-  `_MIGRATE_ACTION`, `_MIGRATE_TABLE` and `_MIGRATE_VERSION`, empty on a tag's
-  own build and set by the operations workflow's migration job (`version`,
-  `rerun` or `force` on the environment's migrations, with `_REQUESTER` naming
-  who asked); `_MIGRATIONS_DIR`, the
+  `_MIGRATE_ACTION`, `_MIGRATE_TABLE`, `_MIGRATE_VERSION` and
+  `_MIGRATE_AUTH`, empty on a tag's own build and set by the operations
+  workflow: by its migration job (`version`, `rerun` or `force` on the
+  environment's migrations) and by its `reinvite` job (the auth whose first
+  administrator is invited again), with `_REQUESTER` naming who asked;
+  `_MIGRATIONS_DIR`, the
   schema migrations directory, which decides whether `/gcbrun shared-db` is
   allowed; `_REPO_FULL_NAME`, the repository as GitHub names it, for the sweep;
   `_HOSTNAME`, the environment's canonical hostname{{if .MultiSite}}, the first site's{{end}} (a pull-request stack's

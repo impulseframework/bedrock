@@ -178,9 +178,12 @@ type view struct {
 	// invitation mailed to while nobody of the auth holds the Super Administrator role, a
 	// stack variable per environment carried by every data-level process, with a hand
 	// step of its own after the mailbox's. AdministratorEnv is their aligned assignment
-	// block of locals.tf.
-	Administrators   []*authView
-	AdministratorEnv string
+	// block of locals.tf; AdministratorNames their names, in their order, separated by one
+	// space, empty when there is none, which the operations workflow's reinvite job holds
+	// the auth it is given to.
+	Administrators     []*authView
+	AdministratorEnv   string
+	AdministratorNames string
 	// The variables by role, for the templates that name them.
 	ServiceName    *derive.Variable
 	LoggingProject *derive.Variable
@@ -1428,15 +1431,17 @@ type authView struct {
 }
 
 // administrators prepares the auths whose code names a first administrator, in the
-// model's order (auths by name), and their assignment block for locals.tf; handSteps
-// numbers their hand steps.
+// model's order (auths by name), their assignment block for locals.tf and their names;
+// handSteps numbers their hand steps.
 func (v *view) administrators() {
 	var env [][2]string
+	var names []string
 	for i := range v.Auths {
 		a := &v.Auths[i]
 		if a.Administrator == nil {
 			continue
 		}
+		names = append(names, a.Name)
 		password := slices.ContainsFunc(a.Methods, func(m derive.Method) bool {
 			return m.Kind == app.MethodPassword
 		})
@@ -1447,6 +1452,7 @@ func (v *view) administrators() {
 	if len(env) > 0 {
 		v.AdministratorEnv = aligned("    ", env)
 	}
+	v.AdministratorNames = strings.Join(names, " ")
 }
 
 // byRole returns the variable in the role, or nil.
